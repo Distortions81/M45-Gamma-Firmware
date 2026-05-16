@@ -73,7 +73,7 @@ Install ESP-IDF for `esp32s3`, source the ESP-IDF environment, then configure
 and build:
 
 ```sh
-scripts/configure.sh \
+scripts/build.sh \
   --wifi-ssid "My WiFi" \
   --wifi-pass "secret" \
   --pool-host public-pool.io \
@@ -86,7 +86,7 @@ scripts/configure.sh \
 Flash after building:
 
 ```sh
-scripts/configure.sh --flash /dev/ttyUSB0
+scripts/build.sh --flash /dev/ttyUSB0
 ```
 
 On first boot without saved Wi-Fi credentials, the device starts a temporary

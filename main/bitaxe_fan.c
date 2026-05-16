@@ -21,23 +21,27 @@
 #define FAN_TARGET_MIN_TEMP_C 35.0f
 #define FAN_TARGET_MAX_TEMP_C 66.0f
 #define FAN_TEMP_DEADBAND_C 1.0f
-#define FAN_COOL_SAMPLES_BEFORE_STEP_DOWN 2
-#define FAN_TEMP_WINDOW_SAMPLES 16
+#define FAN_COOL_SAMPLES_BEFORE_STEP_DOWN 24
+#define FAN_COOL_SAMPLES_BEFORE_AUTO_OFF 80
+#define FAN_TEMP_WINDOW_SAMPLES 24
 #define FAN_RPM_WINDOW_SAMPLES 16
-#define FAN_AUTO_MIN_PERCENT 20.0f
+#define FAN_AUTO_MIN_PERCENT 30.0f
 #define FAN_MAX_PERCENT 100.0f
-#define FAN_BASE_PERCENT 35.0f
+#define FAN_BASE_PERCENT 45.0f
 #define FAN_ASSUMED_AMBIENT_C 35.0f
 #define FAN_COOLING_EXPONENT 0.50f
-#define FAN_KI_PERCENT_PER_C 0.25f
-#define FAN_INTEGRAL_LIMIT 20.0f
-#define FAN_STEP_DOWN_PERCENT 8.0f
-#define FAN_STEP_UP_PERCENT 8.0f
-#define FAN_UPDATE_DEADBAND_PERCENT 5.0f
-#define FAN_AUTO_OFF_BELOW_TARGET_C 3.0f
+#define FAN_KI_PERCENT_PER_C 0.35f
+#define FAN_INTEGRAL_LIMIT 25.0f
+#define FAN_STEP_DOWN_PERCENT 4.0f
+#define FAN_STEP_UP_PERCENT 12.0f
+#define FAN_UPDATE_DEADBAND_PERCENT 3.0f
+#define FAN_STEP_DOWN_COOL_MARGIN_C 2.0f
+#define FAN_STEP_DOWN_TARGET_GAP_PERCENT 8.0f
+#define FAN_AUTO_OFF_COOL_MARGIN_C 5.0f
 #define FAN_AUTO_START_BLIP_MS 300
 #define FAN_PWM_CLEAN_STEP_SETTING 4
-#define FAN_FULL_SPEED_TEMP_C 66.0f
+#define FAN_FULL_SPEED_ABOVE_TARGET_C 2.0f
+#define FAN_FULL_SPEED_MAX_TEMP_C 66.0f
 #define FAN_FAILSAFE_ON_TEMP_C 67.0f
 #define FAN_FAILSAFE_OFF_TEMP_C 60.0f
 #define FAN_VR_FAILSAFE_ON_TEMP_C 100.0f
@@ -50,6 +54,7 @@
 static const char *TAG = "bitaxe_fan";
 static float g_fan_integral;
 static uint8_t g_fan_cool_samples;
+static uint8_t g_fan_auto_off_samples;
 static float g_fan_temp_window[FAN_TEMP_WINDOW_SAMPLES];
 static uint8_t g_fan_temp_window_count;
 static uint8_t g_fan_temp_window_next;
@@ -251,6 +256,7 @@ static bool fan_unstick_pulse(GlobalState *state, float raw_asic_temp_c)
     g_fan_unstick_active = true;
     g_fan_integral = fmaxf(0.0f, g_fan_integral);
     g_fan_cool_samples = 0;
+    g_fan_auto_off_samples = 0;
 
     for (uint8_t i = 0; i < FAN_UNSTICK_MAX_PULSES_PER_TICK; ++i) {
         ESP_LOGW(TAG, "fan unstuck pulse %u: 0%% then 100%%", (unsigned)(i + 1));
@@ -323,6 +329,7 @@ static bool fan_apply_override(GlobalState *state, float current_percent)
         ESP_LOGI(TAG, "fan override %.0f%%", override_percent);
     }
     g_fan_cool_samples = 0;
+    g_fan_auto_off_samples = 0;
     g_fan_integral = 0.0f;
     g_fan_unstick_active = false;
     g_fan_auto_off_active = false;
@@ -358,6 +365,7 @@ esp_err_t bitaxe_fan_force_max_if_allowed(GlobalState *state, const char *reason
         state->POWER_MANAGEMENT_MODULE.fan_perc = FAN_MAX_PERCENT;
     }
     g_fan_cool_samples = 0;
+    g_fan_auto_off_samples = 0;
     g_fan_integral = 0.0f;
     g_fan_failsafe_latched = true;
     g_fan_auto_off_active = false;
@@ -398,6 +406,7 @@ esp_err_t bitaxe_fan_init(GlobalState *state)
     g_emc2101_ready = true;
     state->POWER_MANAGEMENT_MODULE.fan_perc = FAN_MAX_PERCENT;
     g_fan_cool_samples = 0;
+    g_fan_auto_off_samples = 0;
     g_fan_integral = 0.0f;
     g_fan_unstick_active = false;
     g_fan_auto_off_active = false;
@@ -455,12 +464,15 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
     }
 
     const float target_temp_c = fan_target_temp_c();
+    const float full_speed_temp_c =
+        fminf(FAN_FULL_SPEED_MAX_TEMP_C, target_temp_c + FAN_FULL_SPEED_ABOVE_TARGET_C);
     float target_percent = FAN_MAX_PERCENT;
     if (g_fan_failsafe_latched) {
         g_fan_cool_samples = 0;
+        g_fan_auto_off_samples = 0;
         g_fan_integral = fmaxf(0.0f, g_fan_integral);
         g_fan_auto_off_active = false;
-    } else if (control_temp_c < FAN_FULL_SPEED_TEMP_C) {
+    } else if (control_temp_c < full_speed_temp_c) {
         float error_c = control_temp_c - target_temp_c;
         if (fabsf(error_c) < FAN_TEMP_DEADBAND_C) {
             error_c = 0.0f;
@@ -468,10 +480,14 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
         }
         g_fan_integral += error_c * FAN_KI_PERCENT_PER_C;
         g_fan_integral = fminf(FAN_INTEGRAL_LIMIT, fmaxf(-FAN_INTEGRAL_LIMIT, g_fan_integral));
+        if (control_temp_c >= (target_temp_c - FAN_STEP_DOWN_COOL_MARGIN_C)) {
+            g_fan_integral = fmaxf(0.0f, g_fan_integral);
+        }
         target_percent = fan_model_percent(control_temp_c, target_temp_c) + g_fan_integral;
-        target_percent = fminf(FAN_MAX_PERCENT, fmaxf(FAN_AUTO_MIN_PERCENT, target_percent));
     }
+    const float requested_percent = target_percent;
     target_percent = fan_clean_percent(target_percent);
+    const float auto_min_percent = fan_clean_percent(FAN_AUTO_MIN_PERCENT);
 
     if (g_fan_failsafe_latched) {
         if (fan_no_fan_selected()) {
@@ -496,28 +512,40 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
 
     if (config->fan_override_enabled) {
         g_fan_auto_off_active = false;
+        g_fan_auto_off_samples = 0;
         fan_apply_override(state, current_percent);
         return;
     }
 
-    if (control_temp_c < (target_temp_c - FAN_AUTO_OFF_BELOW_TARGET_C) ||
-        (g_fan_auto_off_active && control_temp_c < target_temp_c)) {
-        g_fan_cool_samples = 0;
-        g_fan_integral = fminf(0.0f, g_fan_integral);
-        g_fan_auto_off_active = true;
-        if (current_percent <= 0.5f) {
+    if (requested_percent < FAN_AUTO_MIN_PERCENT) {
+        if (control_temp_c <= (target_temp_c - FAN_AUTO_OFF_COOL_MARGIN_C) &&
+            current_percent <= (auto_min_percent + 0.5f)) {
+            if (g_fan_auto_off_samples < FAN_COOL_SAMPLES_BEFORE_AUTO_OFF) {
+                ++g_fan_auto_off_samples;
+                return;
+            }
+            g_fan_cool_samples = 0;
+            g_fan_integral = fminf(0.0f, g_fan_integral);
+            g_fan_auto_off_active = true;
+            if (current_percent <= 0.5f) {
+                return;
+            }
+            esp_err_t err = emc2101_set_fan_percent(0.0f);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "fan auto-off update failed: %s", esp_err_to_name(err));
+                return;
+            }
+            state->POWER_MANAGEMENT_MODULE.fan_perc = 0.0f;
+            m45_log_buffer_append_verbose(
+                TAG,
+                "fan auto raw %.1f C ctl %.1f C: %.0f%% -> 0%% target %.0f%% below %.0f%% min",
+                raw_asic_temp_c, control_temp_c, current_percent, requested_percent,
+                FAN_AUTO_MIN_PERCENT);
             return;
         }
-        esp_err_t err = emc2101_set_fan_percent(0.0f);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "fan auto-off update failed: %s", esp_err_to_name(err));
-            return;
-        }
-        state->POWER_MANAGEMENT_MODULE.fan_perc = 0.0f;
-        m45_log_buffer_append_verbose(
-            TAG, "fan auto raw %.1f C ctl %.1f C: %.0f%% -> 0%% below %.0f C target",
-            raw_asic_temp_c, control_temp_c, current_percent, target_temp_c);
-        return;
+        g_fan_auto_off_samples = 0;
+    } else {
+        g_fan_auto_off_samples = 0;
     }
     const bool was_auto_off = g_fan_auto_off_active;
     g_fan_auto_off_active = false;
@@ -534,8 +562,11 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
 
     if (target_percent > current_percent) {
         g_fan_cool_samples = 0;
+        g_fan_auto_off_samples = 0;
     } else if (target_percent < current_percent) {
-        if (control_temp_c > (target_temp_c + FAN_TEMP_DEADBAND_C)) {
+        if (control_temp_c >= (target_temp_c - FAN_STEP_DOWN_COOL_MARGIN_C) ||
+            (current_percent - target_percent) < FAN_STEP_DOWN_TARGET_GAP_PERCENT) {
+            g_fan_cool_samples = 0;
             g_fan_integral = fmaxf(0.0f, g_fan_integral);
             return;
         }
@@ -545,6 +576,7 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
         }
     } else {
         g_fan_cool_samples = 0;
+        g_fan_auto_off_samples = 0;
     }
 
     if (fabsf(target_percent - current_percent) < FAN_UPDATE_DEADBAND_PERCENT) {

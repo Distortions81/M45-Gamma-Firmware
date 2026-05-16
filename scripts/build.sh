@@ -14,7 +14,7 @@ UPDATE_ITEMS=()
 usage() {
     cat <<'EOF'
 Usage:
-  scripts/configure.sh [options]
+  scripts/build.sh [options]
 
 Wi-Fi:
   --wifi-ssid SSID
@@ -45,7 +45,7 @@ Actions:
   --idf-export PATH
 
 Example:
-  scripts/configure.sh \
+  scripts/build.sh \
     --wifi-ssid "My WiFi" \
     --wifi-pass "secret" \
     --pool-host public-pool.io \
