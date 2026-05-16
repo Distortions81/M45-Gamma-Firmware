@@ -1,5 +1,7 @@
 # M45 Bitaxe Speed Alpha
 
+![M45 Bitaxe Speed Alpha web dashboard](docs/screenshots/dashboard.png)
+
 Alpha firmware for Bitaxe Gamma 602 speed testing, overclocking, and local
 telemetry.
 
