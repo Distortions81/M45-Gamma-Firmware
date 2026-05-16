@@ -108,18 +108,19 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 ## Source Stats
 
-Tracked source and build-configuration files total `13,604` lines across `48`
+Tracked source and build-configuration files total `13,828` lines across `51`
 files:
 
 | Area | Files | Lines |
 | --- | ---: | ---: |
-| C source | 19 | 10,854 |
-| C headers | 20 | 828 |
-| Web HTML | 2 | 1,055 |
+| C source | 19 | 11,013 |
+| C headers | 20 | 830 |
+| Web HTML | 4 | 852 |
+| Web CSS | 1 | 257 |
 | Shell scripts | 1 | 400 |
-| Python tools | 2 | 254 |
+| Python tools | 2 | 260 |
 | Kconfig | 1 | 105 |
-| CMake | 2 | 83 |
+| CMake | 2 | 86 |
 | ESP-IDF defaults | 1 | 25 |
 
 These counts exclude README, license, notice, Git, and generated build files.

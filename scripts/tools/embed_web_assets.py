@@ -9,6 +9,7 @@ from pathlib import Path
 _PRE_TOKEN_RE = re.compile(r"(<(?:pre|textarea)\b[^>]*>.*?</(?:pre|textarea)>)", re.IGNORECASE | re.DOTALL)
 _STYLE_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.IGNORECASE | re.DOTALL)
 _SCRIPT_RE = re.compile(r"(<script\b[^>]*>)(.*?)(</script>)", re.IGNORECASE | re.DOTALL)
+_PARTIAL_HTML_FILES = {"modals.html", "toolbar.html"}
 _STATIC_HTML_PAGES = {"root.html", "setup.html"}
 
 
@@ -119,12 +120,12 @@ def expand_placeholders(text: str, values: dict[str, str], depth: int = 0) -> st
     return re.sub(r"\{\{([A-Z0-9_]+)\}\}", replace, text)
 
 
-def placeholder_values(assets: dict[str, str]) -> dict[str, str]:
-    values = {}
-    for name, text in assets.items():
-        stem = re.sub(r"[^A-Za-z0-9]+", "_", Path(name).stem).strip("_").upper()
-        values[stem] = text
-    return values
+def static_html_values(assets: dict[str, str], styles_link: str) -> dict[str, str]:
+    return {
+        "GLOBAL_STYLES": styles_link,
+        "MODALS": assets.get("modals.html", ""),
+        "TOOLBAR": assets.get("toolbar.html", ""),
+    }
 
 
 def main() -> int:
@@ -147,6 +148,9 @@ def main() -> int:
             continue
         minified_assets[relative.name] = minify_asset(relative, file_path.read_text(encoding="utf-8"))
 
+    styles_text = minified_assets.get("styles.css", "")
+    styles_link = '<link rel="stylesheet" href="/styles.css">'
+
     lines = [
         "#pragma once",
         "",
@@ -167,14 +171,16 @@ def main() -> int:
             continue
         text = minified_assets[relative.name]
         if relative.name == "styles.css":
-            compressed = gzip_bytes(text.encode("utf-8"))
+            compressed = gzip_bytes(styles_text.encode("utf-8"))
             lines.append(f"static const unsigned char {name}_GZ[] =")
             lines.append(c_byte_array(compressed) + ";")
             lines.append(f"static const unsigned int {name}_GZ_LEN = {len(compressed)}U;")
             lines.append("")
             continue
+        if relative.name in _PARTIAL_HTML_FILES:
+            continue
         if relative.name in _STATIC_HTML_PAGES:
-            text = expand_placeholders(text, placeholder_values(minified_assets))
+            text = expand_placeholders(text, static_html_values(minified_assets, styles_link))
             if "{{" not in text:
                 compressed = gzip_bytes(text.encode("utf-8"))
                 lines.append(f"static const unsigned char {name}_GZ[] =")

@@ -45,7 +45,7 @@
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 2200
 #define M45_DEVICE_NAME "M45-Bitaxe"
-#define HTTP_URI_HANDLER_SLOTS 32
+#define HTTP_URI_HANDLER_SLOTS 34
 #define LOG_CAPTURE_TIMEOUT_MS 5000
 #define SETUP_SCAN_MAX_APS 12
 #define SETUP_AP_CHANNEL 6
@@ -301,13 +301,19 @@ static void set_no_store_headers(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Expires", "0");
 }
 
-static esp_err_t send_gzip_page(httpd_req_t *req, const unsigned char *data, unsigned int len)
+static esp_err_t send_gzip_asset(httpd_req_t *req, const char *type,
+                                 const unsigned char *data, unsigned int len)
 {
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_type(req, type);
     set_no_store_headers(req);
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
     return httpd_resp_send(req, (const char *)data, (ssize_t)len);
+}
+
+static esp_err_t send_gzip_page(httpd_req_t *req, const unsigned char *data, unsigned int len)
+{
+    return send_gzip_asset(req, "text/html; charset=utf-8", data, len);
 }
 
 static esp_err_t send_page_token_reload(httpd_req_t *req)
@@ -822,6 +828,12 @@ static esp_err_t root_handler(httpd_req_t *req)
 static esp_err_t setup_page_handler(httpd_req_t *req)
 {
     return send_gzip_page(req, WEB_SETUP_HTML_GZ, WEB_SETUP_HTML_GZ_LEN);
+}
+
+static esp_err_t styles_css_handler(httpd_req_t *req)
+{
+    return send_gzip_asset(req, "text/css; charset=utf-8", WEB_STYLES_CSS_GZ,
+                           WEB_STYLES_CSS_GZ_LEN);
 }
 
 static esp_err_t captive_portal_redirect_handler(httpd_req_t *req)
@@ -1840,6 +1852,7 @@ static esp_err_t start_http_server(void)
         {.uri = "/overclock", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/calibration", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/logs", .method = HTTP_GET, .handler = root_handler},
+        {.uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_handler},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler},
         {.uri = "/api/setup", .method = HTTP_GET, .handler = setup_get_handler},
         {.uri = "/api/setup", .method = HTTP_POST, .handler = setup_post_handler},

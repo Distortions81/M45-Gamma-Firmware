@@ -1,59 +1,6 @@
 <!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'>
-<title>M45 Setup</title><style>
-:root{color-scheme:dark;--bg:#101214;--panel:#191d21;--line:#2d353d;
---text:#eef2f3;--muted:#9aa6ad;--ok:#42d392;--bad:#ff6b6b;--blue:#6bb7ff}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);
-font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
-main{width:min(620px,100%);margin:0 auto;padding:24px 16px 32px}
-header{padding:8px 0 16px}h1{margin:0;font-size:28px;line-height:1.1}
-.meta,.hint{color:var(--muted)}.meta{margin:8px 0 0}.hint{font-size:12px;margin-top:6px}
-.panel{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:14px;margin-top:12px}
-.label,label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:720}
-summary{color:var(--muted);font-size:12px;font-weight:720}
-details.panel{padding:0}details>summary{padding:14px;cursor:pointer;list-style:none}
-details>summary::-webkit-details-marker{display:none}details>summary:after{content:'+';float:right;color:var(--text)}
-details[open]>summary:after{content:'-'}details .inside{border-top:1px solid var(--line);padding:14px}
-.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}
-.field.full{grid-column:1/-1}
-input{width:100%;height:38px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);
-padding:0 10px;font:inherit}input:focus{outline:1px solid var(--blue);border-color:var(--blue)}
-input:disabled{opacity:.55;cursor:not-allowed}
-input[type=checkbox]{width:18px;height:18px;padding:0;margin:0;flex:0 0 auto}
-.toggle-row{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-start;gap:8px;padding:4px 0}
-.hidden{display:none!important}
-.scan-panel{min-height:250px;padding:18px}.scan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
-.scan-head>div{min-width:0;flex:1}
-.scan-title{font-size:18px;font-weight:760;color:var(--text)}
-.scan-status{display:block;margin:12px 0 0;padding:12px;border:1px solid var(--line);border-radius:8px;
-background:#111518;color:var(--text);font-size:15px;font-weight:720}
-.scan-status.scanning:before{content:'';display:inline-block;width:10px;height:10px;margin-right:8px;
-border:2px solid var(--muted);border-top-color:var(--blue);border-radius:50%;vertical-align:-2px;animation:spin .8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.scan-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
-.networks{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:8px}.networks li{display:flex;
-align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:8px;background:#111518;
-padding:10px;cursor:pointer}.networks li.selected{border-color:var(--blue);background:#162333}
-.networks li.empty{cursor:default;min-height:54px}.networks strong{display:block;color:var(--text);font-size:15px}
-.network-meta{color:var(--muted);font-size:12px;margin-top:2px}
-.signal{text-align:right;min-width:94px}.signal strong{font-size:12px}.signal small{display:block;color:var(--muted);font-size:11px;line-height:1.25;margin-top:3px}
-.signal-bars{display:flex;justify-content:flex-end;align-items:flex-end;gap:2px;height:18px;margin-bottom:4px}
-.signal-bars span{display:block;width:6px;border-radius:2px;background:var(--line)}
-.signal-bars span:nth-child(1){height:5px}.signal-bars span:nth-child(2){height:8px}.signal-bars span:nth-child(3){height:11px}
-.signal-bars span:nth-child(4){height:14px}.signal-bars span:nth-child(5){height:17px}
-.signal-excellent strong{color:#42d392}.signal-good strong{color:#6fd980}.signal-fair strong{color:#f4c45f}
-.signal-weak strong{color:#ff9f43}.signal-poor strong{color:var(--bad)}
-.signal-excellent .signal-bars span:nth-child(-n+5){background:#42d392}.signal-good .signal-bars span:nth-child(-n+4){background:#6fd980}
-.signal-fair .signal-bars span:nth-child(-n+3){background:#f4c45f}.signal-weak .signal-bars span:nth-child(-n+2){background:#ff9f43}
-.signal-poor .signal-bars span:nth-child(1){background:var(--bad)}
-.network-more{margin-top:8px}.network-more summary{padding:8px 0}
-.actions{display:flex;align-items:center;gap:12px;margin-top:14px}.primary{height:38px;border:1px solid #4d8dcc;
-border-radius:6px;background:#1f5f99;color:var(--text);padding:0 14px;cursor:pointer;font:inherit}
-.secondary{height:32px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);
-padding:0 12px;cursor:pointer;font:inherit}.primary:disabled,.secondary:disabled{opacity:.6;cursor:not-allowed}
-.status{color:var(--muted)}.status.ok{color:var(--ok);font-weight:720}
-.status.err{color:var(--bad);font-weight:720}@media(max-width:620px){.fields{grid-template-columns:1fr}.scan-head{display:grid}.scan-head .secondary{width:100%}}
-</style></head><body><main><header><h1>M45 Setup</h1><p id=setup-meta class=meta>Loading...</p></header>
+<title>M45 Setup</title>{{GLOBAL_STYLES}}</head><body class=setup-page><main><header><h1>M45 Setup</h1><p id=setup-meta class=meta>Loading...</p></header>
 <form id=setup-form novalidate><section class='panel scan-panel'><div class=scan-head><div>
 <div class=scan-title>Wi-Fi networks</div><span id=scan-status class='scan-status scanning'>Scanning for networks...</span>
 </div><button id=scan class=secondary type=button>Rescan for Wi-Fi</button></div><ul id=networks class=networks></ul>

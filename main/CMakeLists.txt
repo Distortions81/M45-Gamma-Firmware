@@ -12,8 +12,11 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
     )
 
     set(WEB_ASSET_FILES
+        "${CMAKE_CURRENT_LIST_DIR}/../web/modals.html"
         "${CMAKE_CURRENT_LIST_DIR}/../web/root.html"
         "${CMAKE_CURRENT_LIST_DIR}/../web/setup.html"
+        "${CMAKE_CURRENT_LIST_DIR}/../web/styles.css"
+        "${CMAKE_CURRENT_LIST_DIR}/../web/toolbar.html"
     )
     add_custom_command(
         OUTPUT "${WEB_ASSETS_HEADER}"
