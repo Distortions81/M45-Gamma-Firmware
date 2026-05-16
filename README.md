@@ -1,4 +1,4 @@
-# M45 Bitaxe Speed Alpha
+# M45 Gamma Firmware [ALPHA]
 
 ![M45 Bitaxe Speed Alpha web dashboard](docs/screenshots/dashboard.png)
 
