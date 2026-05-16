@@ -1,0 +1,105 @@
+menu "M45 Firmware"
+
+    config GPIO_BUTTON_BOOT
+        int "Boot button GPIO pin"
+        default 0
+        help
+            GPIO pin connected to the BOOT button.
+
+    config M45_BITAXE_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+
+    config M45_BITAXE_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config M45_BITAXE_HOSTNAME
+        string "mDNS/DHCP hostname"
+        default "M45-Firmware"
+
+    config M45_BITAXE_STRATUM_HOST
+        string "Stratum host"
+        default "public-pool.io"
+
+    config M45_BITAXE_STRATUM_PORT
+        int "Stratum port"
+        range 1 65535
+        default 3333
+
+    config M45_BITAXE_STRATUM_BACKUP_HOST
+        string "Backup Stratum host"
+        default "public-pool.io"
+
+    config M45_BITAXE_STRATUM_BACKUP_PORT
+        int "Backup Stratum port"
+        range 1 65535
+        default 3333
+
+    config M45_BITAXE_STRATUM_USER
+        string "Stratum user"
+        default "3B86bWqfjdQeLEr8nkeeWU6ygksc2K7MoL.0M45"
+
+    config M45_BITAXE_STRATUM_PASS
+        string "Stratum password"
+        default "x"
+
+    config M45_BITAXE_STRATUM_SUGGESTED_DIFFICULTY
+        int "Suggested Stratum difficulty"
+        range 1 65535
+        default 1000
+
+    config M45_BITAXE_STRATUM_DIFFICULTY_AUTO
+        bool "Auto Stratum difficulty"
+        default y
+
+    config M45_BITAXE_ASIC_FREQUENCY_MHZ
+        int "BM1370 frequency MHz"
+        range 350 1500
+        default 525
+
+    config M45_BITAXE_ASIC_VOLTAGE_MV
+        int "BM1370 core voltage mV"
+        range 500 1370
+        default 1150
+
+    config M45_BITAXE_OLED_ENABLE
+        bool "Enable SSD1306 OLED"
+        default y
+
+    config M45_BITAXE_OLED_WIDTH
+        int "OLED width"
+        range 64 128
+        default 128
+
+    config M45_BITAXE_OLED_HEIGHT
+        int "OLED height"
+        range 32 64
+        default 32
+
+    config M45_BITAXE_OLED_I2C_ADDR
+        hex "OLED I2C address"
+        default 0x3c
+
+    config M45_BITAXE_OLED_SLEEP_MINUTES
+        int "OLED auto-sleep timeout minutes"
+        range 0 1440
+        default 15
+        help
+            Turn the OLED off after this many minutes without display button
+            input. Set to 0 to disable auto-sleep. Block-found alerts wake the
+            display automatically.
+
+    config GPIO_ASIC_RESET
+        int "ASIC reset GPIO"
+        default 1
+
+    config GPIO_I2C_SDA
+        int "Bitaxe I2C SDA GPIO"
+        default 47
+
+    config GPIO_I2C_SCL
+        int "Bitaxe I2C SCL GPIO"
+        default 48
+
+endmenu

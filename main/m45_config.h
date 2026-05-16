@@ -1,0 +1,66 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "esp_err.h"
+
+#define M45_WIFI_SSID_MAX 32
+#define M45_WIFI_PASSWORD_MAX 64
+#define M45_HOSTNAME_MAX 32
+#define M45_POOL_HOST_MAX 96
+#define M45_POOL_IP_MAX 45
+#define M45_POOL_USER_MAX 128
+#define M45_POOL_PASS_MAX 64
+#define M45_WALLET_ADDRESS_MAX 128
+#define M45_FAN_TARGET_DEFAULT_C 62
+#define M45_FAN_TARGET_MIN_C 35
+#define M45_FAN_TARGET_MAX_C 66
+#define M45_DISPLAY_SLEEP_DEFAULT_MINUTES 0
+#define M45_DISPLAY_SLEEP_MAX_MINUTES UINT16_MAX
+
+typedef struct {
+    char wifi_ssid[M45_WIFI_SSID_MAX + 1];
+    char wifi_password[M45_WIFI_PASSWORD_MAX + 1];
+    char hostname[M45_HOSTNAME_MAX + 1];
+    char pool_host[M45_POOL_HOST_MAX + 1];
+    char backup_pool_host[M45_POOL_HOST_MAX + 1];
+    char pool_ip[M45_POOL_IP_MAX + 1];
+    char backup_pool_ip[M45_POOL_IP_MAX + 1];
+    char pool_user[M45_POOL_USER_MAX + 1];
+    char pool_pass[M45_POOL_PASS_MAX + 1];
+    uint16_t pool_port;
+    uint16_t backup_pool_port;
+    uint16_t pool_difficulty;
+    bool pool_difficulty_auto;
+    bool overclock_enabled;
+    uint16_t asic_frequency_mhz;
+    uint16_t asic_voltage_mv;
+    int16_t overclock_voltage_offset_mv;
+    bool fan_override_enabled;
+    uint16_t fan_override_percent;
+    bool fan_target_override_enabled;
+    uint16_t fan_target_temp_c;
+    bool display_screensaver_enabled;
+    uint16_t display_sleep_minutes;
+    double best_diff;
+} m45_config_t;
+
+esp_err_t m45_config_load(void);
+esp_err_t m45_config_save(const m45_config_t *config);
+esp_err_t m45_config_set_runtime(const m45_config_t *config);
+esp_err_t m45_config_factory_reset(void);
+esp_err_t m45_config_set_pool_ip_cache(bool backup_pool, const char *expected_host,
+                                       const char *ip);
+esp_err_t m45_config_set_best_diff(double best_diff);
+esp_err_t m45_config_reset_best_diff(void);
+const m45_config_t *m45_config_get(void);
+uint16_t m45_config_auto_pool_difficulty(uint16_t frequency_mhz,
+                                         uint16_t small_core_count,
+                                         uint8_t asic_count);
+uint16_t m45_config_effective_pool_difficulty(const m45_config_t *config,
+                                              uint16_t small_core_count,
+                                              uint8_t asic_count);
+uint16_t m45_config_effective_asic_frequency_mhz(const m45_config_t *config);
+uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config);
+uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config);
