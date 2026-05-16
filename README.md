@@ -35,6 +35,8 @@ Other boards may need source changes before they are safe to run.
   or ASIC setup.
 - Provides a local web UI for live stats, settings, fan control, pool setup,
   and overclock presets.
+- Shows OLED QR codes for first-time Wi-Fi setup and quick local web dashboard
+  access.
 - Applies web setting changes at runtime without requiring a reboot.
 - Keeps overclocking disabled by default; when disabled, saved high clock or
   voltage values are ignored and stock settings are enforced.
@@ -86,6 +88,15 @@ Flash after building:
 ```sh
 scripts/configure.sh --flash /dev/ttyUSB0
 ```
+
+On first boot without saved Wi-Fi credentials, the device starts a temporary
+setup AP named `m-XXXX` and shows a Wi-Fi QR code on the OLED. Scan it to join
+the setup network, then open the displayed setup address to configure Wi-Fi and
+mining pool settings.
+
+After the device joins Wi-Fi, the OLED shows the local web dashboard address and
+an HTTP QR code. Scan that QR code from a phone or tablet on the same network to
+open the web panel directly.
 
 You can also use standard ESP-IDF commands:
 
