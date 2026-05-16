@@ -1,0 +1,145 @@
+<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content='width=device-width,initial-scale=1'>
+<title>M45 Setup</title><style>
+:root{color-scheme:dark;--bg:#101214;--panel:#191d21;--line:#2d353d;
+--text:#eef2f3;--muted:#9aa6ad;--ok:#42d392;--bad:#ff6b6b;--blue:#6bb7ff}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);
+font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+main{width:min(620px,100%);margin:0 auto;padding:24px 16px 32px}
+header{padding:8px 0 16px}h1{margin:0;font-size:28px;line-height:1.1}
+.meta,.hint{color:var(--muted)}.meta{margin:8px 0 0}.hint{font-size:12px;margin-top:6px}
+.panel{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:14px;margin-top:12px}
+.label,label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:720}
+summary{color:var(--muted);font-size:12px;font-weight:720}
+details.panel{padding:0}details>summary{padding:14px;cursor:pointer;list-style:none}
+details>summary::-webkit-details-marker{display:none}details>summary:after{content:'+';float:right;color:var(--text)}
+details[open]>summary:after{content:'-'}details .inside{border-top:1px solid var(--line);padding:14px}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}
+.field.full{grid-column:1/-1}
+input{width:100%;height:38px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);
+padding:0 10px;font:inherit}input:focus{outline:1px solid var(--blue);border-color:var(--blue)}
+input:disabled{opacity:.55;cursor:not-allowed}
+input[type=checkbox]{width:18px;height:18px;padding:0;margin:0;flex:0 0 auto}
+.toggle-row{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-start;gap:8px;padding:4px 0}
+.hidden{display:none!important}
+.scan-panel{min-height:250px;padding:18px}.scan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.scan-head>div{min-width:0;flex:1}
+.scan-title{font-size:18px;font-weight:760;color:var(--text)}
+.scan-status{display:block;margin:12px 0 0;padding:12px;border:1px solid var(--line);border-radius:8px;
+background:#111518;color:var(--text);font-size:15px;font-weight:720}
+.scan-status.scanning:before{content:'';display:inline-block;width:10px;height:10px;margin-right:8px;
+border:2px solid var(--muted);border-top-color:var(--blue);border-radius:50%;vertical-align:-2px;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.scan-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
+.networks{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:8px}.networks li{display:flex;
+align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:8px;background:#111518;
+padding:10px;cursor:pointer}.networks li.selected{border-color:var(--blue);background:#162333}
+.networks li.empty{cursor:default;min-height:54px}.networks strong{display:block;color:var(--text);font-size:15px}
+.network-meta{color:var(--muted);font-size:12px;margin-top:2px}
+.signal{text-align:right;min-width:94px}.signal strong{font-size:12px}.signal small{display:block;color:var(--muted);font-size:11px;line-height:1.25;margin-top:3px}
+.signal-bars{display:flex;justify-content:flex-end;align-items:flex-end;gap:2px;height:18px;margin-bottom:4px}
+.signal-bars span{display:block;width:6px;border-radius:2px;background:var(--line)}
+.signal-bars span:nth-child(1){height:5px}.signal-bars span:nth-child(2){height:8px}.signal-bars span:nth-child(3){height:11px}
+.signal-bars span:nth-child(4){height:14px}.signal-bars span:nth-child(5){height:17px}
+.signal-excellent strong{color:#42d392}.signal-good strong{color:#6fd980}.signal-fair strong{color:#f4c45f}
+.signal-weak strong{color:#ff9f43}.signal-poor strong{color:var(--bad)}
+.signal-excellent .signal-bars span:nth-child(-n+5){background:#42d392}.signal-good .signal-bars span:nth-child(-n+4){background:#6fd980}
+.signal-fair .signal-bars span:nth-child(-n+3){background:#f4c45f}.signal-weak .signal-bars span:nth-child(-n+2){background:#ff9f43}
+.signal-poor .signal-bars span:nth-child(1){background:var(--bad)}
+.network-more{margin-top:8px}.network-more summary{padding:8px 0}
+.actions{display:flex;align-items:center;gap:12px;margin-top:14px}.primary{height:38px;border:1px solid #4d8dcc;
+border-radius:6px;background:#1f5f99;color:var(--text);padding:0 14px;cursor:pointer;font:inherit}
+.secondary{height:32px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);
+padding:0 12px;cursor:pointer;font:inherit}.primary:disabled,.secondary:disabled{opacity:.6;cursor:not-allowed}
+.status{color:var(--muted)}.status.ok{color:var(--ok);font-weight:720}
+.status.err{color:var(--bad);font-weight:720}@media(max-width:620px){.fields{grid-template-columns:1fr}.scan-head{display:grid}.scan-head .secondary{width:100%}}
+</style></head><body><main><header><h1>M45 Setup</h1><p id=setup-meta class=meta>Loading...</p></header>
+<form id=setup-form novalidate><section class='panel scan-panel'><div class=scan-head><div>
+<div class=scan-title>Wi-Fi networks</div><span id=scan-status class='scan-status scanning'>Scanning for networks...</span>
+</div><button id=scan class=secondary type=button>Rescan for Wi-Fi</button></div><ul id=networks class=networks></ul>
+<div id=network-more></div></section><section class=panel><div class=fields>
+<div class='field full'><label for=wifi-ssid>Network name</label><input id=wifi-ssid autocomplete=ssid required></div>
+<div class='field full'><label for=wifi-pass>Password</label><input id=wifi-pass type=password autocomplete=current-password></div>
+</div><div class=hint>Choose a network above, or enter one manually.</div>
+<div class=actions><button id=wifi-test class=secondary type=button disabled>Test Connection</button>
+<button id=save class=primary type=submit disabled>Save &amp; Reboot</button>
+<span id=status class=status></span></div></section><details class=panel><summary>Mining Pool</summary><div class=inside><div class=fields>
+<div class=field><label for=pool-host>Pool</label><input id=pool-host required></div>
+<div class=field><label for=pool-port>Port</label><input id=pool-port type=number min=1 max=65535 required></div>
+<div class='field full'><label for=pool-user>Username (wallet.workername)</label><input id=pool-user required></div>
+<div class=field><label for=pool-pass>Password (Optional, normally just 'x')</label><input id=pool-pass type=password></div>
+<label class=toggle-row for=pool-diff-auto><input id=pool-diff-auto type=checkbox checked><span class=label>Auto Difficulty</span></label>
+<div id=pool-diff-field class=field><label for=pool-diff>Difficulty</label><input id=pool-diff type=number min=1 max=65535></div>
+</div><div class=hint>Wallet is taken from Username before the first dot.</div></div></details>
+</form></main><script>
+const $=id=>document.getElementById(id);
+const set=(id,v)=>{$(id).value=v==null?'':v};
+let wifiTestPassed=false,wifiTestKey='',wifiTesting=false;
+function wifiKey(){return `${$('wifi-ssid').value.trim()}\n${$('wifi-pass').value}`}
+function wifiReady(){return wifiTestPassed&&wifiTestKey===wifiKey()}
+function setSaveEnabled(){const has=!!$('wifi-ssid').value.trim();$('wifi-test').disabled=wifiTesting||!has;$('save').disabled=!has||!wifiReady()}
+function status(t,c=''){$('status').className=`status ${c}`.trim();$('status').textContent=t}
+function resetWifiTest(msg=''){wifiTestPassed=false;wifiTestKey='';setSaveEnabled();if(msg)status(msg)}
+async function testWifi(){const ssid=$('wifi-ssid').value.trim();if(!ssid){resetWifiTest('Enter a network name.');return}
+const btn=$('wifi-test');wifiTesting=true;wifiTestPassed=false;setSaveEnabled();btn.textContent='Testing...';status('testing Wi-Fi...');
+try{const body={wifi_ssid:ssid,wifi_password:$('wifi-pass').value};
+const r=await fetch('/api/wifi-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+wifiTestPassed=true;wifiTestKey=wifiKey();status(`Wi-Fi test passed${j.ip?` (${j.ip})`:''}.`,'ok')}
+catch(e){wifiTestPassed=false;wifiTestKey='';status(`Wi-Fi test failed: ${e.message||e}`,'err')}
+finally{wifiTesting=false;btn.textContent='Test Connection';setSaveEnabled()}}
+function syncPoolDiff(){const input=$('pool-diff'),auto=$('pool-diff-auto').checked;
+if(auto){if(input.value)input.dataset.manual=input.value;input.value=input.dataset.auto||input.value||1000}
+else if(input.dataset.manual)input.value=input.dataset.manual;input.disabled=auto}
+function scrollToControl(el){try{el.scrollIntoView({block:'center',behavior:'smooth'})}catch(_){el.scrollIntoView()}}
+function selectNetwork(n,li){document.querySelectorAll('.networks li').forEach(x=>x.classList.remove('selected'));
+li.classList.add('selected');set('wifi-ssid',n.ssid);if(n.auth_open)$('wifi-pass').value='';
+resetWifiTest(n.auth_open?'Test connection before saving.':'Enter password, then test connection.');const target=n.auth_open?$('wifi-test'):$('wifi-pass');
+scrollToControl(target);setTimeout(()=>{target.focus();if(target.select)target.select()},150)}
+function signalInfo(rssi){rssi=Number(rssi);if(rssi>=-50)return{label:'Excellent',cls:'signal-excellent'};
+if(rssi>=-60)return{label:'Good',cls:'signal-good'};if(rssi>=-70)return{label:'Fair',cls:'signal-fair'};
+if(rssi>=-80)return{label:'Weak',cls:'signal-weak'};return{label:'Poor',cls:'signal-poor'}}
+function networkItem(n){const li=document.createElement('li');const left=document.createElement('div');
+const name=document.createElement('strong');name.textContent=n.ssid||'(hidden network)';const meta=document.createElement('div');
+meta.className='network-meta';meta.textContent=`${n.auth_open?'No password':'Password required'} | Channel ${n.channel}`;
+left.appendChild(name);left.appendChild(meta);const info=signalInfo(n.rssi);const right=document.createElement('div');
+right.className=`signal ${info.cls}`;const bars=document.createElement('div');bars.className='signal-bars';
+for(let i=0;i<5;i++)bars.appendChild(document.createElement('span'));const label=document.createElement('strong');
+label.textContent=info.label;const detail=document.createElement('small');detail.textContent=`${n.rssi} dBm`;
+right.appendChild(bars);right.appendChild(label);right.appendChild(detail);li.appendChild(left);li.appendChild(right);
+li.onclick=()=>{if(n.ssid)selectNetwork(n,li)};return li}
+function renderNetworks(items){const list=$('networks');const more=$('network-more');list.innerHTML='';more.innerHTML='';
+if(!items.length){const li=document.createElement('li');li.className='empty';li.textContent='No networks found.';list.appendChild(li);return}
+items.slice(0,3).forEach(n=>list.appendChild(networkItem(n)));const hidden=items.slice(3);if(hidden.length){
+const fold=document.createElement('details');fold.className='network-more';const summary=document.createElement('summary');
+summary.textContent=`Show ${hidden.length} more`;const extra=document.createElement('ul');extra.className='networks';
+hidden.forEach(n=>extra.appendChild(networkItem(n)));fold.appendChild(summary);fold.appendChild(extra);more.appendChild(fold)}}
+async function scan(){const b=$('scan'),s=$('scan-status'),list=$('networks'),more=$('network-more');b.disabled=true;
+s.className='scan-status scanning';s.textContent='Scanning for networks...';list.innerHTML='<li class=empty>Looking for nearby Wi-Fi networks...</li>';more.innerHTML='';
+try{const r=await fetch('/api/networks',{cache:'no-store'});const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);
+const networks=j.networks||[];renderNetworks(networks);const visible=Math.min(networks.length,3);
+s.className='scan-status';s.textContent=networks.length?`Showing ${visible} of ${networks.length} networks.`:'No networks found.'}
+catch(e){s.className='scan-status';s.textContent=`Scan failed. Try again. ${e.message||e}`}finally{b.disabled=false}}
+async function load(){try{const r=await fetch('/api/setup',{cache:'no-store'});
+const s=await r.json();if(!r.ok)throw new Error(s.error||r.status);
+$('setup-meta').textContent=`Network ${s.setup_ssid||'--'} | Address ${s.setup_ip||'--'}`;
+set('wifi-ssid',s.wifi_ssid);set('pool-host',s.pool_host);set('pool-port',s.pool_port||3333);
+set('pool-user',s.pool_user);$('pool-diff').dataset.manual=s.pool_difficulty||1000;
+$('pool-diff').dataset.auto=s.pool_suggested_difficulty||s.pool_difficulty||1000;set('pool-diff',s.pool_difficulty||1000);
+$('pool-diff-auto').checked=s.pool_difficulty_auto!==false;syncPoolDiff();
+$('pool-pass').placeholder=s.pool_password_set?'Saved password':'x';
+resetWifiTest(s.wifi_ssid?'Test connection before saving.':'');scan()}
+catch(e){status(`setup load failed: ${e.message||e}`,'err')}}
+$('setup-form').onsubmit=async e=>{e.preventDefault();if(!wifiReady()){status('test Wi-Fi connection before saving','err');setSaveEnabled();return}
+const btn=$('save');btn.disabled=true;status('saving...');
+const body={wifi_ssid:$('wifi-ssid').value.trim(),wifi_password:$('wifi-pass').value,
+pool_host:$('pool-host').value.trim(),pool_port:Number($('pool-port').value),
+pool_user:$('pool-user').value.trim(),pool_difficulty_auto:$('pool-diff-auto').checked,
+pool_difficulty:Number(($('pool-diff-auto').checked?$('pool-diff').dataset.manual:$('pool-diff').value)||1000)};
+if($('pool-pass').value)body.pool_pass=$('pool-pass').value;
+try{const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+status('Saved, rebooting...','ok');btn.textContent='Rebooting...'}catch(e){setSaveEnabled();status(`save failed: ${e.message||e}`,'err')}};
+$('scan').onclick=scan;$('wifi-test').onclick=testWifi;$('wifi-ssid').oninput=()=>resetWifiTest('Test connection before saving.');
+$('wifi-pass').oninput=()=>resetWifiTest($('wifi-ssid').value.trim()?'Test connection before saving.':'');$('pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.value};
+$('pool-diff-auto').onchange=syncPoolDiff;syncPoolDiff();load();</script></body></html>

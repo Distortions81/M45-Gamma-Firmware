@@ -1,4 +1,5 @@
 set(BUILD_INFO_HEADER "${CMAKE_CURRENT_BINARY_DIR}/build_info.h")
+set(WEB_ASSETS_HEADER "${CMAKE_CURRENT_BINARY_DIR}/web_assets.h")
 set(APP_SCRIPT_TOOLS_DIR "${CMAKE_CURRENT_LIST_DIR}/../scripts/tools")
 
 if(NOT CMAKE_SCRIPT_MODE_FILE)
@@ -9,6 +10,19 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         DEPENDS "${APP_SCRIPT_TOOLS_DIR}/generate_build_info.py"
         VERBATIM
     )
+
+    set(WEB_ASSET_FILES
+        "${CMAKE_CURRENT_LIST_DIR}/../web/root.html"
+        "${CMAKE_CURRENT_LIST_DIR}/../web/setup.html"
+    )
+    add_custom_command(
+        OUTPUT "${WEB_ASSETS_HEADER}"
+        COMMAND "${PYTHON}" "${APP_SCRIPT_TOOLS_DIR}/embed_web_assets.py"
+                "${WEB_ASSETS_HEADER}" "${CMAKE_CURRENT_LIST_DIR}/../web" ${WEB_ASSET_FILES}
+        DEPENDS "${APP_SCRIPT_TOOLS_DIR}/embed_web_assets.py" ${WEB_ASSET_FILES}
+        VERBATIM
+    )
+    add_custom_target(web_assets DEPENDS "${WEB_ASSETS_HEADER}")
 endif()
 
 idf_component_register(
@@ -31,7 +45,6 @@ idf_component_register(
         "tps546.c"
         "utils.c"
         "wifi_http.c"
-        "wifi_http_ui.c"
         "third_party/qrcode/qrcode.c"
     INCLUDE_DIRS
         "."
@@ -57,7 +70,7 @@ idf_component_register(
 )
 
 if(NOT CMAKE_SCRIPT_MODE_FILE)
-    add_dependencies(${COMPONENT_LIB} build_info)
+    add_dependencies(${COMPONENT_LIB} build_info web_assets)
 endif()
 
 option(M45_ASIC_LOSS_METRICS "Build ASIC feed/RX loss instrumentation into status JSON" OFF)

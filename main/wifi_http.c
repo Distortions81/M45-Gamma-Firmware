@@ -1,6 +1,5 @@
 #include "wifi_http.h"
 
-#include "wifi_http_ui.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +29,7 @@
 #include "m45_log_buffer.h"
 #include "m45_oled.h"
 #include "stratum_minimal.h"
+#include "web_assets.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
@@ -38,15 +38,14 @@
 #define WIFI_MAX_RETRY 8
 #define WIFI_TEST_TIMEOUT_MS 15000
 #define WIFI_TEST_RESTORE_DELAY_MS 250
-#define PAGE_TOKEN_PLACEHOLDER "__PAGE_TOKEN__"
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 9000
+#define STATUS_JSON_BUFFER_SIZE 9200
 #else
-#define STATUS_JSON_BUFFER_SIZE 7600
+#define STATUS_JSON_BUFFER_SIZE 7800
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 2200
 #define M45_DEVICE_NAME "M45-Bitaxe"
-#define HTTP_URI_HANDLER_SLOTS 30
+#define HTTP_URI_HANDLER_SLOTS 32
 #define LOG_CAPTURE_TIMEOUT_MS 5000
 #define SETUP_SCAN_MAX_APS 12
 #define SETUP_AP_CHANNEL 6
@@ -302,14 +301,13 @@ static void set_no_store_headers(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Expires", "0");
 }
 
-static bool send_root_chunk(httpd_req_t *req, const char *data, size_t len)
+static esp_err_t send_gzip_page(httpd_req_t *req, const unsigned char *data, unsigned int len)
 {
-    const esp_err_t err = httpd_resp_send_chunk(req, data, len);
-    if (err != ESP_OK) {
-        ESP_LOGD(TAG, "root page client closed during send: %s", esp_err_to_name(err));
-        return false;
-    }
-    return true;
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    set_no_store_headers(req);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+    return httpd_resp_send(req, (const char *)data, (ssize_t)len);
 }
 
 static esp_err_t send_page_token_reload(httpd_req_t *req)
@@ -815,38 +813,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 static esp_err_t root_handler(httpd_req_t *req)
 {
     if (g_setup_ap_active) {
-        httpd_resp_set_type(req, "text/html");
-        set_no_store_headers(req);
-        return httpd_resp_send(req, WIFI_HTTP_SETUP_HTML, HTTPD_RESP_USE_STRLEN);
+        return send_gzip_page(req, WEB_SETUP_HTML_GZ, WEB_SETUP_HTML_GZ_LEN);
     }
 
-    httpd_resp_set_type(req, "text/html");
-    set_no_store_headers(req);
-
-    const char *token = strstr(WIFI_HTTP_ROOT_HTML, PAGE_TOKEN_PLACEHOLDER);
-    if (token == NULL) {
-        (void)send_root_chunk(req, WIFI_HTTP_ROOT_HTML, strlen(WIFI_HTTP_ROOT_HTML));
-        (void)send_root_chunk(req, NULL, 0);
-        return ESP_OK;
-    }
-
-    const size_t prefix_len = (size_t)(token - WIFI_HTTP_ROOT_HTML);
-    const char *suffix = token + strlen(PAGE_TOKEN_PLACEHOLDER);
-    if (!send_root_chunk(req, WIFI_HTTP_ROOT_HTML, prefix_len) ||
-        !send_root_chunk(req, g_page_token, strlen(g_page_token)) ||
-        !send_root_chunk(req, suffix, strlen(suffix))) {
-        return ESP_OK;
-    }
-
-    (void)send_root_chunk(req, NULL, 0);
-    return ESP_OK;
+    return send_gzip_page(req, WEB_ROOT_HTML_GZ, WEB_ROOT_HTML_GZ_LEN);
 }
 
 static esp_err_t setup_page_handler(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
-    set_no_store_headers(req);
-    return httpd_resp_send(req, WIFI_HTTP_SETUP_HTML, HTTPD_RESP_USE_STRLEN);
+    return send_gzip_page(req, WEB_SETUP_HTML_GZ, WEB_SETUP_HTML_GZ_LEN);
 }
 
 static esp_err_t captive_portal_redirect_handler(httpd_req_t *req)
@@ -900,7 +875,10 @@ static esp_err_t status_handler(httpd_req_t *req)
     const uint16_t suggested_pool_difficulty =
         suggested_pool_difficulty_for_config(config);
     const char *hardware_status = bitaxe_gamma602_status();
-    const bool booting = !g_state->ASIC_initalized && !g_state->SYSTEM_MODULE.hardware_fault &&
+    const bool asic_power_enabled = bitaxe_gamma602_asic_power_enabled();
+    const bool asic_power_off = !asic_power_enabled && strcmp(hardware_status, "asic off") == 0;
+    const bool booting = !asic_power_off && !g_state->ASIC_initalized &&
+                         !g_state->SYSTEM_MODULE.hardware_fault &&
                          strcmp(hardware_status, "ready") != 0;
     const bool fan_auto = !config->fan_override_enabled;
     const uint16_t asic_temp_target_c =
@@ -981,6 +959,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"setup_ssid\":\"%s\","
                  "\"setup_ip\":\"%s\","
                  "\"asic_ready\":%s,"
+                 "\"asic_power_enabled\":%s,"
                  "\"model\":\"%s %s\","
                  "\"asic_model\":\"%s\","
                  "\"asic_chips\":%u,"
@@ -1057,6 +1036,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  hardware_status, booting ? "true" : "false",
                  g_setup_ap_active ? "true" : "false", g_setup_ssid, g_setup_ip,
                  g_state->ASIC_initalized ? "true" : "false",
+                 asic_power_enabled ? "true" : "false",
                  g_state->DEVICE_CONFIG.family.name, g_state->DEVICE_CONFIG.board_version,
                  g_state->DEVICE_CONFIG.family.asic.name, chip_count,
                  g_state->POWER_MANAGEMENT_MODULE.actual_frequency,
@@ -1673,6 +1653,66 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true,\"runtime\":true}");
 }
 
+static esp_err_t asic_power_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 128) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"invalid size\"}");
+    }
+
+    char *body = calloc(1, req->content_len + 1);
+    if (body == NULL) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+
+    int received = 0;
+    while (received < req->content_len) {
+        const int ret = httpd_req_recv(req, body + received, req->content_len - received);
+        if (ret <= 0) {
+            free(body);
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    body[received] = '\0';
+
+    cJSON *json = cJSON_Parse(body);
+    free(body);
+    if (json == NULL) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"bad json\"}");
+    }
+
+    bool enabled = false;
+    const bool ok = json_get_bool(json, "enabled", &enabled);
+    cJSON_Delete(json);
+    if (!ok) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"invalid power state\"}");
+    }
+
+    esp_err_t err = bitaxe_gamma602_set_asic_power(g_state, enabled);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_INVALID_STATE) {
+            httpd_resp_set_status(req, "409 Conflict");
+            return httpd_resp_sendstr(req, "{\"error\":\"hardware fault\"}");
+        }
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char error_body[80];
+        snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
+        return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
+    }
+
+    char response[96];
+    snprintf(response, sizeof(response),
+             "{\"ok\":true,\"asic_power_enabled\":%s,\"asic_ready\":%s}",
+             bitaxe_gamma602_asic_power_enabled() ? "true" : "false",
+             g_state->ASIC_initalized ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t settings_factory_reset_handler(httpd_req_t *req)
 {
     esp_err_t err = m45_config_factory_reset();
@@ -1808,6 +1848,7 @@ static esp_err_t start_http_server(void)
         {.uri = "/api/settings", .method = HTTP_GET, .handler = settings_get_handler},
         {.uri = "/api/settings", .method = HTTP_POST, .handler = settings_post_handler},
         {.uri = "/api/runtime-tune", .method = HTTP_POST, .handler = runtime_tune_handler},
+        {.uri = "/api/asic-power", .method = HTTP_POST, .handler = asic_power_handler},
         {.uri = "/api/settings/factory-reset", .method = HTTP_POST,
          .handler = settings_factory_reset_handler},
         {.uri = "/api/best-diff/reset", .method = HTTP_POST,

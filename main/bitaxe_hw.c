@@ -121,6 +121,23 @@ static void store_power_snapshot(const TPS546_StatusSnapshot *snapshot)
     portEXIT_CRITICAL(&g_power_snapshot_lock);
 }
 
+static void clear_power_snapshot(void)
+{
+    portENTER_CRITICAL(&g_power_snapshot_lock);
+    memset(&g_power_snapshot, 0, sizeof(g_power_snapshot));
+    portEXIT_CRITICAL(&g_power_snapshot_lock);
+}
+
+static void reset_power_average_window(void)
+{
+    memset(g_power_vin_window, 0, sizeof(g_power_vin_window));
+    memset(g_power_vout_window, 0, sizeof(g_power_vout_window));
+    memset(g_power_iout_window, 0, sizeof(g_power_iout_window));
+    memset(g_power_temp_window, 0, sizeof(g_power_temp_window));
+    g_power_window_count = 0;
+    g_power_window_next = 0;
+}
+
 static void update_power_state(GlobalState *state, const TPS546_StatusSnapshot *snapshot)
 {
     state->POWER_MANAGEMENT_MODULE.voltage = snapshot->read_vin;
@@ -174,6 +191,7 @@ static esp_err_t shutdown_regulator(GlobalState *state, const char *reason)
     set_hw_status("regulator shutdown");
     g_regulator_enabled = false;
     g_chip_count = 0;
+    clear_power_snapshot();
 
     esp_err_t reset_err = asic_reset_level(0);
     if (reset_err != ESP_OK) {
@@ -515,6 +533,8 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
     }
 
     ESP_RETURN_ON_ERROR(bitaxe_gamma602_start_fan(state), TAG, "fan init failed");
+    clear_power_snapshot();
+    reset_power_average_window();
 
     set_hw_status("regulator init");
     ESP_LOGI(TAG, "initializing TPS546 for Gamma 602");
@@ -573,6 +593,66 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
              g_chip_count, state->POWER_MANAGEMENT_MODULE.actual_frequency,
              m45_config_effective_asic_voltage_mv(m45_config_get()));
     return ESP_OK;
+}
+
+bool bitaxe_gamma602_asic_power_enabled(void)
+{
+    return g_regulator_enabled;
+}
+
+esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled)
+{
+    if (state == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (enabled) {
+        if (state->SYSTEM_MODULE.hardware_fault) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (state->ASIC_initalized && g_regulator_enabled) {
+            return ESP_OK;
+        }
+        bitaxe_gamma602_clear_jobs(state);
+        const esp_err_t err = bitaxe_gamma602_start_hardware(state);
+        if (err != ESP_OK && !state->SYSTEM_MODULE.hardware_fault) {
+            set_hw_status("asic off");
+        }
+        return err;
+    }
+
+    ESP_LOGI(TAG, "manual ASIC power off requested");
+    set_hw_status("asic off");
+    g_regulator_enabled = false;
+    g_chip_count = 0;
+    state->ASIC_initalized = false;
+    if (!state->SYSTEM_MODULE.hardware_fault) {
+        state->SYSTEM_MODULE.power_fault = 0;
+    }
+    bitaxe_gamma602_clear_jobs(state);
+    clear_power_snapshot();
+    state->POWER_MANAGEMENT_MODULE.power = 0.0f;
+    state->POWER_MANAGEMENT_MODULE.current = 0.0f;
+    state->POWER_MANAGEMENT_MODULE.chip_temp_avg = 0.0f;
+
+    esp_err_t err = asic_reset_level(0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to hold ASIC reset low during manual power off: %s",
+                 esp_err_to_name(err));
+    }
+
+    if (g_tps546_ready) {
+        const esp_err_t vout_err = TPS546_set_vout(0.0f);
+        if (vout_err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to turn TPS546 output off manually: %s",
+                     esp_err_to_name(vout_err));
+            if (err == ESP_OK) {
+                err = vout_err;
+            }
+        }
+    }
+
+    return err;
 }
 
 esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequency_mhz)
