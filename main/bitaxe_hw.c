@@ -33,6 +33,7 @@
 #define TPS546_OUTPUT_SETTLE_POLL_MS 10
 #define TPS546_OUTPUT_SETTLE_TIMEOUT_MS 150
 #define ASIC_FREQUENCY_SETTLE_MS 50
+#define ASIC_TEMP_VOLTAGE_UPDATE_DEADBAND_MV 5
 #define TPS546_MAX_SAFE_TEMP_C 98
 #define TPS546_EXPECTED_MAX_TEMP_C 85.0f
 #define ASIC_TEMP_SHUTDOWN_C 69.0f
@@ -52,12 +53,17 @@ static bool g_i2c_ready = false;
 static bool g_power_monitor_started = false;
 static bool g_regulator_enabled = false;
 static bool g_tps546_ready = false;
+static uint16_t g_commanded_voltage_mv = 0;
 static portMUX_TYPE g_power_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
 static bitaxe_gamma602_power_snapshot_t g_power_snapshot = {0};
 static float g_power_vin_window[TPS546_POWER_WINDOW_SAMPLES];
 static float g_power_vout_window[TPS546_POWER_WINDOW_SAMPLES];
 static float g_power_iout_window[TPS546_POWER_WINDOW_SAMPLES];
 static float g_power_temp_window[TPS546_POWER_WINDOW_SAMPLES];
+static float g_power_vin_sum;
+static float g_power_vout_sum;
+static float g_power_iout_sum;
+static float g_power_temp_sum;
 static uint8_t g_power_window_count;
 static uint8_t g_power_window_next;
 
@@ -134,6 +140,10 @@ static void reset_power_average_window(void)
     memset(g_power_vout_window, 0, sizeof(g_power_vout_window));
     memset(g_power_iout_window, 0, sizeof(g_power_iout_window));
     memset(g_power_temp_window, 0, sizeof(g_power_temp_window));
+    g_power_vin_sum = 0.0f;
+    g_power_vout_sum = 0.0f;
+    g_power_iout_sum = 0.0f;
+    g_power_temp_sum = 0.0f;
     g_power_window_count = 0;
     g_power_window_next = 0;
 }
@@ -149,31 +159,32 @@ static void update_power_state(GlobalState *state, const TPS546_StatusSnapshot *
 
 static void update_power_average(const TPS546_StatusSnapshot *raw, TPS546_StatusSnapshot *averaged)
 {
-    g_power_vin_window[g_power_window_next] = raw->read_vin;
-    g_power_vout_window[g_power_window_next] = raw->read_vout;
-    g_power_iout_window[g_power_window_next] = raw->read_iout;
-    g_power_temp_window[g_power_window_next] = (float)raw->read_temp1;
-    g_power_window_next = (g_power_window_next + 1) % TPS546_POWER_WINDOW_SAMPLES;
-    if (g_power_window_count < TPS546_POWER_WINDOW_SAMPLES) {
+    const uint8_t index = g_power_window_next;
+    if (g_power_window_count == TPS546_POWER_WINDOW_SAMPLES) {
+        g_power_vin_sum -= g_power_vin_window[index];
+        g_power_vout_sum -= g_power_vout_window[index];
+        g_power_iout_sum -= g_power_iout_window[index];
+        g_power_temp_sum -= g_power_temp_window[index];
+    } else {
         ++g_power_window_count;
     }
 
-    float vin_total = 0.0f;
-    float vout_total = 0.0f;
-    float iout_total = 0.0f;
-    float temp_total = 0.0f;
-    for (uint8_t i = 0; i < g_power_window_count; ++i) {
-        vin_total += g_power_vin_window[i];
-        vout_total += g_power_vout_window[i];
-        iout_total += g_power_iout_window[i];
-        temp_total += g_power_temp_window[i];
-    }
+    g_power_vin_window[index] = raw->read_vin;
+    g_power_vout_window[index] = raw->read_vout;
+    g_power_iout_window[index] = raw->read_iout;
+    g_power_temp_window[index] = (float)raw->read_temp1;
+    g_power_vin_sum += g_power_vin_window[index];
+    g_power_vout_sum += g_power_vout_window[index];
+    g_power_iout_sum += g_power_iout_window[index];
+    g_power_temp_sum += g_power_temp_window[index];
+    g_power_window_next = (uint8_t)((index + 1) % TPS546_POWER_WINDOW_SAMPLES);
 
+    const float samples = (float)g_power_window_count;
     *averaged = *raw;
-    averaged->read_vin = vin_total / (float)g_power_window_count;
-    averaged->read_vout = vout_total / (float)g_power_window_count;
-    averaged->read_iout = iout_total / (float)g_power_window_count;
-    averaged->read_temp1 = (int)lroundf(temp_total / (float)g_power_window_count);
+    averaged->read_vin = g_power_vin_sum / samples;
+    averaged->read_vout = g_power_vout_sum / samples;
+    averaged->read_iout = g_power_iout_sum / samples;
+    averaged->read_temp1 = (int)lroundf(g_power_temp_sum / samples);
 }
 
 static esp_err_t capture_power_snapshot(TPS546_StatusSnapshot *snapshot)
@@ -190,6 +201,7 @@ static esp_err_t shutdown_regulator(GlobalState *state, const char *reason)
     bitaxe_fan_force_max_if_allowed(state, reason);
     set_hw_status("regulator shutdown");
     g_regulator_enabled = false;
+    g_commanded_voltage_mv = 0;
     g_chip_count = 0;
     clear_power_snapshot();
 
@@ -316,6 +328,47 @@ static esp_err_t update_asic_temperature(GlobalState *state, float *temp_c)
     return ESP_OK;
 }
 
+static bool read_asic_temp_for_voltage(GlobalState *state, float *temp_c)
+{
+    if (temp_c == NULL) {
+        return false;
+    }
+
+    float raw_temp_c = 0.0f;
+    if (bitaxe_fan_read_asic_temp_c(&raw_temp_c) != ESP_OK) {
+        *temp_c = 0.0f;
+        return false;
+    }
+
+    raw_temp_c += (float)state->DEVICE_CONFIG.temp_offset;
+    if (!isfinite(raw_temp_c) || raw_temp_c <= 0.0f) {
+        *temp_c = 0.0f;
+        return false;
+    }
+
+    state->POWER_MANAGEMENT_MODULE.chip_temp_avg = raw_temp_c;
+    *temp_c = raw_temp_c;
+    return true;
+}
+
+static esp_err_t apply_temperature_voltage_compensation(GlobalState *state, float asic_temp_c)
+{
+    const uint16_t target_mv =
+        m45_config_effective_asic_voltage_mv_for_temp(m45_config_get(), asic_temp_c);
+    if (g_commanded_voltage_mv == 0) {
+        g_commanded_voltage_mv = m45_config_effective_asic_voltage_mv(m45_config_get());
+    }
+
+    const int delta_mv = (int)target_mv - (int)g_commanded_voltage_mv;
+    if (abs(delta_mv) < ASIC_TEMP_VOLTAGE_UPDATE_DEADBAND_MV) {
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "temperature voltage compensation %.1f C: %u -> %u mV", asic_temp_c,
+             g_commanded_voltage_mv, target_mv);
+    return bitaxe_gamma602_set_voltage_mv(state, target_mv);
+}
+
 static esp_err_t validate_regulator_startup_snapshot(GlobalState *state,
                                                      const TPS546_StatusSnapshot *snapshot,
                                                      bool *settled,
@@ -419,7 +472,10 @@ static void power_monitor_task(void *arg)
 
         if (validate_regulator_safety(
                 state, &snapshot,
-                m45_config_effective_asic_voltage_mv(m45_config_get()) / 1000.0f,
+                (g_commanded_voltage_mv > 0
+                     ? g_commanded_voltage_mv
+                     : m45_config_effective_asic_voltage_mv(m45_config_get())) /
+                    1000.0f,
                 false) != ESP_OK) {
             continue;
         }
@@ -432,6 +488,10 @@ static void power_monitor_task(void *arg)
         if (state->ASIC_initalized) {
             float asic_temp_c = 0.0f;
             if (update_asic_temperature(state, &asic_temp_c) != ESP_OK) {
+                continue;
+            }
+            if (apply_temperature_voltage_compensation(state, asic_temp_c) != ESP_OK) {
+                ESP_LOGW(TAG, "temperature voltage compensation update failed");
                 continue;
             }
             bitaxe_fan_update_auto(state, asic_temp_c, bitaxe_fan_control_temp_c(asic_temp_c),
@@ -544,13 +604,27 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
     }
     g_tps546_ready = true;
 
-    const uint16_t voltage_mv = m45_config_effective_asic_voltage_mv(m45_config_get());
+    const m45_config_t *config = m45_config_get();
+    float asic_temp_c = 0.0f;
+    const bool have_startup_temp = read_asic_temp_for_voltage(state, &asic_temp_c);
+    const uint16_t voltage_mv =
+        m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
+    const uint16_t compensation_mv =
+        m45_config_asic_voltage_temp_compensation_mv(config, asic_temp_c);
     const float volts = voltage_mv / 1000.0f;
+    if (compensation_mv > 0) {
+        ESP_LOGI(TAG, "ASIC temp %.1f C adds %u mV voltage compensation", asic_temp_c,
+                 compensation_mv);
+    } else if (config->overclock_enabled && config->asic_voltage_temp_compensation_enabled &&
+               !have_startup_temp) {
+        ESP_LOGW(TAG, "ASIC temp unavailable; starting without voltage compensation");
+    }
     ESP_LOGI(TAG, "setting BM1370 core voltage to %.3f V", volts);
     ret = TPS546_set_vout(volts);
     if (ret != ESP_OK) {
         return shutdown_and_return(state, "TPS546 set voltage failed", ret);
     }
+    g_commanded_voltage_mv = voltage_mv;
     g_regulator_enabled = true;
     ret = wait_for_regulator_after_enable(state, volts);
     if (ret != ESP_OK) {
@@ -591,7 +665,7 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
 
     ESP_LOGI(TAG, "Gamma 602 ASIC ready: %u chip(s), %.0f MHz, %d mV",
              g_chip_count, state->POWER_MANAGEMENT_MODULE.actual_frequency,
-             m45_config_effective_asic_voltage_mv(m45_config_get()));
+             g_commanded_voltage_mv);
     return ESP_OK;
 }
 
@@ -624,6 +698,7 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled)
     ESP_LOGI(TAG, "manual ASIC power off requested");
     set_hw_status("asic off");
     g_regulator_enabled = false;
+    g_commanded_voltage_mv = 0;
     g_chip_count = 0;
     state->ASIC_initalized = false;
     if (!state->SYSTEM_MODULE.hardware_fault) {
@@ -657,7 +732,8 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled)
 
 esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequency_mhz)
 {
-    if (state == NULL || frequency_mhz < 350 || frequency_mhz > 1500) {
+    if (state == NULL || frequency_mhz < M45_ASIC_FREQUENCY_MIN_MHZ ||
+        frequency_mhz > M45_ASIC_FREQUENCY_MAX_MHZ) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -690,6 +766,7 @@ esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv
     const float volts = voltage_mv / 1000.0f;
     state->POWER_MANAGEMENT_MODULE.core_voltage = volts;
     if (!g_tps546_ready || !g_regulator_enabled) {
+        g_commanded_voltage_mv = voltage_mv;
         return ESP_OK;
     }
 
@@ -699,6 +776,7 @@ esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv
         ret = wait_for_regulator_after_enable(state, volts);
     }
     if (ret == ESP_OK) {
+        g_commanded_voltage_mv = voltage_mv;
         set_hw_status("ready");
     }
     return ret;
@@ -755,7 +833,10 @@ void bitaxe_gamma602_safety_limits(bitaxe_gamma602_safety_limits_t *limits)
         return;
     }
 
-    const float target_vout = m45_config_effective_asic_voltage_mv(m45_config_get()) / 1000.0f;
+    const uint16_t target_voltage_mv =
+        g_commanded_voltage_mv > 0 ? g_commanded_voltage_mv
+                                   : m45_config_effective_asic_voltage_mv(m45_config_get());
+    const float target_vout = target_voltage_mv / 1000.0f;
     const float expected_vout_min =
         fmaxf(ASIC_VOLTAGE_MIN_SHUTDOWN_VOLTS, target_vout - TPS546_VOUT_TOLERANCE_VOLTS);
     const float expected_vout_max =

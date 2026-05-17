@@ -18,6 +18,8 @@
 #define M45_FAN_TARGET_MAX_C 66
 #define M45_DISPLAY_SLEEP_DEFAULT_MINUTES 0
 #define M45_DISPLAY_SLEEP_MAX_MINUTES UINT16_MAX
+#define M45_ASIC_FREQUENCY_MIN_MHZ 1
+#define M45_ASIC_FREQUENCY_MAX_MHZ 1500
 
 typedef struct {
     char wifi_ssid[M45_WIFI_SSID_MAX + 1];
@@ -37,6 +39,7 @@ typedef struct {
     uint16_t asic_frequency_mhz;
     uint16_t asic_voltage_mv;
     int16_t overclock_voltage_offset_mv;
+    bool asic_voltage_temp_compensation_enabled;
     bool fan_override_enabled;
     uint16_t fan_override_percent;
     bool fan_target_override_enabled;
@@ -63,4 +66,8 @@ uint16_t m45_config_effective_pool_difficulty(const m45_config_t *config,
                                               uint8_t asic_count);
 uint16_t m45_config_effective_asic_frequency_mhz(const m45_config_t *config);
 uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config);
+uint16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
+                                                      float asic_temp_c);
+uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *config,
+                                                       float asic_temp_c);
 uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config);

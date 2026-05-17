@@ -46,6 +46,15 @@ static const register_type_t REGISTER_MAP[] = {
     [0x8C] = REGISTER_TOTAL_COUNT
 };
 
+static const uint8_t HASHRATE_REGISTER_ADDRESSES[] = {
+    0x4C,
+    0x88,
+    0x89,
+    0x8A,
+    0x8B,
+    0x8C,
+};
+
 static register_type_t register_type_for_address(uint8_t register_address)
 {
     if (register_address >= sizeof(REGISTER_MAP) / sizeof(REGISTER_MAP[0])) {
@@ -311,7 +320,9 @@ uint8_t BM1370_init(void * pvParameters)
     //ramp up the hash frequency
     do_frequency_transition(GLOBAL_STATE, BM1370_send_hash_frequency);
 
-    float frequency = GLOBAL_STATE->POWER_MANAGEMENT_MODULE.frequency_value;
+    float frequency = GLOBAL_STATE->POWER_MANAGEMENT_MODULE.actual_frequency > 0.0f
+                          ? GLOBAL_STATE->POWER_MANAGEMENT_MODULE.actual_frequency
+                          : GLOBAL_STATE->POWER_MANAGEMENT_MODULE.frequency_value;
     int cores = GLOBAL_STATE->DEVICE_CONFIG.family.asic.core_count;
 
     BM1370_set_nonce_space(BM1370_NONCE_SPACE_PERCENT, frequency, asic_count, cores);
@@ -452,11 +463,12 @@ task_result * BM1370_process_work(void * pvParameters)
 
 void BM1370_read_registers(void)
 {
-    int size = sizeof(REGISTER_MAP) / sizeof(REGISTER_MAP[0]);
-    for (int reg = 0; reg < size; reg++) {
-        if (REGISTER_MAP[reg] != REGISTER_INVALID) {
-            _send_BM1370((TYPE_CMD | GROUP_ALL | CMD_READ), (uint8_t[]){0x00, reg}, 2, BM1370_SERIALTX_DEBUG);
-            vTaskDelay(1 / portTICK_PERIOD_MS);
-        }
+    const size_t count =
+        sizeof(HASHRATE_REGISTER_ADDRESSES) / sizeof(HASHRATE_REGISTER_ADDRESSES[0]);
+    for (size_t i = 0; i < count; ++i) {
+        const uint8_t reg = HASHRATE_REGISTER_ADDRESSES[i];
+        _send_BM1370((TYPE_CMD | GROUP_ALL | CMD_READ), (uint8_t[]){0x00, reg}, 2,
+                     BM1370_SERIALTX_DEBUG);
+        vTaskDelay(1 / portTICK_PERIOD_MS);
     }
 }

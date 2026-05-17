@@ -14,6 +14,11 @@
 #define M45_HOSTNAME_SUFFIX_CHARS (1 + M45_HOSTNAME_SUFFIX_HEX_CHARS)
 #define M45_FAN_OVERRIDE_MIN_PERCENT 35
 #define M45_FAN_OVERRIDE_MAX_PERCENT 100
+#define M45_ASIC_VOLTAGE_MIN_MV 500
+#define M45_ASIC_VOLTAGE_MAX_MV 1370
+#define M45_ASIC_TEMP_COMP_REFERENCE_C 60.0f
+#define M45_ASIC_TEMP_COMP_MV_PER_C 5.5f
+#define M45_ASIC_TEMP_COMP_STEP_MV 5.0f
 #define M45_OC_VOLTAGE_OFFSET_MIN_MV (-500)
 #define M45_OC_VOLTAGE_OFFSET_MAX_MV 300
 #define M45_STRATUM_TARGET_SHARES_PER_MIN 14ULL
@@ -86,6 +91,7 @@ static void set_defaults(m45_config_t *config)
     config->asic_frequency_mhz = CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
     config->asic_voltage_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
     config->overclock_voltage_offset_mv = 0;
+    config->asic_voltage_temp_compensation_enabled = true;
     config->fan_override_enabled = false;
     config->fan_override_percent = M45_FAN_OVERRIDE_MAX_PERCENT;
     config->fan_target_override_enabled = false;
@@ -166,10 +172,12 @@ static void sanitize_config(m45_config_t *config)
     }
     config->pool_ip[M45_POOL_IP_MAX] = '\0';
     config->backup_pool_ip[M45_POOL_IP_MAX] = '\0';
-    if (config->asic_frequency_mhz < 350 || config->asic_frequency_mhz > 1500) {
+    if (config->asic_frequency_mhz < M45_ASIC_FREQUENCY_MIN_MHZ ||
+        config->asic_frequency_mhz > M45_ASIC_FREQUENCY_MAX_MHZ) {
         config->asic_frequency_mhz = CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
     }
-    if (config->asic_voltage_mv < 500 || config->asic_voltage_mv > 1370) {
+    if (config->asic_voltage_mv < M45_ASIC_VOLTAGE_MIN_MV ||
+        config->asic_voltage_mv > M45_ASIC_VOLTAGE_MAX_MV) {
         config->asic_voltage_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
     }
     if (config->overclock_voltage_offset_mv < M45_OC_VOLTAGE_OFFSET_MIN_MV ||
@@ -226,6 +234,11 @@ esp_err_t m45_config_load(void)
     load_u16(nvs, "asic_freq", &g_config.asic_frequency_mhz);
     load_u16(nvs, "asic_mv", &g_config.asic_voltage_mv);
     load_i16(nvs, "oc_mv_off", &g_config.overclock_voltage_offset_mv);
+    uint8_t asic_voltage_temp_compensation_enabled =
+        g_config.asic_voltage_temp_compensation_enabled ? 1 : 0;
+    load_u8(nvs, "asic_mv_tc", &asic_voltage_temp_compensation_enabled);
+    g_config.asic_voltage_temp_compensation_enabled =
+        asic_voltage_temp_compensation_enabled != 0;
     uint8_t fan_override_enabled = g_config.fan_override_enabled ? 1 : 0;
     load_u8(nvs, "fan_ovr_en", &fan_override_enabled);
     g_config.fan_override_enabled = fan_override_enabled != 0;
@@ -313,6 +326,10 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_i16(nvs, "oc_mv_off", clean.overclock_voltage_offset_mv);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "asic_mv_tc",
+                         clean.asic_voltage_temp_compensation_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "fan_ovr_en", clean.fan_override_enabled ? 1 : 0);
@@ -515,6 +532,47 @@ uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config)
     const m45_config_t *active = config != NULL ? config : &g_config;
     return active->overclock_enabled ? active->asic_voltage_mv
                                      : CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
+}
+
+uint16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
+                                                      float asic_temp_c)
+{
+    const m45_config_t *active = config != NULL ? config : &g_config;
+    if (!active->overclock_enabled || !active->asic_voltage_temp_compensation_enabled ||
+        !isfinite(asic_temp_c) || asic_temp_c <= 0.0f ||
+        asic_temp_c >= M45_ASIC_TEMP_COMP_REFERENCE_C) {
+        return 0;
+    }
+
+    const float extra_mv =
+        (M45_ASIC_TEMP_COMP_REFERENCE_C - asic_temp_c) * M45_ASIC_TEMP_COMP_MV_PER_C;
+    const float stepped_mv =
+        lroundf(extra_mv / M45_ASIC_TEMP_COMP_STEP_MV) * M45_ASIC_TEMP_COMP_STEP_MV;
+    const uint16_t base_mv = m45_config_effective_asic_voltage_mv(active);
+    if (base_mv >= M45_ASIC_VOLTAGE_MAX_MV) {
+        return 0;
+    }
+    const uint32_t available_mv = M45_ASIC_VOLTAGE_MAX_MV - base_mv;
+    if (stepped_mv > (float)available_mv) {
+        return (uint16_t)available_mv;
+    }
+    return stepped_mv > UINT16_MAX ? UINT16_MAX : (uint16_t)stepped_mv;
+}
+
+uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *config,
+                                                       float asic_temp_c)
+{
+    const uint16_t base_mv = m45_config_effective_asic_voltage_mv(config);
+    const uint16_t compensation_mv =
+        m45_config_asic_voltage_temp_compensation_mv(config, asic_temp_c);
+    const uint32_t target_mv = (uint32_t)base_mv + compensation_mv;
+    if (target_mv > M45_ASIC_VOLTAGE_MAX_MV) {
+        return M45_ASIC_VOLTAGE_MAX_MV;
+    }
+    if (target_mv < M45_ASIC_VOLTAGE_MIN_MV) {
+        return M45_ASIC_VOLTAGE_MIN_MV;
+    }
+    return (uint16_t)target_mv;
 }
 
 uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config)

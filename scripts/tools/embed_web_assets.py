@@ -9,7 +9,13 @@ from pathlib import Path
 _PRE_TOKEN_RE = re.compile(r"(<(?:pre|textarea)\b[^>]*>.*?</(?:pre|textarea)>)", re.IGNORECASE | re.DOTALL)
 _STYLE_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.IGNORECASE | re.DOTALL)
 _SCRIPT_RE = re.compile(r"(<script\b[^>]*>)(.*?)(</script>)", re.IGNORECASE | re.DOTALL)
-_PARTIAL_HTML_FILES = {"modals.html", "toolbar.html"}
+_PARTIAL_HTML_FILES = {
+    "modals.html",
+    "payout-panel.html",
+    "stats-boxes.html",
+    "stats-summary.html",
+    "toolbar.html",
+}
 _STATIC_HTML_PAGES = {"root.html", "setup.html"}
 
 
@@ -124,6 +130,9 @@ def static_html_values(assets: dict[str, str], styles_link: str) -> dict[str, st
     return {
         "GLOBAL_STYLES": styles_link,
         "MODALS": assets.get("modals.html", ""),
+        "PAYOUT_PANEL": assets.get("payout-panel.html", ""),
+        "STATS_BOXES": assets.get("stats-boxes.html", ""),
+        "STATS_SUMMARY": assets.get("stats-summary.html", ""),
         "TOOLBAR": assets.get("toolbar.html", ""),
     }
 

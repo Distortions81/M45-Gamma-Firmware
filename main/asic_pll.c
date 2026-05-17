@@ -37,37 +37,33 @@ void pll_get_parameters(float target_freq, uint16_t fb_divider_min, uint16_t fb_
 
                 const uint16_t divider =
                     (uint16_t)(candidate_refdiv * candidate_postdiv1 * candidate_postdiv2);
-                const uint16_t candidate_fb_divider =
-                    (uint16_t)lroundf(target_freq / FREQ_MULT * (float)divider);
-                if (candidate_fb_divider < fb_divider_min ||
-                    candidate_fb_divider > fb_divider_max) {
-                    continue;
-                }
+                for (uint16_t candidate_fb_divider = fb_divider_min;
+                     candidate_fb_divider <= fb_divider_max; ++candidate_fb_divider) {
+                    const float candidate_freq =
+                        FREQ_MULT * (float)candidate_fb_divider / (float)divider;
+                    const float candidate_diff = fabsf(target_freq - candidate_freq);
+                    const float candidate_vco_freq =
+                        FREQ_MULT * (float)candidate_fb_divider / (float)candidate_refdiv;
+                    const uint16_t candidate_postdiv =
+                        (uint16_t)(candidate_postdiv1 * candidate_postdiv2);
 
-                const float candidate_freq =
-                    FREQ_MULT * (float)candidate_fb_divider / (float)divider;
-                const float candidate_diff = fabsf(target_freq - candidate_freq);
-                const float candidate_vco_freq =
-                    FREQ_MULT * (float)candidate_fb_divider / (float)candidate_refdiv;
-                const uint16_t candidate_postdiv =
-                    (uint16_t)(candidate_postdiv1 * candidate_postdiv2);
-
-                const bool better_frequency = candidate_diff < min_diff;
-                const bool equal_frequency =
-                    fabsf(candidate_diff - min_diff) < PLL_MATCH_EPSILON;
-                const bool better_vco = candidate_vco_freq < min_vco_freq;
-                const bool equal_vco =
-                    fabsf(candidate_vco_freq - min_vco_freq) < PLL_MATCH_EPSILON;
-                if (better_frequency || (equal_frequency && better_vco) ||
-                    (equal_frequency && equal_vco && candidate_postdiv < min_postdiv)) {
-                    min_diff = candidate_diff;
-                    min_vco_freq = candidate_vco_freq;
-                    min_postdiv = candidate_postdiv;
-                    best_freq = candidate_freq;
-                    best_refdiv = candidate_refdiv;
-                    best_fb_divider = (uint8_t)candidate_fb_divider;
-                    best_postdiv1 = candidate_postdiv1;
-                    best_postdiv2 = candidate_postdiv2;
+                    const bool better_frequency = candidate_diff < min_diff;
+                    const bool equal_frequency =
+                        fabsf(candidate_diff - min_diff) < PLL_MATCH_EPSILON;
+                    const bool better_vco = candidate_vco_freq < min_vco_freq;
+                    const bool equal_vco =
+                        fabsf(candidate_vco_freq - min_vco_freq) < PLL_MATCH_EPSILON;
+                    if (better_frequency || (equal_frequency && better_vco) ||
+                        (equal_frequency && equal_vco && candidate_postdiv < min_postdiv)) {
+                        min_diff = candidate_diff;
+                        min_vco_freq = candidate_vco_freq;
+                        min_postdiv = candidate_postdiv;
+                        best_freq = candidate_freq;
+                        best_refdiv = candidate_refdiv;
+                        best_fb_divider = (uint8_t)candidate_fb_divider;
+                        best_postdiv1 = candidate_postdiv1;
+                        best_postdiv2 = candidate_postdiv2;
+                    }
                 }
             }
         }

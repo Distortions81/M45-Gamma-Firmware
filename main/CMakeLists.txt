@@ -13,8 +13,11 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
 
     set(WEB_ASSET_FILES
         "${CMAKE_CURRENT_LIST_DIR}/../web/modals.html"
+        "${CMAKE_CURRENT_LIST_DIR}/../web/payout-panel.html"
         "${CMAKE_CURRENT_LIST_DIR}/../web/root.html"
         "${CMAKE_CURRENT_LIST_DIR}/../web/setup.html"
+        "${CMAKE_CURRENT_LIST_DIR}/../web/stats-boxes.html"
+        "${CMAKE_CURRENT_LIST_DIR}/../web/stats-summary.html"
         "${CMAKE_CURRENT_LIST_DIR}/../web/styles.css"
         "${CMAKE_CURRENT_LIST_DIR}/../web/toolbar.html"
     )

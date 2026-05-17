@@ -18,6 +18,7 @@
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -43,9 +44,10 @@
 #else
 #define STATUS_JSON_BUFFER_SIZE 7800
 #endif
-#define SETTINGS_JSON_BUFFER_SIZE 2200
+#define SETTINGS_JSON_BUFFER_SIZE 2400
 #define M45_DEVICE_NAME "M45-Bitaxe"
 #define HTTP_URI_HANDLER_SLOTS 34
+#define HTTP_HANDLER_WARN_MS 100
 #define LOG_CAPTURE_TIMEOUT_MS 5000
 #define SETUP_SCAN_MAX_APS 12
 #define SETUP_AP_CHANNEL 6
@@ -76,8 +78,64 @@ static bool g_last_wifi_test_ok;
 static char g_last_wifi_test_ssid[M45_WIFI_SSID_MAX + 1];
 static char g_last_wifi_test_password[M45_WIFI_PASSWORD_MAX + 1];
 
+typedef esp_err_t (*http_route_handler_t)(httpd_req_t *req);
+
+typedef struct {
+    const char *uri;
+    httpd_method_t method;
+    http_route_handler_t handler;
+} timed_http_route_t;
+
 static void reboot_task(void *arg);
 static void factory_reset_reboot_task(void *arg);
+
+static uint64_t http_now_us(void)
+{
+    return (uint64_t)esp_timer_get_time();
+}
+
+static void log_http_handler_delay(const char *operation, uint64_t started_us)
+{
+    const uint64_t elapsed_us = http_now_us() - started_us;
+    if (elapsed_us < ((uint64_t)HTTP_HANDLER_WARN_MS * 1000ULL)) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "%s held HTTP server task for %llu ms", operation,
+             (unsigned long long)(elapsed_us / 1000ULL));
+}
+
+static const char *http_method_name(httpd_method_t method)
+{
+    switch (method) {
+    case HTTP_GET:
+        return "GET";
+    case HTTP_POST:
+        return "POST";
+    default:
+        return "HTTP";
+    }
+}
+
+static esp_err_t timed_http_handler(httpd_req_t *req)
+{
+    const timed_http_route_t *route = (const timed_http_route_t *)req->user_ctx;
+    if (route == NULL || route->handler == NULL) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"route missing\"}");
+    }
+
+    const uint64_t started_us = http_now_us();
+    const esp_err_t err = route->handler(req);
+    const uint64_t elapsed_us = http_now_us() - started_us;
+    if (elapsed_us >= ((uint64_t)HTTP_HANDLER_WARN_MS * 1000ULL)) {
+        const char *uri = req->uri[0] != '\0' ? req->uri : route->uri;
+        ESP_LOGW(TAG, "%s %s held HTTP server task for %llu ms",
+                 http_method_name(route->method), uri,
+                 (unsigned long long)(elapsed_us / 1000ULL));
+    }
+    return err;
+}
 
 static const char *payout_status_name(uint8_t status)
 {
@@ -726,20 +784,28 @@ static void apply_runtime_state(const m45_config_t *config)
 static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
                                          const m45_config_t *new_config)
 {
-    const uint16_t old_voltage_mv = m45_config_effective_asic_voltage_mv(old_config);
-    const uint16_t new_voltage_mv = m45_config_effective_asic_voltage_mv(new_config);
+    const float asic_temp_c = g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg
+                                              : 0.0f;
+    const uint16_t old_voltage_mv =
+        m45_config_effective_asic_voltage_mv_for_temp(old_config, asic_temp_c);
+    const uint16_t new_voltage_mv =
+        m45_config_effective_asic_voltage_mv_for_temp(new_config, asic_temp_c);
     const uint16_t old_frequency_mhz = m45_config_effective_asic_frequency_mhz(old_config);
     const uint16_t new_frequency_mhz = m45_config_effective_asic_frequency_mhz(new_config);
     if (old_voltage_mv != new_voltage_mv) {
+        const uint64_t started_us = http_now_us();
         esp_err_t err = bitaxe_gamma602_set_voltage_mv(g_state, new_voltage_mv);
+        log_http_handler_delay("ASIC voltage apply", started_us);
         if (err != ESP_OK) {
             return err;
         }
     }
     if (old_frequency_mhz != new_frequency_mhz) {
+        const uint64_t started_us = http_now_us();
         stratum_minimal_pause_work();
         esp_err_t err = bitaxe_gamma602_set_frequency_mhz(g_state, new_frequency_mhz);
         stratum_minimal_resume_work();
+        log_http_handler_delay("ASIC frequency apply", started_us);
         if (err != ESP_OK) {
             return err;
         }
@@ -895,6 +961,12 @@ static esp_err_t status_handler(httpd_req_t *req)
     const bool fan_auto = !config->fan_override_enabled;
     const uint16_t asic_temp_target_c =
         fan_auto ? m45_config_effective_fan_target_temp_c(config) : M45_FAN_TARGET_DEFAULT_C;
+    const float asic_temp_c = g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg;
+    const uint16_t voltage_base_mv = m45_config_effective_asic_voltage_mv(config);
+    const uint16_t voltage_compensation_mv =
+        m45_config_asic_voltage_temp_compensation_mv(config, asic_temp_c);
+    const uint16_t voltage_target_mv =
+        m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
 
     char wifi_ssid[80];
     char pool_host[160];
@@ -983,7 +1055,10 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"asic_error_rate_percent\":%.2f,"
                  "\"expected_hashrate_ghs\":%.2f,"
                  "\"wifi_ssid\":\"%s\","
-                 "\"voltage_mv\":%d,"
+                 "\"voltage_mv\":%u,"
+                 "\"voltage_base_mv\":%u,"
+                 "\"voltage_temp_compensation_enabled\":%s,"
+                 "\"voltage_temp_compensation_mv\":%u,"
                  "\"overclock_enabled\":%s,"
                  "\"asic_temp_c\":%.1f,"
                  "\"fan_percent\":%.1f,"
@@ -1056,9 +1131,11 @@ static esp_err_t status_handler(httpd_req_t *req)
                  stats.domain_hashrate_ghs, domain_hashrates_json,
                  stats.asic_error_rate_percent,
                  expected_hashrate_ghs, wifi_ssid,
-                 m45_config_effective_asic_voltage_mv(config),
+                 voltage_target_mv, voltage_base_mv,
+                 config->asic_voltage_temp_compensation_enabled ? "true" : "false",
+                 voltage_compensation_mv,
                  config->overclock_enabled ? "true" : "false",
-                 g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg,
+                 asic_temp_c,
                  g_state->POWER_MANAGEMENT_MODULE.fan_perc,
                  g_state->POWER_MANAGEMENT_MODULE.fan_rpm,
                  fan_auto ? "true" : "false", asic_temp_target_c,
@@ -1158,6 +1235,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"asic_frequency_mhz\":%u,"
                  "\"asic_voltage_mv\":%u,"
                  "\"overclock_voltage_offset_mv\":%d,"
+                 "\"asic_voltage_temp_compensation_enabled\":%s,"
                  "\"fan_override_enabled\":%s,"
                  "\"fan_override_percent\":%u,"
                  "\"fan_target_override_enabled\":%s,"
@@ -1174,6 +1252,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  suggested_pool_difficulty, config->overclock_enabled ? "true" : "false",
                  config->asic_frequency_mhz, config->asic_voltage_mv,
                  config->overclock_voltage_offset_mv,
+                 config->asic_voltage_temp_compensation_enabled ? "true" : "false",
                  config->fan_override_enabled ? "true" : "false",
                  config->fan_override_percent,
                  config->fan_target_override_enabled ? "true" : "false",
@@ -1243,7 +1322,9 @@ static esp_err_t networks_handler(httpd_req_t *req)
     wifi_scan_config_t scan_config = {
         .show_hidden = false,
     };
+    const uint64_t scan_started_us = http_now_us();
     esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+    log_http_handler_delay("Wi-Fi network scan", scan_started_us);
     if (err != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
@@ -1350,9 +1431,11 @@ static esp_err_t wifi_test_handler(httpd_req_t *req)
     int rssi = 0;
     char ip[16] = "";
     uint8_t reason = 0;
+    const uint64_t test_started_us = http_now_us();
     esp_err_t err = run_wifi_connection_test(test_config.wifi_ssid,
                                              test_config.wifi_password, &rssi, ip,
                                              sizeof(ip), &reason);
+    log_http_handler_delay("Wi-Fi connection test", test_started_us);
     httpd_resp_set_type(req, "application/json");
     set_no_store_headers(req);
     if (err != ESP_OK) {
@@ -1426,7 +1509,9 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"test Wi-Fi connection before saving\"}");
     }
 
+    const uint64_t save_started_us = http_now_us();
     esp_err_t err = m45_config_save(&config);
+    log_http_handler_delay("setup NVS save", save_started_us);
     if (err != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
@@ -1493,10 +1578,13 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                                &config.pool_difficulty_auto) &&
         json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535) &&
         json_get_optional_bool(json, "overclock_enabled", &config.overclock_enabled) &&
-        json_get_u16(json, "asic_frequency_mhz", &config.asic_frequency_mhz, 350, 1500) &&
+        json_get_u16(json, "asic_frequency_mhz", &config.asic_frequency_mhz,
+                     M45_ASIC_FREQUENCY_MIN_MHZ, M45_ASIC_FREQUENCY_MAX_MHZ) &&
         json_get_u16(json, "asic_voltage_mv", &config.asic_voltage_mv, 500, 1370) &&
         json_get_optional_i16(json, "overclock_voltage_offset_mv",
                               &config.overclock_voltage_offset_mv, -500, 300) &&
+        json_get_optional_bool(json, "asic_voltage_temp_compensation_enabled",
+                               &config.asic_voltage_temp_compensation_enabled) &&
         json_get_bool(json, "fan_override_enabled", &config.fan_override_enabled) &&
         json_get_u16(json, "fan_override_percent", &config.fan_override_percent, 0, 100) &&
         json_get_bool(json, "fan_target_override_enabled",
@@ -1542,7 +1630,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
     }
 
+    uint64_t started_us = http_now_us();
     err = m45_config_save(&config);
+    log_http_handler_delay("settings NVS save", started_us);
     if (err != ESP_OK) {
         esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
         if (revert_err != ESP_OK) {
@@ -1556,7 +1646,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     }
 
     apply_runtime_state(m45_config_get());
+    started_us = http_now_us();
     apply_runtime_reconnects(wifi_reconnect, pool_reconnect);
+    log_http_handler_delay("settings reconnect apply", started_us);
 
     char response[96];
     snprintf(response, sizeof(response),
@@ -1618,9 +1710,12 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     const bool ok =
         json_get_optional_bool(json, "overclock_enabled", &runtime.overclock_enabled) &&
         json_get_tune_u16(json, "frequency_mhz", "asic_frequency_mhz",
-                          &runtime.asic_frequency_mhz, 350, 1500) &&
+                          &runtime.asic_frequency_mhz, M45_ASIC_FREQUENCY_MIN_MHZ,
+                          M45_ASIC_FREQUENCY_MAX_MHZ) &&
         json_get_tune_u16(json, "voltage_mv", "asic_voltage_mv",
                           &runtime.asic_voltage_mv, 500, 1370) &&
+        json_get_optional_bool(json, "asic_voltage_temp_compensation_enabled",
+                               &runtime.asic_voltage_temp_compensation_enabled) &&
         json_get_optional_bool(json, "fan_override_enabled", &runtime.fan_override_enabled) &&
         json_get_optional_u16(json, "fan_override_percent", &runtime.fan_override_percent,
                               0, 100) &&
@@ -1647,7 +1742,9 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
 
     bool wifi_reconnect = false;
     bool pool_reconnect = false;
+    uint64_t started_us = http_now_us();
     err = apply_runtime_settings(&old_config, m45_config_get(), &wifi_reconnect, &pool_reconnect);
+    log_http_handler_delay("runtime tune apply", started_us);
     if (err != ESP_OK) {
         esp_err_t revert_err = apply_hardware_settings(m45_config_get(), &old_config);
         if (revert_err != ESP_OK) {
@@ -1704,7 +1801,9 @@ static esp_err_t asic_power_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"invalid power state\"}");
     }
 
+    const uint64_t power_started_us = http_now_us();
     esp_err_t err = bitaxe_gamma602_set_asic_power(g_state, enabled);
+    log_http_handler_delay("ASIC power apply", power_started_us);
     if (err != ESP_OK) {
         if (err == ESP_ERR_INVALID_STATE) {
             httpd_resp_set_status(req, "409 Conflict");
@@ -1727,7 +1826,9 @@ static esp_err_t asic_power_handler(httpd_req_t *req)
 
 static esp_err_t settings_factory_reset_handler(httpd_req_t *req)
 {
+    const uint64_t reset_started_us = http_now_us();
     esp_err_t err = m45_config_factory_reset();
+    log_http_handler_delay("factory reset NVS erase", reset_started_us);
     if (err != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
@@ -1749,7 +1850,9 @@ static esp_err_t settings_factory_reset_handler(httpd_req_t *req)
 
 static esp_err_t best_diff_reset_handler(httpd_req_t *req)
 {
+    const uint64_t reset_started_us = http_now_us();
     esp_err_t err = stratum_minimal_reset_best_diff();
+    log_http_handler_delay("best diff reset", reset_started_us);
     if (err != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
@@ -1845,7 +1948,7 @@ static esp_err_t start_http_server(void)
     httpd_handle_t server = NULL;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &config), TAG, "HTTP server start failed");
 
-    const httpd_uri_t handlers[] = {
+    static const timed_http_route_t routes[] = {
         {.uri = "/", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/wifi", .method = HTTP_GET, .handler = setup_page_handler},
         {.uri = "/settings", .method = HTTP_GET, .handler = root_handler},
@@ -1889,9 +1992,15 @@ static esp_err_t start_http_server(void)
          .handler = captive_portal_redirect_handler},
         {.uri = "/*", .method = HTTP_GET, .handler = redirect_handler},
     };
-    for (size_t i = 0; i < sizeof(handlers) / sizeof(handlers[0]); ++i) {
-        ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &handlers[i]), TAG,
-                            "HTTP route register failed: %s", handlers[i].uri);
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
+        const httpd_uri_t handler = {
+            .uri = routes[i].uri,
+            .method = routes[i].method,
+            .handler = timed_http_handler,
+            .user_ctx = (void *)&routes[i],
+        };
+        ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &handler), TAG,
+                            "HTTP route register failed: %s", routes[i].uri);
     }
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;

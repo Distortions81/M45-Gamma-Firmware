@@ -55,7 +55,7 @@ menu "M45 Firmware"
 
     config M45_BITAXE_ASIC_FREQUENCY_MHZ
         int "BM1370 frequency MHz"
-        range 350 1500
+        range 1 1500
         default 525
 
     config M45_BITAXE_ASIC_VOLTAGE_MV

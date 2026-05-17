@@ -16,63 +16,10 @@
 <section id=boot-panel class='panel full boot hidden'><div class=boot-row><div>
 <div class=label>Device</div><div class=boot-title>Booting</div>
 <div id=boot-step class=subvalue>Hardware init: --</div></div><span class='pill warn'>BOOTING</span></div></section>
-<section id=dashboard-view>
-<section class=grid>
-<article class=panel><div class=metric-head><div class=label>ASIC Temp</div><span id=asic-temp-state class=pill>--</span></div>
-<div class=value><span id=asic-temp>--</span><span class=unit>C</span></div>
-<div id=asic-temp-bar class=bar><span class=zone></span><span class=fill></span><span id=asic-temp-tick class=tick style='left:80%' title='62C target'></span></div><p id=asic-temp-range class=range>--</p></article>
-<article class=panel><div class=metric-head><div class=label>VR Temp</div><span id=vr-temp-state class=pill>--</span></div>
-<div class=value><span id=vr-temp>--</span><span class=unit>C</span></div>
-<div id=vr-temp-bar class=bar><span class=zone></span><span class=fill></span><span class=tick style='left:32.2%' title='59C'></span></div><p id=vr-temp-range class=range>--</p></article>
-<article class=panel><div class=metric-head><div class=label>Input Voltage</div><span id=vin-state class=pill>--</span></div>
-<div class=value><span id=vin>--</span><span class=unit>V</span></div>
-<div id=vin-bar class=bar><span class=zone></span><span class=fill></span><span class=tick style='left:50%' title='5V'></span></div><p id=vin-range class=range>--</p></article>
-<article class=panel><div class=metric-head><div class=label>ASIC Voltage</div><span id=vout-state class=pill>--</span></div>
-<div class=value><span id=vout>--</span><span class=unit>V</span></div>
-<div id=vout-bar class=bar><span class=zone></span><span class=fill></span><span class=tick style='left:50%' title='1.150V'></span></div><p id=vout-range class=range>--</p></article>
-<article class=panel><div class=metric-head><div class=label>ASIC Watts</div><span id=watts-state class=pill>--</span></div>
-<div class=value><span id=watts>--</span><span class=unit>W</span></div>
-<div id=watts-bar class=bar><span class=zone></span><span class=fill></span><span class=tick style='left:10.25%' title='14.1W'></span></div><p id=watts-range class=range>--</p></article>
-<article class=panel><div class=metric-head><div class=label>Current</div><span id=iout-state class=pill>--</span></div>
-<div class=value><span id=iout>--</span><span class=unit>A</span></div>
-<div id=iout-bar class=bar><span class=zone></span><span class=fill></span><span class=tick style='left:11.5%' title='12.3A'></span></div><p id=iout-range class=range>--</p></article>
-<article class=panel><div class=metric-head><div class=label>Fan</div><span id=fan-state class=pill>--</span></div>
-<div class=value-row><div class=value><span id=fan>--</span><span class=unit>%</span></div><div id=fan-rpm class=subvalue>-- RPM</div></div>
-<div id=fan-bar class=bar><span class=zone></span><span class=fill></span><span class=tick style='left:57%' title='57%'></span></div>
-<p id=fan-range class=range><span id=fanrpm>--</span> RPM - expected 100% fixed</p></article>
-<article class=panel><div class=metric-head><div class=label>Hashrate Average</div><span id=hashrate-state class=pill>--</span></div>
-<div class=value-row><div class=value><span id=hashrate>--</span><span id=hashrate-unit class=unit></span></div>
-<div id=hashrate-note class='subvalue hidden'></div></div>
-<div id=hashrate-bar class=bar><span class=zone></span><span class=fill></span><span id=hashrate-loss class=loss></span><span class=tick style='left:44%' title='1.1 TH/s'></span></div><p id=hashrate-range class=range>--</p></article>
-<article class='panel full summary-panel'><div class=summary-sections>
-<section class=summary-section><div class=summary-section-title>System</div><div class=summary-grid>
-<section class=summary-item><div class=summary-label>ASIC</div><div id=asic-model class=summary-value>--</div></section>
-<section class=summary-item><div class=summary-label>Clock</div><div id=asic-clock class=summary-value>--</div></section>
-<section class=summary-item><div class=summary-label>Wi-Fi</div><div id=wifi class='summary-value stack-value'><span id=wifi-state>--</span><span id=wifi-rssi class=stack-sub></span></div></section>
-<section class=summary-item><div class=summary-label>IP</div><div id=set-ip class=summary-value>--</div></section></div>
-<dl class='mini-list summary-list'><dt>Hardware</dt><dd id=set-hardware>--</dd><dt>TPS</dt><dd id=tps-model>--</dd>
-<dt>Build</dt><dd id=build-id>--</dd>
-<dt>Built</dt><dd id=build-time>--</dd><dt id=issue-label class=hidden>Issue</dt><dd id=issue class=hidden>--</dd></dl></section>
-<section class=summary-section><div class=summary-section-title>Pool</div><div class=summary-grid>
-<section class=summary-item><div class=summary-label>Stratum</div><div id=pool class='summary-value stack-value'><span class=status-line><span id=stratum-dot class=status-dot></span><span id=stratum-state>--</span><span id=stratum-time class=status-time></span></span></div></section>
-<section class=summary-item><div class=summary-label>Payout</div><div class=summary-value><span id=payout>--</span></div></section>
-<section class=summary-item><div class=summary-label>Best Diff</div><div class='summary-value inline-value'><span id=best>--</span>
-<button id=best-reset class=icon-btn type=button title='Reset best diff' aria-label='Reset best diff'>&#8635;</button></div></section>
-<section class=summary-item><div class=summary-label>Response</div><div id=stratum-response class=summary-value>--</div></section></div>
-<dl class='mini-list summary-list'><dt>Pool</dt><dd id=stratum-pool class='stack-sub system-pool'>--</dd>
-<dt>Difficulty</dt><dd id=difficulty>--</dd><dt>Shares/min</dt><dd id=shares-min>--</dd>
-<dt>Accepted</dt><dd id=accepted>--</dd><dt>Rejected</dt><dd id=rejected>--</dd></dl></section>
-<section class=summary-section><div class=summary-section-title>ASIC Results</div><div class=summary-grid>
-<section class=summary-item><div class=summary-label>Expected</div><div id=expected-hashrate class=summary-value>--</div></section>
-<section class=summary-item><div class=summary-label>Corrupted Hashes</div><div id=nonce-errors class=summary-value>--</div></section>
-<section class=summary-item><div class=summary-label>Error Rate</div><div id=nonce-error-rate class=summary-value>--</div></section>
-<section class=summary-item><div class=summary-label>Error Loss</div><div id=hash-lost class=summary-value>--</div></section>
-<section class='summary-item domain-map-item'><div class=summary-label>Domains</div><div id=domain-hashrate class=summary-value>--</div><div id=domain-grid class=domain-grid></div></section>
-</div></section></div></article>
-<article id=payout-panel class='panel full payout-panel'><div class=payout-head><div class=label>Coinbase Payout</div>
-<span class=payout-info><button id=payout-info-button class=payout-info-button type=button aria-describedby=payout-info-tip title='Coinbase payout details'>i</button>
-<span id=payout-info-tip role=tooltip class=payout-info-text>This checks the block reward payout list, called the coinbase transaction. If your wallet is not listed there, you must trust the pool to pay you later from its wallet. A dishonest pool could keep a winning block reward. Pool operators should split payouts directly in the block reward so miners can verify their share before mining.</span></span></div>
-<div id=payout-warning class='value small'>Coinbase payout has not been checked yet.</div><div id=payout-percent class=subvalue></div></article>
+{{STATS_BOXES}}
+<section id=dashboard-view><section class=grid>
+{{STATS_SUMMARY}}
+{{PAYOUT_PANEL}}
 </section></section>
 <section id=logs-view class=hidden>
 <article class='panel full log-panel'><div class=log-head><div class=label>Logs</div>
@@ -82,39 +29,33 @@
 <span id=logs-state class='pill warn'>CONNECTING</span></div></div>
 <pre id=logs-output class=logs-output></pre></article></section>
 <section id=overclock-view class=hidden>
-<section class=grid>
-<article id=oc-asic-card class='panel oc-stat'><div class=metric-head><div class=label>ASIC</div><span id=oc-asic-state class=pill>--</span></div>
-<div id=oc-asic class='value small'>--</div><div id=oc-asic-note class=subvalue></div>
-<div class=oc-card-actions><button id=oc-asic-power class=secondary type=button disabled>Turn Off</button>
+<section class='grid oc-grid'>
+<form id=overclock-form class='oc-form full' novalidate>
+<article class='panel full oc-command-panel'>
+<label class='toggle-row oc-enable-row' for=cfg-overclock-enabled><input id=cfg-overclock-enabled type=checkbox aria-label='Enable overclocking'>
+<span class=toggle-text><span class=label>Overclocking</span><span class=subvalue>Disabled keeps stock ASIC settings enforced.</span></span></label>
+<div class=oc-form-actions><button class=primary type=submit>Save &amp; Apply</button>
+<span id=overclock-status class=status-text></span></div></article>
+<article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
+<span id=oc-asic-state class=pill>--</span></div><div id=oc-asic class='value small'>--</div>
+<div id=oc-asic-note class=subvalue></div><div class=oc-power-actions>
+<button id=oc-asic-power class=secondary type=button disabled>Turn Off</button>
 <span id=oc-asic-power-status class=status-text></span></div></article>
-<article id=oc-frequency-card class='panel oc-stat'><div class=metric-head><div class=label>Clock</div><span id=oc-frequency-state class=pill>--</span></div>
-<div id=oc-frequency class=value>--</div><div id=oc-frequency-note class=subvalue></div></article>
-<article id=oc-voltage-card class='panel oc-stat'><div class=metric-head><div class=label>Voltage</div><span id=oc-voltage-state class=pill>--</span></div>
-<div id=oc-voltage class=value>--</div><div id=oc-voltage-note class=subvalue></div></article>
-<article id=oc-hashrate-card class='panel oc-stat'><div class=metric-head><div class=label>Hashrate</div><span id=oc-hashrate-state class=pill>--</span></div>
-<div id=oc-hashrate class=value>--</div><div id=oc-hashrate-note class=subvalue></div></article>
-<article id=oc-asic-temp-card class='panel oc-stat'><div class=metric-head><div class=label>ASIC Temp</div><span id=oc-asic-temp-state class=pill>--</span></div>
-<div id=oc-asic-temp class=value>--</div><div id=oc-asic-temp-note class=subvalue></div></article>
-<article id=oc-vr-temp-card class='panel oc-stat'><div class=metric-head><div class=label>VR Temp</div><span id=oc-vr-temp-state class=pill>--</span></div>
-<div id=oc-vr-temp class=value>--</div><div id=oc-vr-temp-note class=subvalue></div></article>
-<article id=oc-fan-card class='panel oc-stat'><div class=metric-head><div class=label>Fan</div><span id=oc-fan-state class=pill>--</span></div>
-<div id=oc-fan class=value>--</div><div id=oc-fan-note class=subvalue></div></article>
-<article id=oc-power-card class='panel oc-stat'><div class=metric-head><div class=label>Power</div><span id=oc-power-state class=pill>--</span></div>
-<div id=oc-power class=value>--</div><div id=oc-power-note class=subvalue></div></article>
-<form id=overclock-form class='settings-form full' novalidate>
-<label class='panel toggle-row' for=cfg-overclock-enabled>
-<input id=cfg-overclock-enabled type=checkbox aria-label='Enable overclocking'><span class=label>Overclocking</span></label>
-<article class='panel wide'><div class=label>ASIC</div><div class=settings-form>
+<article class='panel wide oc-card'><div class=label>Preset</div><div class='settings-form oc-card-fields'>
 <div class=field><label for=oc-preset>Preset</label><select id=oc-preset>
 <option class=stock value='525,1150'>525 MHz / 1150 mV (STOCK)</option><option value=custom>Custom</option></select></div>
 <div class=field><label for=oc-voltage-offset>Voltage Offset</label><input id=oc-voltage-offset type=number min=-500 max=300 step=5 value=0>
-<div class=subvalue>Presets use a warm-chip voltage curve. Add positive offset if a colder chip is unstable.</div></div>
-<div class=field><label for=cfg-frequency>Frequency MHz</label><input id=cfg-frequency type=number min=350 max=1500></div>
-<div class=field><label for=cfg-voltage>Voltage mV</label><input id=cfg-voltage type=number min=500 max=1370 step=5></div>
+<div class=subvalue>Preset voltage trim.</div></div>
+<label class='toggle-row oc-temp-comp' for=oc-temp-compensation><input id=oc-temp-compensation type=checkbox checked>
+<span class=toggle-text><span class=label>ASIC Temperature Compensation</span><span id=oc-temp-compensation-note class=subvalue>--</span></span></label>
 <div class=formula-note>Warm formula: voltage mV = round5(1150 + 0.35 * (MHz - 850)) + offset.</div>
 </div></article>
-<article class='panel wide'><div class=label>Fan</div><div class=settings-form>
-<div class=field><label for=cfg-fan-mode>Override</label><select id=cfg-fan-mode>
+<article class='panel wide oc-card'><div class=label>Manual Target</div><div class='settings-form oc-card-fields'>
+<div class=field><label for=cfg-frequency>Frequency MHz</label><input id=cfg-frequency type=number max=1500></div>
+<div class=field><label for=cfg-voltage>Voltage mV</label><input id=cfg-voltage type=number min=500 max=1370 step=5></div>
+</div></article>
+<article class='panel wide oc-card'><div class=label>Cooling</div><div class='settings-form oc-card-fields'>
+<div class=field><label for=cfg-fan-mode>Fan Mode</label><select id=cfg-fan-mode>
 <option value=auto>Auto</option><option value=off>No fan</option><option value=fixed>Fixed</option></select></div>
 <div id=cfg-fan-percent-field class=field><label for=cfg-fan-percent>Speed</label><div class=range-line>
 <input id=cfg-fan-percent type=range min=35 max=100 step=1><span id=cfg-fan-percent-value class=range-value>--%</span></div></div>
@@ -123,19 +64,21 @@
 <div id=cfg-fan-target-field class=field><label for=cfg-fan-target>Target Temp</label><div class=range-line>
 <input id=cfg-fan-target type=range min=35 max=66 step=1><span id=cfg-fan-target-value class=range-value>--C</span></div></div>
 </div></article>
-</form>
-<section id=oc-vr-warning class='panel full fault hidden'><div class=label>VR Cooling</div>
+<section id=oc-safety-panel class='panel full oc-safety-panel'><div class=metric-head><div class=label>Safety</div>
+<span id=oc-safety-state class='pill ok'>OK</span></div><div id=oc-safety-clear class=oc-warning-clear>No active overclock notices.</div>
+<div class=oc-warning-list>
+<section id=oc-vr-warning class='oc-warning hidden'><div class=label>VR Cooling</div>
 <div class='value small'>For clocks over 800 MHz, add heatsink to the TPS voltage regulator 
 <a class=warning-link href='https://www.solosatoshi.com/mosfet-heatsink-placement-guide' target=_blank rel=noopener><span class=link-ico>&#128279;</span>guide</a>.</div></section>
-<section id=oc-psu-warning class='panel full fault hidden'><div class=label>Power Supply</div>
+<section id=oc-psu-warning class='oc-warning hidden'><div class=label>Power Supply</div>
 <div class='value small'>For clocks over 725 MHz, an upgraded PSU is required 
 <a class=warning-link href='https://www.amazon.com/dp/B07DKCMJN9' target=_blank rel=noopener><span class=link-ico>&#128279;</span>buy</a>.</div></section>
-<section id=oc-fan-warning class='panel full fault hidden'><div class=label>Fan Speed</div>
+<section id=oc-fan-warning class='oc-warning hidden'><div class=label>Fan Speed</div>
 <div class='value small'>For clocks over 800 MHz, set fan speed to 100%.</div></section>
-<section id=oc-cooling-warning class='panel full fault hidden'><div class=label>Cooling Required</div>
+<section id=oc-cooling-warning class='oc-warning hidden'><div class=label>Cooling Required</div>
 <div class='value small'>For clocks over 975 MHz, liquid cooling or a very large heatsink is required.</div></section>
-<div class=actions><button class=primary type=submit form=overclock-form>Save &amp; Apply</button>
-<span id=overclock-status class=status-text></span></div>
+</div></section>
+</form>
 </section></section>
 <section id=calibration-view class=hidden><section class=grid>
 <article class='panel full'><div class=metric-head><div class=label>Overclock Voltage Calibration</div><span class='pill warn'>RUNTIME</span></div>
@@ -197,7 +140,7 @@ const fmt=v=>Number.isFinite(Number(v))?Number(v).toLocaleString():'--';
 const txt=(id,v)=>{const el=$(id);if(el)el.textContent=v==null||v===''?'--':v};
 const asicName=s=>s.asic_chips===1?s.asic_model:`${s.asic_chips} ${s.asic_model}`;
 const PASSWORD_MASK='........';
-const STOCK_FREQUENCY=525,STOCK_VOLTAGE=1150;
+const STOCK_FREQUENCY=525,STOCK_VOLTAGE=1150,MAX_FREQUENCY=1500;
 const REFRESH_WARN_MS=10000;
 const CAL_BASE_TIMEOUT_MS=180000,CAL_STEP_TIMEOUT_MS=90000,CAL_SAMPLE_POLL_MS=1000,CAL_BASE_SAMPLE_MS=20000,CAL_STEP_SAMPLE_MS=15000;
 const CAL_START_MV=1200,CAL_MIN_MV=750,CAL_DOWN_STEP_MV=10,CAL_UP_STEP_MV=5,CAL_SAFETY_MV=10;
@@ -207,7 +150,8 @@ const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CA
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
-function showView(view){$('dashboard-view').classList.toggle('hidden',view!=='stats');
+function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
+$('dashboard-view').classList.toggle('hidden',view!=='stats');
 $('overclock-view').classList.toggle('hidden',view!=='overclock');
 $('calibration-view').classList.toggle('hidden',view!=='calibration');
 $('logs-view').classList.toggle('hidden',view!=='logs');
@@ -302,9 +246,6 @@ function setPayoutPanel(s){const st=s.payout_status||'unchecked',pct=payoutPerce
 const cls=st==='ok'?'ok':st==='missing'||st==='low'?'bad':st==='unchecked'?'':'warn';
 panel.className=`panel full payout-panel ${cls}`.trim();txt('payout-warning',payoutStatusText(st));
 txt('payout-percent',st!=='unchecked'&&pct?`${pct} to configured wallet`:'');$('payout-percent').classList.toggle('hidden',!(st!=='unchecked'&&pct))}
-function expectedHashText(s){const h=num(s.hashrate_ghs),e=num(s.expected_hashrate_ghs);
-if(!Number.isFinite(h)||!Number.isFinite(e)||e<=0||h>e*.95)return'';const er=rate(e);
-return er[0]==='--'?'':`Expect ${er[0]} ${er[1]}`.trim()}
 function expectedHashValue(s){const er=rate(s.expected_hashrate_ghs);return er[0]==='--'?'--':`${er[0]} ${er[1]}`.trim()}
 function syncFanSetting(){const mode=val('cfg-fan-mode'),pct=$('cfg-fan-percent'),auto=mode==='auto',fixed=mode==='fixed';
 $('cfg-fan-percent-field').classList.toggle('hidden',!fixed);pct.disabled=!fixed;txt('cfg-fan-percent-value',`${pct.value}%`);
@@ -317,18 +258,27 @@ if(timer&&Number(val('cfg-display-sleep-minutes'))<1)setVal('cfg-display-sleep-m
 function syncPoolDifficulty(){const input=$('cfg-pool-diff'),auto=$('cfg-pool-diff-auto').checked;
 if(auto){if(input.value)input.dataset.manual=input.value;input.value=input.dataset.auto||input.value||1000}
 else if(input.dataset.manual)input.value=input.dataset.manual;input.disabled=auto}
+function syncTempCompensationNote(s=null){const cb=$('oc-temp-compensation'),note=$('oc-temp-compensation-note');if(!cb||!note)return;
+const on=$('cfg-overclock-enabled').checked;cb.disabled=!on;
+if(!cb.checked){note.textContent='Off';return}
+const extra=s&&Number.isFinite(num(s.voltage_temp_compensation_mv))?num(s.voltage_temp_compensation_mv):NaN;
+const temp=s&&Number.isFinite(num(s.asic_temp_c))&&num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN;
+note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`+${n(extra,0)} mV now at ${n(temp,1)} C`:'Below 60 C: +5.5 mV/C'}
 function syncOverclockEnabled(){const on=$('cfg-overclock-enabled').checked;
-['oc-preset','oc-voltage-offset','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on);syncOverclockWarning()}
+['oc-preset','oc-voltage-offset','oc-temp-compensation','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on);
+syncTempCompensationNote();syncOverclockWarning()}
 function setStockOverclock(){setVal('cfg-frequency',STOCK_FREQUENCY);setVal('cfg-voltage',STOCK_VOLTAGE);
 setVal('oc-voltage-offset',0);syncPreset()}
 function syncOverclockWarning(){const on=$('cfg-overclock-enabled').checked,f=num(val('cfg-frequency')),fanSet=val('cfg-fan-mode')==='fixed'&&num(val('cfg-fan-percent'))>=100;
-$('oc-vr-warning').classList.toggle('hidden',!(on&&f>800));$('oc-psu-warning').classList.toggle('hidden',!(on&&f>725));
-$('oc-fan-warning').classList.toggle('hidden',!(on&&f>800&&!fanSet));
-$('oc-cooling-warning').classList.toggle('hidden',!(on&&f>975))}
+const vr=on&&f>800,psu=on&&f>725,fan=on&&f>800&&!fanSet,cooling=on&&f>975,active=vr||psu||fan||cooling;
+$('oc-vr-warning').classList.toggle('hidden',!vr);$('oc-psu-warning').classList.toggle('hidden',!psu);
+$('oc-fan-warning').classList.toggle('hidden',!fan);$('oc-cooling-warning').classList.toggle('hidden',!cooling);
+$('oc-safety-panel').classList.toggle('oc-safety-active',active);$('oc-safety-clear').classList.toggle('hidden',active);
+$('oc-safety-state').className=`pill ${active?'warn':'ok'}`;$('oc-safety-state').textContent=active?'CHECK':'OK'}
 function clamp(v,min,max){return Math.max(min,Math.min(max,v))}
 function presetVoltage(f){return clamp(Math.round((1150+.35*(f-850))/5)*5,500,1370)}
 function presetClass(f){return f>975?'hot':f>800?'warn':''}
-function buildPresets(){const s=$('oc-preset');for(let f=350;f<=1500;f+=25){if(f===STOCK_FREQUENCY)continue;const v=presetVoltage(f),o=document.createElement('option');
+function buildPresets(){const s=$('oc-preset');for(let f=50;f<=MAX_FREQUENCY;f+=25){if(f===STOCK_FREQUENCY)continue;const v=presetVoltage(f),o=document.createElement('option');
 o.value=`${f},${v}`;o.textContent=`${f} MHz / ${v} mV`;const c=presetClass(f);if(c)o.className=c;s.appendChild(o)}}
 function presetParts(){const v=val('oc-preset');return v==='custom'?null:v.split(',').map(Number)}
 function voltageOffset(){return clamp(Number(val('oc-voltage-offset'))||0,-500,300)}
@@ -339,7 +289,7 @@ const opt=[...$('oc-preset').options].find(o=>{if(o.value==='custom')return fals
 $('oc-preset').value=opt?opt.value:'custom'}
 let pendingRiskStatus=null;
 function overclockRisk(){const f=Number(val('cfg-frequency')),v=Number(val('cfg-voltage'));
-return{freq:f,volt:v,freqBad:Number.isFinite(f)&&(f<350||f>1500),voltBad:false}}
+return{freq:f,volt:v,freqBad:Number.isFinite(f)&&f>MAX_FREQUENCY,voltBad:false}}
 function showRiskModal(statusId){const r=overclockRisk();pendingRiskStatus=statusId;
 $('risk-list').innerHTML=`<div class='risk-row ${r.freqBad?'bad':''}'><span>Clock</span><strong>${n(r.freq,0)} MHz</strong></div>`+
 `<div class='risk-row ${r.voltBad?'bad':''}'><span>Voltage</span><strong>${n(r.volt,0)} mV</strong></div>`;
@@ -387,8 +337,8 @@ setMetric('fan',s.fan_percent,0,{min:0,max:100,goodMin:20,goodMax:100,warnLow:fa
 warnHigh:fanAuto?80.000001:null,text:fanColdOff?'Warming to target':fanNearMax?'Near cooling max!':`${s.fan_rpm==null?'--':s.fan_rpm} RPM | expected ${n(l.fan_expected_percent,0)}% fixed`});
 txt('fan-rpm',`${fmt(s.fan_rpm)} RPM`);
 setMetric('hashrate',s.hashrate_ghs,0,{min:0,max:2500,goodMin:0,goodMax:2500,text:''});
-const hp=clamp(num(s.asic_error_rate_percent),0,100),hf=$('hashrate-bar').querySelector('.fill'),hl=$('hashrate-loss');
-const hw=parseFloat(hf.style.width)||0;hl.style.left=Math.max(0,hw-hp)+'%';hl.style.width=Math.min(hw,hp)+'%';
+const hp=clamp(num(s.asic_error_rate_percent),0,100),hf=$('hashrate-bar').querySelector('.fill'),hl=$('hashrate-loss'),hw=parseFloat(hf.style.width)||0;
+const loss=Number.isFinite(hp)?hw*(hp/100):0;hl.style.left=Math.max(0,hw-loss)+'%';hl.style.width=Math.min(hw,loss)+'%';
 hl.title=Number.isFinite(hp)?`${n(hp,2)}% corrupted hash loss`:'';
 txt('hashrate-note','');$('hashrate-note').classList.add('hidden');
 if(s.booting){$('hashrate-state').className='pill warn';$('hashrate-state').textContent='BOOT'}
@@ -413,11 +363,8 @@ const asicOn=s.booting===true||s.asic_power_enabled!==false;
 txt('set-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
 txt('set-frequency',`${n(s.frequency_mhz,0)} MHz`);txt('set-voltage',`${n(s.voltage_mv,0)} mV`);
 txt('set-hardware',s.hardware)}
-function ocState(v,warn,bad){v=num(v);if(!Number.isFinite(v))return'';
-if(bad!=null&&v>=bad)return'bad';if(warn!=null&&v>=warn)return'warn';return'ok'}
-function ocPill(cls){return cls==='bad'?'LIMIT':cls==='warn'?'WATCH':cls==='ok'?'OK':'--'}
 function setOcCard(id,cls,pill,note){const card=$(id+'-card'),state=$(id+'-state'),sub=$(id+'-note');
-if(card)card.className=`panel oc-stat ${cls||''}`.trim();if(state){state.className=`pill ${cls||''}`.trim();state.textContent=pill||'--'}
+if(card)card.className='panel wide oc-card oc-power-panel';if(state){state.className=`pill ${cls||''}`.trim();state.textContent=pill||'--'}
 if(sub)sub.textContent=note||''}
 function setAsicPowerButton(s){const btn=$('oc-asic-power');if(!btn)return;
 const powered=s.booting===true||s.asic_power_enabled!==false;btn.dataset.enabled=powered?'1':'0';
@@ -425,28 +372,11 @@ btn.className=powered?'secondary':'primary';btn.setAttribute('aria-pressed',powe
 btn.textContent=asicPowerBusy?(powered?'Turning Off...':'Turning On...'):(powered?'Turn Off':'Turn On');
 btn.title=s.hardware_fault?'Hardware fault latched':powered?'Turn ASIC off':'Turn ASIC on';
 btn.disabled=asicPowerBusy||!!s.booting||!!s.hardware_fault}
-function setOverclock(s){const l=s.limits||{},hr=rate(s.hashrate_ghs),freq=num(s.frequency_mhz),volt=num(s.voltage_mv);
-const asicTemp=num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN,vrTemp=s.tps546_valid?num(s.tps546_temp_c):NaN;
-const fan=num(s.fan_percent),power=s.tps546_valid?num(s.asic_power_watts):NaN,fanAuto=s.fan_auto===true;
+function setOverclock(s){
 const asicOn=s.booting===true||s.asic_power_enabled!==false,asicCls=s.hardware_fault?'bad':s.booting?'warn':s.asic_ready?'ok':asicOn?'warn':'';
 txt('oc-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
 setOcCard('oc-asic',asicCls,s.hardware_fault?'FAULT':!asicOn?'OFF':s.booting?'BOOT':s.overclock_enabled?'OC':'STOCK',s.hardware||'--');
-setAsicPowerButton(s);
-const freqCls=ocState(freq,800.000001,975.000001);txt('oc-frequency',Number.isFinite(freq)?`${n(freq,0)} MHz`:'--');
-setOcCard('oc-frequency',freqCls,freqCls==='bad'?'HOT':freqCls==='warn'?'WATCH':s.overclock_enabled?'OC':'STOCK',
-s.overclock_enabled?(freq>975?'Extreme cooling':freq>800?'Cooling advised':'Within preset range'):'Stock enforced');
-const voltCls=ocState(volt,1200.000001,1300.000001),voltLimit=num(l.asic_voltage_max_v)*1000;txt('oc-voltage',Number.isFinite(volt)?`${n(volt,0)} mV`:'--');
-setOcCard('oc-voltage',voltCls,ocPill(voltCls),Number.isFinite(voltLimit)?`Limit ${n(voltLimit,0)} mV`:'');
-const hash=num(s.hashrate_ghs),hashCls=hash>0?'ok':'';txt('oc-hashrate',`${hr[0]} ${hr[1]}`.trim());
-setOcCard('oc-hashrate',hashCls,hash>0?'LIVE':'IDLE',expectedHashText(s));
-const asicMax=num(l.asic_temp_max_c),asicTempCls=ocState(asicTemp,66,asicMax);txt('oc-asic-temp',Number.isFinite(asicTemp)?`${n(asicTemp,1)} C`:'--');
-setOcCard('oc-asic-temp',asicTempCls,ocPill(asicTempCls),Number.isFinite(asicMax)?`Stop ${n(asicMax,0)} C`:'');
-const vrWarn=num(l.tps546_temp_expected_max_c),vrMax=num(l.tps546_temp_max_c),vrCls=ocState(vrTemp,vrWarn,vrMax);txt('oc-vr-temp',Number.isFinite(vrTemp)?`${n(vrTemp,0)} C`:'--');
-setOcCard('oc-vr-temp',vrCls,ocPill(vrCls),s.tps546_valid?`Stop ${n(vrMax,0)} C`:'No TPS data');
-const fanNearMax=fanAuto&&fan>80,fanCls=!Number.isFinite(fan)?'':fan<=0?'bad':fanNearMax?'warn':'ok';txt('oc-fan',Number.isFinite(fan)?`${n(fan,0)}%`:'--');
-setOcCard('oc-fan',fanCls,fanCls==='bad'?'OFF':fanNearMax?'WATCH':fanAuto?'AUTO':'FIXED',fanNearMax?'Near cooling max!':`${fmt(s.fan_rpm)} RPM`);
-const powerWarn=num(l.power_warn_w),powerFault=num(l.power_fault_w),powerCls=ocState(power,powerWarn,powerFault);txt('oc-power',Number.isFinite(power)?`${n(power,1)} W`:'--');
-setOcCard('oc-power',powerCls,ocPill(powerCls),Number.isFinite(powerWarn)?`Watch ${n(powerWarn,1)} W`:'')}
+syncTempCompensationNote(s);setAsicPowerButton(s)}
 function calLine(key,min,max){if(calHistory.length<2)return'';const last=calHistory.length-1;
 return calHistory.map((p,i)=>{const v=Number.isFinite(num(p[key]))?p[key]:min;
 return `${last?i*360/last:0},${110-pct(v,min,max)}`}).join(' ')}
@@ -487,6 +417,7 @@ const sleepMinutes=Number(c.display_sleep_minutes)||0;setVal('cfg-display-sleep-
 $('cfg-display-sleep-minutes').max=c.display_sleep_max_minutes||65535;setVal('cfg-display-sleep-minutes',sleepMinutes>0?sleepMinutes:15);syncDisplaySleep();
 $('cfg-overclock-enabled').checked=!!c.overclock_enabled;
 setVal('cfg-frequency',c.asic_frequency_mhz);setVal('cfg-voltage',c.asic_voltage_mv);setVal('oc-voltage-offset',c.overclock_voltage_offset_mv||0);
+$('oc-temp-compensation').checked=!!c.asic_voltage_temp_compensation_enabled;
 syncPreset();syncOverclockEnabled();
 setVal('cfg-fan-mode',!c.fan_override_enabled?'auto':c.fan_override_percent===0?'off':'fixed');
 setVal('cfg-fan-percent',c.fan_override_percent>=35?c.fan_override_percent:57);syncFanSetting();
@@ -506,6 +437,7 @@ $('cfg-pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.va
 $('cfg-pool-diff-auto').onchange=syncPoolDifficulty;
 $('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){$('cfg-overclock-enabled').checked=false;
 $('oc-enable-modal').classList.remove('hidden')}else syncOverclockEnabled()};
+$('oc-temp-compensation').onchange=()=>syncTempCompensationNote();
 $('oc-preset').onchange=()=>{const p=presetParts();if(!p)return;
 setVal('cfg-frequency',p[0]);applyVoltageOffset();syncOverclockWarning()};
 $('oc-voltage-offset').onchange=applyVoltageOffset;
@@ -522,6 +454,7 @@ pool_difficulty:Number(($('cfg-pool-diff-auto').checked?$('cfg-pool-diff').datas
 display_screensaver_enabled:$('cfg-display-screensaver').checked,display_sleep_minutes:sleepMode==='off'?0:sleepMinutes,
 overclock_enabled:$('cfg-overclock-enabled').checked,asic_frequency_mhz:Number(val('cfg-frequency')),asic_voltage_mv:Number(val('cfg-voltage')),
 overclock_voltage_offset_mv:voltageOffset(),
+asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,
 fan_override_enabled:fanMode!=='auto',fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),
 fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,fan_target_temp_c:Number(val('cfg-fan-target'))};
 const wifiPass=cfgWifiPasswordForTest();if(wifiPass!=null)body.wifi_password=wifiPass;
@@ -554,11 +487,13 @@ async function statusJson(){const r=await fetch('/api/status',{cache:'no-store',
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);throw new Error('refreshing')}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))throw new Error('refreshing');return s}
 function tuneBody(){const fanMode=val('cfg-fan-mode');return{overclock_enabled:$('cfg-overclock-enabled').checked,
-frequency_mhz:Number(val('cfg-frequency')),voltage_mv:Number(val('cfg-voltage')),fan_override_enabled:fanMode!=='auto',
+frequency_mhz:Number(val('cfg-frequency')),voltage_mv:Number(val('cfg-voltage')),
+asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,fan_override_enabled:fanMode!=='auto',
 fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,
 fan_target_temp_c:Number(val('cfg-fan-target'))}}
 function applyTuneFields(t){$('cfg-overclock-enabled').checked=!!t.overclock_enabled;setVal('cfg-frequency',t.frequency_mhz);
-setVal('cfg-voltage',t.voltage_mv);setVal('cfg-fan-mode',!t.fan_override_enabled?'auto':t.fan_override_percent===0?'off':'fixed');
+setVal('cfg-voltage',t.voltage_mv);if('asic_voltage_temp_compensation_enabled' in t)$('oc-temp-compensation').checked=!!t.asic_voltage_temp_compensation_enabled;
+setVal('cfg-fan-mode',!t.fan_override_enabled?'auto':t.fan_override_percent===0?'off':'fixed');
 setVal('cfg-fan-percent',t.fan_override_percent>=35?t.fan_override_percent:57);$('cfg-fan-target-enabled').checked=!!t.fan_target_override_enabled;
 setVal('cfg-fan-target',t.fan_target_temp_c||62);syncFanSetting();syncOverclockEnabled();syncPreset()}
 async function runtimeTune(t){const r=await fetch('/api/runtime-tune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(t)});
