@@ -42,6 +42,7 @@ typedef struct {
     bool asic_voltage_temp_compensation_enabled;
     bool fan_override_enabled;
     uint16_t fan_override_percent;
+    bool fan_auto_off_allowed;
     bool fan_target_override_enabled;
     uint16_t fan_target_temp_c;
     bool display_screensaver_enabled;

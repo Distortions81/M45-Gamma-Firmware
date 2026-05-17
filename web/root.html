@@ -57,6 +57,8 @@
 <article class='panel wide oc-card'><div class=label>Cooling</div><div class='settings-form oc-card-fields'>
 <div class=field><label for=cfg-fan-mode>Fan Mode</label><select id=cfg-fan-mode>
 <option value=auto>Auto</option><option value=off>No fan</option><option value=fixed>Fixed</option></select></div>
+<label id=cfg-fan-auto-off-field class=toggle-row for=cfg-fan-auto-off><input id=cfg-fan-auto-off type=checkbox>
+<span class=label>Allow Auto Fan Stop</span></label>
 <div id=cfg-fan-percent-field class=field><label for=cfg-fan-percent>Speed</label><div class=range-line>
 <input id=cfg-fan-percent type=range min=35 max=100 step=1><span id=cfg-fan-percent-value class=range-value>--%</span></div></div>
 <div id=cfg-fan-target-enabled-field class=field><label for=cfg-fan-target-enabled>Custom Target</label>
@@ -249,6 +251,7 @@ txt('payout-percent',st!=='unchecked'&&pct?`${pct} to configured wallet`:'');$('
 function expectedHashValue(s){const er=rate(s.expected_hashrate_ghs);return er[0]==='--'?'--':`${er[0]} ${er[1]}`.trim()}
 function syncFanSetting(){const mode=val('cfg-fan-mode'),pct=$('cfg-fan-percent'),auto=mode==='auto',fixed=mode==='fixed';
 $('cfg-fan-percent-field').classList.toggle('hidden',!fixed);pct.disabled=!fixed;txt('cfg-fan-percent-value',`${pct.value}%`);
+$('cfg-fan-auto-off-field').classList.toggle('hidden',!auto);$('cfg-fan-auto-off').disabled=!auto;
 $('cfg-fan-target-enabled-field').classList.toggle('hidden',!auto);$('cfg-fan-target-field').classList.toggle('hidden',!auto);
 const tgt=$('cfg-fan-target');tgt.disabled=!auto||!$('cfg-fan-target-enabled').checked;
 txt('cfg-fan-target-value',`${tgt.value}C`);syncOverclockWarning()}
@@ -420,6 +423,7 @@ setVal('cfg-frequency',c.asic_frequency_mhz);setVal('cfg-voltage',c.asic_voltage
 $('oc-temp-compensation').checked=!!c.asic_voltage_temp_compensation_enabled;
 syncPreset();syncOverclockEnabled();
 setVal('cfg-fan-mode',!c.fan_override_enabled?'auto':c.fan_override_percent===0?'off':'fixed');
+$('cfg-fan-auto-off').checked=!!c.fan_auto_off_allowed;
 setVal('cfg-fan-percent',c.fan_override_percent>=35?c.fan_override_percent:57);syncFanSetting();
 $('cfg-fan-target-enabled').checked=!!c.fan_target_override_enabled;
 setVal('cfg-fan-target',c.fan_target_temp_c||62);syncFanSetting();
@@ -431,6 +435,7 @@ buildPresets();
 ['cfg-wifi-ssid','cfg-wifi-pass'].forEach(id=>$(id).addEventListener('input',resetSettingsWifiTest));
 $('cfg-wifi-test').onclick=testSettingsWifi;
 $('cfg-fan-mode').onchange=syncFanSetting;$('cfg-fan-percent').oninput=syncFanSetting;
+$('cfg-fan-auto-off').onchange=syncFanSetting;
 $('cfg-fan-target-enabled').onchange=syncFanSetting;$('cfg-fan-target').oninput=syncFanSetting;
 $('cfg-display-sleep-mode').onchange=syncDisplaySleep;$('cfg-display-sleep-minutes').oninput=syncDisplaySleep;
 $('cfg-pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.value};
@@ -456,6 +461,7 @@ overclock_enabled:$('cfg-overclock-enabled').checked,asic_frequency_mhz:Number(v
 overclock_voltage_offset_mv:voltageOffset(),
 asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,
 fan_override_enabled:fanMode!=='auto',fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),
+fan_auto_off_allowed:fanMode==='auto'&&$('cfg-fan-auto-off').checked,
 fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,fan_target_temp_c:Number(val('cfg-fan-target'))};
 const wifiPass=cfgWifiPasswordForTest();if(wifiPass!=null)body.wifi_password=wifiPass;
 if(val('cfg-pool-pass')&&val('cfg-pool-pass')!==PASSWORD_MASK)body.pool_pass=val('cfg-pool-pass');
@@ -490,10 +496,11 @@ function tuneBody(){const fanMode=val('cfg-fan-mode');return{overclock_enabled:$
 frequency_mhz:Number(val('cfg-frequency')),voltage_mv:Number(val('cfg-voltage')),
 asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,fan_override_enabled:fanMode!=='auto',
 fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,
-fan_target_temp_c:Number(val('cfg-fan-target'))}}
+fan_auto_off_allowed:fanMode==='auto'&&$('cfg-fan-auto-off').checked,fan_target_temp_c:Number(val('cfg-fan-target'))}}
 function applyTuneFields(t){$('cfg-overclock-enabled').checked=!!t.overclock_enabled;setVal('cfg-frequency',t.frequency_mhz);
 setVal('cfg-voltage',t.voltage_mv);if('asic_voltage_temp_compensation_enabled' in t)$('oc-temp-compensation').checked=!!t.asic_voltage_temp_compensation_enabled;
 setVal('cfg-fan-mode',!t.fan_override_enabled?'auto':t.fan_override_percent===0?'off':'fixed');
+if('fan_auto_off_allowed' in t)$('cfg-fan-auto-off').checked=!!t.fan_auto_off_allowed;
 setVal('cfg-fan-percent',t.fan_override_percent>=35?t.fan_override_percent:57);$('cfg-fan-target-enabled').checked=!!t.fan_target_override_enabled;
 setVal('cfg-fan-target',t.fan_target_temp_c||62);syncFanSetting();syncOverclockEnabled();syncPreset()}
 async function runtimeTune(t){const r=await fetch('/api/runtime-tune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(t)});

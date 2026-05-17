@@ -517,7 +517,7 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
         return;
     }
 
-    if (requested_percent < FAN_AUTO_MIN_PERCENT) {
+    if (config->fan_auto_off_allowed && requested_percent < FAN_AUTO_MIN_PERCENT) {
         if (control_temp_c <= (target_temp_c - FAN_AUTO_OFF_COOL_MARGIN_C) &&
             current_percent <= (auto_min_percent + 0.5f)) {
             if (g_fan_auto_off_samples < FAN_COOL_SAMPLES_BEFORE_AUTO_OFF) {

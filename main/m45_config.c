@@ -94,6 +94,7 @@ static void set_defaults(m45_config_t *config)
     config->asic_voltage_temp_compensation_enabled = true;
     config->fan_override_enabled = false;
     config->fan_override_percent = M45_FAN_OVERRIDE_MAX_PERCENT;
+    config->fan_auto_off_allowed = false;
     config->fan_target_override_enabled = false;
     config->fan_target_temp_c = M45_FAN_TARGET_DEFAULT_C;
     config->display_screensaver_enabled = true;
@@ -243,6 +244,9 @@ esp_err_t m45_config_load(void)
     load_u8(nvs, "fan_ovr_en", &fan_override_enabled);
     g_config.fan_override_enabled = fan_override_enabled != 0;
     load_u16(nvs, "fan_ovr_pct", &g_config.fan_override_percent);
+    uint8_t fan_auto_off_allowed = g_config.fan_auto_off_allowed ? 1 : 0;
+    load_u8(nvs, "fan_auto_off", &fan_auto_off_allowed);
+    g_config.fan_auto_off_allowed = fan_auto_off_allowed != 0;
     uint8_t fan_target_override_enabled = g_config.fan_target_override_enabled ? 1 : 0;
     load_u8(nvs, "fan_tgt_en", &fan_target_override_enabled);
     g_config.fan_target_override_enabled = fan_target_override_enabled != 0;
@@ -336,6 +340,9 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "fan_ovr_pct", clean.fan_override_percent);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "fan_auto_off", clean.fan_auto_off_allowed ? 1 : 0);
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "fan_tgt_en", clean.fan_target_override_enabled ? 1 : 0);

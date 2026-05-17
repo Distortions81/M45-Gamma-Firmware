@@ -42,7 +42,7 @@
 #ifdef M45_ASIC_LOSS_METRICS
 #define STATUS_JSON_BUFFER_SIZE 9200
 #else
-#define STATUS_JSON_BUFFER_SIZE 7800
+#define STATUS_JSON_BUFFER_SIZE 7900
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 2400
 #define M45_DEVICE_NAME "M45-Bitaxe"
@@ -1064,6 +1064,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"fan_percent\":%.1f,"
                  "\"fan_rpm\":%u,"
                  "\"fan_auto\":%s,"
+                 "\"fan_auto_off_allowed\":%s,"
                  "\"fan_target_temp_c\":%u,"
                  "\"tps546_valid\":%s,"
                  "\"tps546_read_vout\":%.3f,"
@@ -1138,7 +1139,8 @@ static esp_err_t status_handler(httpd_req_t *req)
                  asic_temp_c,
                  g_state->POWER_MANAGEMENT_MODULE.fan_perc,
                  g_state->POWER_MANAGEMENT_MODULE.fan_rpm,
-                 fan_auto ? "true" : "false", asic_temp_target_c,
+                 fan_auto ? "true" : "false",
+                 config->fan_auto_off_allowed ? "true" : "false", asic_temp_target_c,
                  have_power ? "true" : "false", have_power ? power.read_vout : 0.0f,
                  have_power ? power.read_vin : 0.0f, have_power ? power.read_iout : 0.0f,
                  have_power ? power.read_temp_c : 0, tps546_model, asic_power_watts,
@@ -1238,6 +1240,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"asic_voltage_temp_compensation_enabled\":%s,"
                  "\"fan_override_enabled\":%s,"
                  "\"fan_override_percent\":%u,"
+                 "\"fan_auto_off_allowed\":%s,"
                  "\"fan_target_override_enabled\":%s,"
                  "\"fan_target_temp_c\":%u,"
                  "\"display_screensaver_enabled\":%s,"
@@ -1255,6 +1258,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
                  config->fan_override_enabled ? "true" : "false",
                  config->fan_override_percent,
+                 config->fan_auto_off_allowed ? "true" : "false",
                  config->fan_target_override_enabled ? "true" : "false",
                  config->fan_target_temp_c,
                  config->display_screensaver_enabled ? "true" : "false",
@@ -1587,6 +1591,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                                &config.asic_voltage_temp_compensation_enabled) &&
         json_get_bool(json, "fan_override_enabled", &config.fan_override_enabled) &&
         json_get_u16(json, "fan_override_percent", &config.fan_override_percent, 0, 100) &&
+        json_get_optional_bool(json, "fan_auto_off_allowed",
+                               &config.fan_auto_off_allowed) &&
         json_get_bool(json, "fan_target_override_enabled",
                       &config.fan_target_override_enabled) &&
         json_get_u16(json, "fan_target_temp_c", &config.fan_target_temp_c, 35, 66) &&
@@ -1719,6 +1725,8 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
         json_get_optional_bool(json, "fan_override_enabled", &runtime.fan_override_enabled) &&
         json_get_optional_u16(json, "fan_override_percent", &runtime.fan_override_percent,
                               0, 100) &&
+        json_get_optional_bool(json, "fan_auto_off_allowed",
+                               &runtime.fan_auto_off_allowed) &&
         json_get_optional_bool(json, "fan_target_override_enabled",
                                &runtime.fan_target_override_enabled) &&
         json_get_optional_u16(json, "fan_target_temp_c", &runtime.fan_target_temp_c,
