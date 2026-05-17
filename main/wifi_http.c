@@ -44,7 +44,7 @@
 #else
 #define STATUS_JSON_BUFFER_SIZE 7900
 #endif
-#define SETTINGS_JSON_BUFFER_SIZE 2400
+#define SETTINGS_JSON_BUFFER_SIZE 3400
 #define M45_DEVICE_NAME "M45-Bitaxe"
 #define HTTP_URI_HANDLER_SLOTS 34
 #define HTTP_HANDLER_WARN_MS 100
@@ -1196,6 +1196,27 @@ static bool json_get_optional_i16(cJSON *root, const char *name, int16_t *dst, i
     return true;
 }
 
+static bool safety_settings_valid_for_tune(const m45_config_t *config)
+{
+    if (config->safety_input_voltage_min_mv >= config->safety_input_voltage_max_mv ||
+        config->safety_input_voltage_expected_min_mv >=
+            config->safety_input_voltage_expected_max_mv ||
+        config->safety_input_voltage_expected_min_mv <
+            config->safety_input_voltage_min_mv ||
+        config->safety_input_voltage_expected_max_mv >
+            config->safety_input_voltage_max_mv ||
+        config->safety_asic_voltage_min_mv >= config->safety_asic_voltage_max_mv ||
+        config->safety_asic_temp_expected_max_c > config->safety_asic_temp_max_c ||
+        config->safety_tps546_temp_expected_max_c > config->safety_tps546_temp_max_c ||
+        config->safety_iout_warn_deciamps > config->safety_iout_fault_deciamps) {
+        return false;
+    }
+
+    const uint16_t effective_voltage_mv = m45_config_effective_asic_voltage_mv(config);
+    return effective_voltage_mv >= config->safety_asic_voltage_min_mv &&
+           effective_voltage_mv < config->safety_asic_voltage_max_mv;
+}
+
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
     const m45_config_t *config = m45_config_get();
@@ -1245,7 +1266,19 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"fan_target_temp_c\":%u,"
                  "\"display_screensaver_enabled\":%s,"
                  "\"display_sleep_minutes\":%u,"
-                 "\"display_sleep_max_minutes\":%u"
+                 "\"display_sleep_max_minutes\":%u,"
+                 "\"limit_input_voltage_min_mv\":%u,"
+                 "\"limit_input_voltage_expected_min_mv\":%u,"
+                 "\"limit_input_voltage_expected_max_mv\":%u,"
+                 "\"limit_input_voltage_max_mv\":%u,"
+                 "\"limit_asic_voltage_min_mv\":%u,"
+                 "\"limit_asic_voltage_max_mv\":%u,"
+                 "\"limit_asic_temp_expected_max_c\":%u,"
+                 "\"limit_asic_temp_max_c\":%u,"
+                 "\"limit_tps546_temp_expected_max_c\":%u,"
+                 "\"limit_tps546_temp_max_c\":%u,"
+                 "\"limit_iout_warn_deciamps\":%u,"
+                 "\"limit_iout_fault_deciamps\":%u"
                  "}",
                  wifi_ssid, hostname, pool_host, config->pool_port, backup_pool_host,
                  config->backup_pool_port, pool_user,
@@ -1263,7 +1296,19 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  config->fan_target_temp_c,
                  config->display_screensaver_enabled ? "true" : "false",
                  (unsigned)config->display_sleep_minutes,
-                 (unsigned)M45_DISPLAY_SLEEP_MAX_MINUTES);
+                 (unsigned)M45_DISPLAY_SLEEP_MAX_MINUTES,
+                 config->safety_input_voltage_min_mv,
+                 config->safety_input_voltage_expected_min_mv,
+                 config->safety_input_voltage_expected_max_mv,
+                 config->safety_input_voltage_max_mv,
+                 config->safety_asic_voltage_min_mv,
+                 config->safety_asic_voltage_max_mv,
+                 config->safety_asic_temp_expected_max_c,
+                 config->safety_asic_temp_max_c,
+                 config->safety_tps546_temp_expected_max_c,
+                 config->safety_tps546_temp_max_c,
+                 config->safety_iout_warn_deciamps,
+                 config->safety_iout_fault_deciamps);
     if (body_len < 0 || body_len >= SETTINGS_JSON_BUFFER_SIZE) {
         free(body);
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -1536,7 +1581,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
 
 static esp_err_t settings_post_handler(httpd_req_t *req)
 {
-    if (req->content_len <= 0 || req->content_len > 3072) {
+    if (req->content_len <= 0 || req->content_len > 4096) {
         httpd_resp_set_status(req, "413 Payload Too Large");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid size\"}");
     }
@@ -1600,14 +1645,63 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                                &config.display_screensaver_enabled) &&
         json_get_optional_u16(json, "display_sleep_minutes",
                               &config.display_sleep_minutes, 0,
-                              M45_DISPLAY_SLEEP_MAX_MINUTES);
+                              M45_DISPLAY_SLEEP_MAX_MINUTES) &&
+        json_get_optional_u16(json, "limit_input_voltage_min_mv",
+                              &config.safety_input_voltage_min_mv,
+                              M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                              M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV) &&
+        json_get_optional_u16(json, "limit_input_voltage_expected_min_mv",
+                              &config.safety_input_voltage_expected_min_mv,
+                              M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                              M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
+        json_get_optional_u16(json, "limit_input_voltage_expected_max_mv",
+                              &config.safety_input_voltage_expected_max_mv,
+                              M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                              M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
+        json_get_optional_u16(json, "limit_input_voltage_max_mv",
+                              &config.safety_input_voltage_max_mv,
+                              M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV,
+                              M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
+        json_get_optional_u16(json, "limit_asic_voltage_min_mv",
+                              &config.safety_asic_voltage_min_mv,
+                              M45_SAFETY_ASIC_VOLTAGE_MIN_MIN_MV,
+                              M45_SAFETY_ASIC_VOLTAGE_MIN_MAX_MV) &&
+        json_get_optional_u16(json, "limit_asic_voltage_max_mv",
+                              &config.safety_asic_voltage_max_mv,
+                              M45_SAFETY_ASIC_VOLTAGE_MAX_MIN_MV,
+                              M45_SAFETY_ASIC_VOLTAGE_MAX_MAX_MV) &&
+        json_get_optional_u16(json, "limit_asic_temp_expected_max_c",
+                              &config.safety_asic_temp_expected_max_c,
+                              M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_MIN_C,
+                              M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
+        json_get_optional_u16(json, "limit_asic_temp_max_c",
+                              &config.safety_asic_temp_max_c,
+                              M45_SAFETY_ASIC_TEMP_MAX_MIN_C,
+                              M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
+        json_get_optional_u16(json, "limit_tps546_temp_expected_max_c",
+                              &config.safety_tps546_temp_expected_max_c,
+                              M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C,
+                              M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
+        json_get_optional_u16(json, "limit_tps546_temp_max_c",
+                              &config.safety_tps546_temp_max_c,
+                              M45_SAFETY_TPS546_TEMP_MAX_MIN_C,
+                              M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
+        json_get_optional_u16(json, "limit_iout_warn_deciamps",
+                              &config.safety_iout_warn_deciamps,
+                              M45_SAFETY_IOUT_WARN_MIN_DA,
+                              M45_SAFETY_IOUT_FAULT_MAX_DA) &&
+        json_get_optional_u16(json, "limit_iout_fault_deciamps",
+                              &config.safety_iout_fault_deciamps,
+                              M45_SAFETY_IOUT_FAULT_MIN_DA,
+                              M45_SAFETY_IOUT_FAULT_MAX_DA);
     cJSON_Delete(json);
 
     if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
         config.backup_pool_host[0] == '\0' || config.pool_user[0] == '\0' ||
         (config.fan_override_percent != 0 &&
          (config.fan_override_percent < 35 || config.fan_override_percent > 100)) ||
-        config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66) {
+        config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||
+        !safety_settings_valid_for_tune(&config)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid settings\"}");
     }

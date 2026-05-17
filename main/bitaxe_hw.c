@@ -34,18 +34,6 @@
 #define TPS546_OUTPUT_SETTLE_TIMEOUT_MS 150
 #define ASIC_FREQUENCY_SETTLE_MS 50
 #define ASIC_TEMP_VOLTAGE_UPDATE_DEADBAND_MV 5
-#define TPS546_MAX_SAFE_TEMP_C 98
-#define TPS546_EXPECTED_MAX_TEMP_C 85.0f
-#define ASIC_TEMP_SHUTDOWN_C 69.0f
-#define ASIC_TEMP_EXPECTED_MAX_C 60.0f
-#define ASIC_VOLTAGE_MIN_SHUTDOWN_VOLTS 0.700f
-#define ASIC_VOLTAGE_SHUTDOWN_VOLTS 1.400f
-#define INPUT_VOLTAGE_SHUTDOWN_VOLTS 5.500f
-#define INPUT_VOLTAGE_MIN_VOLTS 4.500f
-#define INPUT_VOLTAGE_EXPECTED_MIN_VOLTS 4.800f
-#define INPUT_VOLTAGE_EXPECTED_MAX_VOLTS 5.400f
-#define TPS546_IOUT_WARN_AMPS 25.0f
-#define TPS546_IOUT_FAULT_AMPS 30.0f
 static const char *TAG = "bitaxe_hw";
 static uint8_t g_chip_count = 0;
 static char g_hw_status[64] = "boot";
@@ -74,18 +62,24 @@ static void set_hw_status(const char *status)
 
 static TPS546_CONFIG gamma_tps546_config(void)
 {
+    const m45_config_t *active = m45_config_get();
     TPS546_CONFIG config = {0};
     config.TPS546_INIT_PHASE = TPS546_INIT_PHASE_SINGLE;
-    config.TPS546_INIT_VIN_ON = INPUT_VOLTAGE_EXPECTED_MIN_VOLTS;
-    config.TPS546_INIT_VIN_OFF = INPUT_VOLTAGE_MIN_VOLTS;
+    config.TPS546_INIT_VIN_ON =
+        active->safety_input_voltage_expected_min_mv / 1000.0f;
+    config.TPS546_INIT_VIN_OFF = active->safety_input_voltage_min_mv / 1000.0f;
     config.TPS546_INIT_VIN_UV_WARN_LIMIT = 0.0f;
-    config.TPS546_INIT_VIN_OV_FAULT_LIMIT = INPUT_VOLTAGE_SHUTDOWN_VOLTS;
+    config.TPS546_INIT_VIN_OV_FAULT_LIMIT =
+        active->safety_input_voltage_max_mv / 1000.0f;
     config.TPS546_INIT_SCALE_LOOP = 0.25f;
-    config.TPS546_INIT_VOUT_MIN = 0.5f;
-    config.TPS546_INIT_VOUT_MAX = ASIC_VOLTAGE_SHUTDOWN_VOLTS;
-    config.TPS546_INIT_VOUT_COMMAND = 1.2f;
-    config.TPS546_INIT_IOUT_OC_WARN_LIMIT = TPS546_IOUT_WARN_AMPS;
-    config.TPS546_INIT_IOUT_OC_FAULT_LIMIT = TPS546_IOUT_FAULT_AMPS;
+    config.TPS546_INIT_VOUT_MIN = active->safety_asic_voltage_min_mv / 1000.0f;
+    config.TPS546_INIT_VOUT_MAX = active->safety_asic_voltage_max_mv / 1000.0f;
+    config.TPS546_INIT_VOUT_COMMAND =
+        m45_config_effective_asic_voltage_mv(active) / 1000.0f;
+    config.TPS546_INIT_IOUT_OC_WARN_LIMIT =
+        active->safety_iout_warn_deciamps / 10.0f;
+    config.TPS546_INIT_IOUT_OC_FAULT_LIMIT =
+        active->safety_iout_fault_deciamps / 10.0f;
     config.TPS546_INIT_STACK_CONFIG = 0x0000;
     config.TPS546_INIT_SYNC_CONFIG = 0x10;
     return config;
@@ -262,6 +256,9 @@ static esp_err_t validate_regulator_safety(GlobalState *state,
                                            float target_vout,
                                            bool require_target_vout)
 {
+    bitaxe_gamma602_safety_limits_t limits;
+    bitaxe_gamma602_safety_limits(&limits);
+
     if (snapshot->status_word & TPS546_STATUS_FAULT_MASK) {
         return fail_regulator_safety(state, "TPS546 status fault", snapshot);
     }
@@ -275,29 +272,33 @@ static esp_err_t validate_regulator_safety(GlobalState *state,
         return fail_regulator_safety(state, "TPS546 operation bit is not ON", snapshot);
     }
 
-    if (snapshot->read_vin < INPUT_VOLTAGE_MIN_VOLTS) {
-        return fail_regulator_safety(state, "TPS546 VIN below safe range", snapshot);
+    if (snapshot->read_vin < limits.input_voltage_min_v) {
+        return fail_regulator_safety(state, "TPS546 VIN below configured limit", snapshot);
     }
 
-    if (snapshot->read_vin >= INPUT_VOLTAGE_SHUTDOWN_VOLTS) {
-        return fail_regulator_safety(state, "input voltage at or above 5.5 V", snapshot);
-    }
-
-    if (snapshot->read_vout < ASIC_VOLTAGE_MIN_SHUTDOWN_VOLTS) {
-        return fail_regulator_safety(state, "ASIC voltage below 700 mV while output is enabled",
+    if (snapshot->read_vin >= limits.input_voltage_max_v) {
+        return fail_regulator_safety(state, "input voltage at or above configured limit",
                                      snapshot);
     }
 
-    if (snapshot->read_vout >= ASIC_VOLTAGE_SHUTDOWN_VOLTS) {
-        return fail_regulator_safety(state, "ASIC voltage at or above 1400 mV", snapshot);
+    if (snapshot->read_vout < limits.asic_voltage_min_v) {
+        return fail_regulator_safety(state,
+                                     "ASIC voltage below configured limit while output is enabled",
+                                     snapshot);
+    }
+
+    if (snapshot->read_vout >= limits.asic_voltage_max_v) {
+        return fail_regulator_safety(state, "ASIC voltage at or above configured limit",
+                                     snapshot);
     }
 
     if (require_target_vout && fabsf(snapshot->read_vout - target_vout) > TPS546_VOUT_TOLERANCE_VOLTS) {
         return fail_regulator_safety(state, "TPS546 VOUT outside tolerance", snapshot);
     }
 
-    if (snapshot->read_temp1 >= TPS546_MAX_SAFE_TEMP_C) {
-        return fail_regulator_safety(state, "TPS546 temperature too high", snapshot);
+    if ((float)snapshot->read_temp1 >= limits.tps546_temp_max_c) {
+        return fail_regulator_safety(state, "TPS546 temperature at or above configured limit",
+                                     snapshot);
     }
 
     return ESP_OK;
@@ -318,10 +319,12 @@ static esp_err_t update_asic_temperature(GlobalState *state, float *temp_c)
         return ESP_FAIL;
     }
 
-    if (*temp_c >= ASIC_TEMP_SHUTDOWN_C) {
+    const float asic_temp_shutdown_c =
+        (float)m45_config_get()->safety_asic_temp_max_c;
+    if (*temp_c >= asic_temp_shutdown_c) {
         ESP_LOGE(TAG, "ASIC temperature %.1f C reached shutdown limit %.1f C", *temp_c,
-                 ASIC_TEMP_SHUTDOWN_C);
-        safety_shutdown(state, "ASIC temperature at or above 69 C");
+                 asic_temp_shutdown_c);
+        safety_shutdown(state, "ASIC temperature at or above configured limit");
         return ESP_FAIL;
     }
 
@@ -375,6 +378,8 @@ static esp_err_t validate_regulator_startup_snapshot(GlobalState *state,
                                                      float target_vout)
 {
     *settled = false;
+    bitaxe_gamma602_safety_limits_t limits;
+    bitaxe_gamma602_safety_limits(&limits);
 
     const uint16_t startup_fault_mask = TPS546_STATUS_FAULT_MASK & ~TPS546_STATUS_PGOOD;
     if (snapshot->status_word & startup_fault_mask) {
@@ -390,23 +395,26 @@ static esp_err_t validate_regulator_startup_snapshot(GlobalState *state,
         return fail_regulator_safety(state, "TPS546 operation bit is not ON", snapshot);
     }
 
-    if (snapshot->read_vin < INPUT_VOLTAGE_MIN_VOLTS) {
-        return fail_regulator_safety(state, "TPS546 VIN below safe range", snapshot);
+    if (snapshot->read_vin < limits.input_voltage_min_v) {
+        return fail_regulator_safety(state, "TPS546 VIN below configured limit", snapshot);
     }
 
-    if (snapshot->read_vin >= INPUT_VOLTAGE_SHUTDOWN_VOLTS) {
-        return fail_regulator_safety(state, "input voltage at or above 5.5 V", snapshot);
+    if (snapshot->read_vin >= limits.input_voltage_max_v) {
+        return fail_regulator_safety(state, "input voltage at or above configured limit",
+                                     snapshot);
     }
 
-    if (snapshot->read_vout >= ASIC_VOLTAGE_SHUTDOWN_VOLTS) {
-        return fail_regulator_safety(state, "ASIC voltage at or above 1400 mV", snapshot);
+    if (snapshot->read_vout >= limits.asic_voltage_max_v) {
+        return fail_regulator_safety(state, "ASIC voltage at or above configured limit",
+                                     snapshot);
     }
 
-    if (snapshot->read_temp1 >= TPS546_MAX_SAFE_TEMP_C) {
-        return fail_regulator_safety(state, "TPS546 temperature too high", snapshot);
+    if ((float)snapshot->read_temp1 >= limits.tps546_temp_max_c) {
+        return fail_regulator_safety(state, "TPS546 temperature at or above configured limit",
+                                     snapshot);
     }
 
-    if (snapshot->read_vout >= ASIC_VOLTAGE_MIN_SHUTDOWN_VOLTS &&
+    if (snapshot->read_vout >= limits.asic_voltage_min_v &&
         fabsf(snapshot->read_vout - target_vout) <= TPS546_VOUT_TOLERANCE_VOLTS) {
         *settled = true;
     }
@@ -759,7 +767,10 @@ esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequen
 
 esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv)
 {
-    if (state == NULL || voltage_mv < 500 || voltage_mv > 1370) {
+    const m45_config_t *active = m45_config_get();
+    if (state == NULL || voltage_mv < 500 || voltage_mv > 1370 ||
+        voltage_mv < active->safety_asic_voltage_min_mv ||
+        voltage_mv >= active->safety_asic_voltage_max_mv) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -836,30 +847,37 @@ void bitaxe_gamma602_safety_limits(bitaxe_gamma602_safety_limits_t *limits)
     const uint16_t target_voltage_mv =
         g_commanded_voltage_mv > 0 ? g_commanded_voltage_mv
                                    : m45_config_effective_asic_voltage_mv(m45_config_get());
+    const m45_config_t *active = m45_config_get();
     const float target_vout = target_voltage_mv / 1000.0f;
+    const float asic_voltage_min_v = active->safety_asic_voltage_min_mv / 1000.0f;
+    const float asic_voltage_max_v = active->safety_asic_voltage_max_mv / 1000.0f;
     const float expected_vout_min =
-        fmaxf(ASIC_VOLTAGE_MIN_SHUTDOWN_VOLTS, target_vout - TPS546_VOUT_TOLERANCE_VOLTS);
+        fmaxf(asic_voltage_min_v, target_vout - TPS546_VOUT_TOLERANCE_VOLTS);
     const float expected_vout_max =
-        fminf(ASIC_VOLTAGE_SHUTDOWN_VOLTS, target_vout + TPS546_VOUT_TOLERANCE_VOLTS);
+        fminf(asic_voltage_max_v, target_vout + TPS546_VOUT_TOLERANCE_VOLTS);
+    const float iout_warn_a = active->safety_iout_warn_deciamps / 10.0f;
+    const float iout_fault_a = active->safety_iout_fault_deciamps / 10.0f;
 
     *limits = (bitaxe_gamma602_safety_limits_t){
-        .input_voltage_min_v = INPUT_VOLTAGE_MIN_VOLTS,
-        .input_voltage_expected_min_v = INPUT_VOLTAGE_EXPECTED_MIN_VOLTS,
-        .input_voltage_expected_max_v = INPUT_VOLTAGE_EXPECTED_MAX_VOLTS,
-        .input_voltage_max_v = INPUT_VOLTAGE_SHUTDOWN_VOLTS,
-        .asic_voltage_min_v = ASIC_VOLTAGE_MIN_SHUTDOWN_VOLTS,
+        .input_voltage_min_v = active->safety_input_voltage_min_mv / 1000.0f,
+        .input_voltage_expected_min_v =
+            active->safety_input_voltage_expected_min_mv / 1000.0f,
+        .input_voltage_expected_max_v =
+            active->safety_input_voltage_expected_max_mv / 1000.0f,
+        .input_voltage_max_v = active->safety_input_voltage_max_mv / 1000.0f,
+        .asic_voltage_min_v = asic_voltage_min_v,
         .asic_voltage_expected_min_v = expected_vout_min,
         .asic_voltage_expected_max_v = expected_vout_max,
-        .asic_voltage_max_v = ASIC_VOLTAGE_SHUTDOWN_VOLTS,
+        .asic_voltage_max_v = asic_voltage_max_v,
         .asic_voltage_target_v = target_vout,
-        .asic_temp_expected_max_c = ASIC_TEMP_EXPECTED_MAX_C,
-        .asic_temp_max_c = ASIC_TEMP_SHUTDOWN_C,
-        .tps546_temp_expected_max_c = TPS546_EXPECTED_MAX_TEMP_C,
-        .tps546_temp_max_c = (float)TPS546_MAX_SAFE_TEMP_C,
-        .iout_warn_a = TPS546_IOUT_WARN_AMPS,
-        .iout_fault_a = TPS546_IOUT_FAULT_AMPS,
-        .power_warn_w = target_vout * TPS546_IOUT_WARN_AMPS,
-        .power_fault_w = target_vout * TPS546_IOUT_FAULT_AMPS,
+        .asic_temp_expected_max_c = (float)active->safety_asic_temp_expected_max_c,
+        .asic_temp_max_c = (float)active->safety_asic_temp_max_c,
+        .tps546_temp_expected_max_c = (float)active->safety_tps546_temp_expected_max_c,
+        .tps546_temp_max_c = (float)active->safety_tps546_temp_max_c,
+        .iout_warn_a = iout_warn_a,
+        .iout_fault_a = iout_fault_a,
+        .power_warn_w = target_vout * iout_warn_a,
+        .power_fault_w = target_vout * iout_fault_a,
         .fan_expected_percent = 100.0f,
     };
 }

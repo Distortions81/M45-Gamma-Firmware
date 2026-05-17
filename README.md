@@ -55,13 +55,15 @@ Other boards may need source changes before they are safe to run.
 ## Safety Limits
 
 The firmware holds ASIC reset low and turns TPS546 output off if a critical
-condition is detected:
+condition is detected. These are the default limits; the web overclock panel
+can tighten the local warning and shutdown thresholds:
 
 - ASIC temperature reaches `69 C`.
 - Enabled ASIC VOUT falls below `0.700 V`.
 - ASIC VOUT reaches `1.400 V`.
 - TPS546 temperature reaches `98 C`.
 - Input VIN reaches `5.5 V`.
+- TPS546 output current reaches `30 A`.
 - TPS546 or temperature monitor reads fail while hardware is active.
 
 These limits are last-resort protections, not a substitute for proper cooling

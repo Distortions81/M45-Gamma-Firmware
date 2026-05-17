@@ -20,6 +20,35 @@
 #define M45_DISPLAY_SLEEP_MAX_MINUTES UINT16_MAX
 #define M45_ASIC_FREQUENCY_MIN_MHZ 1
 #define M45_ASIC_FREQUENCY_MAX_MHZ 1500
+#define M45_SAFETY_INPUT_VOLTAGE_MIN_DEFAULT_MV 4500
+#define M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MIN_DEFAULT_MV 4800
+#define M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MAX_DEFAULT_MV 5400
+#define M45_SAFETY_INPUT_VOLTAGE_MAX_DEFAULT_MV 5500
+#define M45_SAFETY_ASIC_VOLTAGE_MIN_DEFAULT_MV 700
+#define M45_SAFETY_ASIC_VOLTAGE_MAX_DEFAULT_MV 1400
+#define M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_DEFAULT_C 60
+#define M45_SAFETY_ASIC_TEMP_MAX_DEFAULT_C 69
+#define M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_DEFAULT_C 85
+#define M45_SAFETY_TPS546_TEMP_MAX_DEFAULT_C 98
+#define M45_SAFETY_IOUT_WARN_DEFAULT_DA 250
+#define M45_SAFETY_IOUT_FAULT_DEFAULT_DA 300
+#define M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV 4500
+#define M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV 5200
+#define M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV 5000
+#define M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV 5500
+#define M45_SAFETY_ASIC_VOLTAGE_MIN_MIN_MV 700
+#define M45_SAFETY_ASIC_VOLTAGE_MIN_MAX_MV 1200
+#define M45_SAFETY_ASIC_VOLTAGE_MAX_MIN_MV 800
+#define M45_SAFETY_ASIC_VOLTAGE_MAX_MAX_MV 1400
+#define M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_MIN_C 35
+#define M45_SAFETY_ASIC_TEMP_MAX_MIN_C 45
+#define M45_SAFETY_ASIC_TEMP_MAX_MAX_C 69
+#define M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C 40
+#define M45_SAFETY_TPS546_TEMP_MAX_MIN_C 60
+#define M45_SAFETY_TPS546_TEMP_MAX_MAX_C 98
+#define M45_SAFETY_IOUT_WARN_MIN_DA 50
+#define M45_SAFETY_IOUT_FAULT_MIN_DA 60
+#define M45_SAFETY_IOUT_FAULT_MAX_DA 300
 
 typedef struct {
     char wifi_ssid[M45_WIFI_SSID_MAX + 1];
@@ -47,6 +76,18 @@ typedef struct {
     uint16_t fan_target_temp_c;
     bool display_screensaver_enabled;
     uint16_t display_sleep_minutes;
+    uint16_t safety_input_voltage_min_mv;
+    uint16_t safety_input_voltage_expected_min_mv;
+    uint16_t safety_input_voltage_expected_max_mv;
+    uint16_t safety_input_voltage_max_mv;
+    uint16_t safety_asic_voltage_min_mv;
+    uint16_t safety_asic_voltage_max_mv;
+    uint16_t safety_asic_temp_expected_max_c;
+    uint16_t safety_asic_temp_max_c;
+    uint16_t safety_tps546_temp_expected_max_c;
+    uint16_t safety_tps546_temp_max_c;
+    uint16_t safety_iout_warn_deciamps;
+    uint16_t safety_iout_fault_deciamps;
     double best_diff;
 } m45_config_t;
 
