@@ -70,6 +70,8 @@
 <article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
 <span id=oc-asic-state class=pill>--</span></div><div id=oc-asic class='value small'>--</div>
 <div id=oc-asic-note class=subvalue></div><div class=oc-power-actions>
+<label class=power-fan-toggle for=oc-asic-manage-fan><input id=oc-asic-manage-fan type=checkbox checked>
+<span class=label>Stop/start fan</span></label>
 <button id=oc-asic-power class=secondary type=button disabled>Turn Off</button>
 <span id=oc-asic-power-status class=status-text></span></div></article>
 <article class='panel wide oc-card'><div class=label>Preset</div><div class='settings-form oc-card-fields'>
@@ -313,7 +315,7 @@ const on=$('cfg-overclock-enabled').checked;cb.disabled=!on;
 if(!cb.checked){note.textContent='Off';return}
 const extra=s&&Number.isFinite(num(s.voltage_temp_compensation_mv))?num(s.voltage_temp_compensation_mv):NaN;
 const temp=s&&Number.isFinite(num(s.asic_temp_c))&&num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN;
-note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`+${n(extra,0)} mV now at ${n(temp,1)} C`:'Below 60 C: +5.5 mV/C'}
+note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`+${n(extra,0)} mV now at ${n(temp,1)} C`:'25-60 C: +5.5 mV/C; off outside 25-70 C'}
 function syncOverclockEnabled(){const on=$('cfg-overclock-enabled').checked;
 ['oc-preset','oc-voltage-offset','oc-temp-compensation','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on);
 syncTempCompensationNote();syncOverclockWarning()}
@@ -421,7 +423,8 @@ const powered=s.booting===true||s.asic_power_enabled!==false;btn.dataset.enabled
 btn.className=powered?'secondary':'primary';btn.setAttribute('aria-pressed',powered?'true':'false');
 btn.textContent=asicPowerBusy?(powered?'Turning Off...':'Turning On...'):(powered?'Turn Off':'Turn On');
 btn.title=s.hardware_fault?'Hardware fault latched':powered?'Turn ASIC off':'Turn ASIC on';
-btn.disabled=asicPowerBusy||!!s.booting||!!s.hardware_fault}
+btn.disabled=asicPowerBusy||!!s.booting||!!s.hardware_fault;
+const fan=$('oc-asic-manage-fan');if(fan)fan.disabled=btn.disabled}
 function setOverclock(s){
 const asicOn=s.booting===true||s.asic_power_enabled!==false,asicCls=s.hardware_fault?'bad':s.booting?'warn':s.asic_ready?'ok':asicOn?'warn':'';
 txt('oc-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
@@ -574,7 +577,8 @@ async function setAsicPower(enabled){if(asicPowerBusy)return;asicPowerBusy=true;
 const btn=$('oc-asic-power');if(btn){btn.disabled=true;btn.textContent=enabled?'Turning On...':'Turning Off...'}
 setStatus('oc-asic-power-status',enabled?'turning on...':'turning off...');
 setStatus('overclock-status',enabled?'turning ASIC on...':'turning ASIC off...');
-try{const r=await fetch('/api/asic-power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+const manageFan=$('oc-asic-manage-fan')?$('oc-asic-manage-fan').checked:true;
+try{const r=await fetch('/api/asic-power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,manage_fan:manageFan})});
 const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
 setStatus('oc-asic-power-status',enabled?'ASIC on':'ASIC off','ok',true);
 setStatus('overclock-status',enabled?'ASIC on':'ASIC off','ok',true)}

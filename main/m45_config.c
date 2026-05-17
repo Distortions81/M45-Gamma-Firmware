@@ -16,6 +16,8 @@
 #define M45_FAN_OVERRIDE_MAX_PERCENT 100
 #define M45_ASIC_VOLTAGE_MIN_MV 500
 #define M45_ASIC_VOLTAGE_MAX_MV 1370
+#define M45_ASIC_TEMP_COMP_MIN_C 25.0f
+#define M45_ASIC_TEMP_COMP_MAX_C 70.0f
 #define M45_ASIC_TEMP_COMP_REFERENCE_C 60.0f
 #define M45_ASIC_TEMP_COMP_MV_PER_C 5.5f
 #define M45_ASIC_TEMP_COMP_STEP_MV 5.0f
@@ -737,7 +739,8 @@ uint16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config
 {
     const m45_config_t *active = config != NULL ? config : &g_config;
     if (!active->overclock_enabled || !active->asic_voltage_temp_compensation_enabled ||
-        !isfinite(asic_temp_c) || asic_temp_c <= 0.0f ||
+        !isfinite(asic_temp_c) || asic_temp_c < M45_ASIC_TEMP_COMP_MIN_C ||
+        asic_temp_c > M45_ASIC_TEMP_COMP_MAX_C ||
         asic_temp_c >= M45_ASIC_TEMP_COMP_REFERENCE_C) {
         return 0;
     }

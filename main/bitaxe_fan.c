@@ -315,11 +315,17 @@ static esp_err_t fan_auto_start_blip(GlobalState *state, float raw_asic_temp_c,
     return ESP_OK;
 }
 
-static bool fan_apply_override(GlobalState *state, float current_percent)
+static esp_err_t fan_apply_override_config(GlobalState *state, float current_percent,
+                                           const m45_config_t *config, bool *applied)
 {
-    const m45_config_t *config = m45_config_get();
-    if (!config->fan_override_enabled) {
-        return false;
+    if (applied != NULL) {
+        *applied = false;
+    }
+    if (config == NULL || !config->fan_override_enabled) {
+        return ESP_OK;
+    }
+    if (applied != NULL) {
+        *applied = true;
     }
 
     const float override_percent = (float)config->fan_override_percent;
@@ -328,7 +334,7 @@ static bool fan_apply_override(GlobalState *state, float current_percent)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "fan override %.0f%% update failed: %s", override_percent,
                      esp_err_to_name(err));
-            return true;
+            return err;
         }
         state->POWER_MANAGEMENT_MODULE.fan_perc = override_percent;
         ESP_LOGI(TAG, "fan override %.0f%%", override_percent);
@@ -338,7 +344,14 @@ static bool fan_apply_override(GlobalState *state, float current_percent)
     g_fan_integral = 0.0f;
     g_fan_unstick_active = false;
     g_fan_auto_off_active = false;
-    return true;
+    return ESP_OK;
+}
+
+static bool fan_apply_override(GlobalState *state, float current_percent)
+{
+    bool applied = false;
+    esp_err_t err = fan_apply_override_config(state, current_percent, m45_config_get(), &applied);
+    return applied || err != ESP_OK;
 }
 
 esp_err_t bitaxe_fan_boot_max(void)
@@ -346,6 +359,81 @@ esp_err_t bitaxe_fan_boot_max(void)
     ESP_LOGI(TAG, "setting EMC2101 fan to %.0f%% PWM for early boot", FAN_MAX_PERCENT);
     ESP_RETURN_ON_ERROR(emc2101_set_boot_max_pwm(), TAG, "early boot fan max failed");
     ESP_LOGI(TAG, "early boot fan forced to %.0f%% PWM", FAN_MAX_PERCENT);
+    return ESP_OK;
+}
+
+esp_err_t bitaxe_fan_apply_config(GlobalState *state, const m45_config_t *config)
+{
+    if (state == NULL || config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!config->fan_override_enabled) {
+        return ESP_OK;
+    }
+    if (!g_emc2101_ready) {
+        ESP_LOGW(TAG, "fan override apply skipped; EMC2101 is not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const float current_percent = state->POWER_MANAGEMENT_MODULE.fan_perc >= 0.0f
+                                      ? state->POWER_MANAGEMENT_MODULE.fan_perc
+                                      : FAN_MAX_PERCENT;
+    return fan_apply_override_config(state, current_percent, config, NULL);
+}
+
+esp_err_t bitaxe_fan_start_for_asic(GlobalState *state)
+{
+    if (state == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!g_emc2101_ready) {
+        ESP_LOGW(TAG, "ASIC fan start skipped; EMC2101 is not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (fan_no_fan_selected()) {
+        return bitaxe_fan_apply_config(state, m45_config_get());
+    }
+
+    esp_err_t err = emc2101_set_fan_percent(FAN_MAX_PERCENT);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ASIC fan start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    state->POWER_MANAGEMENT_MODULE.fan_perc = FAN_MAX_PERCENT;
+    g_fan_cool_samples = 0;
+    g_fan_auto_off_samples = 0;
+    g_fan_integral = 0.0f;
+    g_fan_failsafe_latched = false;
+    g_fan_unstick_active = false;
+    g_fan_auto_off_active = false;
+    ESP_LOGI(TAG, "ASIC fan started at %.0f%%", FAN_MAX_PERCENT);
+    return ESP_OK;
+}
+
+esp_err_t bitaxe_fan_stop_for_asic(GlobalState *state)
+{
+    if (state == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!g_emc2101_ready) {
+        ESP_LOGW(TAG, "ASIC fan stop skipped; EMC2101 is not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = emc2101_set_fan_percent(0.0f);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ASIC fan stop failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    state->POWER_MANAGEMENT_MODULE.fan_perc = 0.0f;
+    g_fan_cool_samples = 0;
+    g_fan_auto_off_samples = 0;
+    g_fan_integral = 0.0f;
+    g_fan_failsafe_latched = false;
+    g_fan_unstick_active = false;
+    g_fan_auto_off_active = false;
+    ESP_LOGI(TAG, "ASIC fan stopped");
     return ESP_OK;
 }
 
@@ -428,8 +516,10 @@ esp_err_t bitaxe_fan_init(GlobalState *state)
 
     const m45_config_t *config = m45_config_get();
     const float target_temp_c = fan_target_temp_c_from_config(config);
+    ESP_RETURN_ON_ERROR(bitaxe_fan_apply_config(state, config), TAG,
+                        "EMC2101 fan config apply failed");
     ESP_LOGI(TAG, "fan initialized at %.0f%% PWM; target %.0f C; tach sampling starts in monitor",
-             FAN_MAX_PERCENT, target_temp_c);
+             state->POWER_MANAGEMENT_MODULE.fan_perc, target_temp_c);
 
     return ESP_OK;
 }

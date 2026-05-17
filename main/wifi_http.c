@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "bitaxe_hw.h"
+#include "bitaxe_fan.h"
 #include "build_info.h"
 #include "cJSON.h"
 #include "esp_check.h"
@@ -806,6 +807,15 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
         esp_err_t err = bitaxe_gamma602_set_frequency_mhz(g_state, new_frequency_mhz);
         stratum_minimal_resume_work();
         log_http_handler_delay("ASIC frequency apply", started_us);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    if (old_config->fan_override_enabled != new_config->fan_override_enabled ||
+        old_config->fan_override_percent != new_config->fan_override_percent) {
+        const uint64_t started_us = http_now_us();
+        esp_err_t err = bitaxe_fan_apply_config(g_state, new_config);
+        log_http_handler_delay("fan override apply", started_us);
         if (err != ESP_OK) {
             return err;
         }
@@ -1896,7 +1906,9 @@ static esp_err_t asic_power_handler(httpd_req_t *req)
     }
 
     bool enabled = false;
-    const bool ok = json_get_bool(json, "enabled", &enabled);
+    bool manage_fan = true;
+    const bool ok = json_get_bool(json, "enabled", &enabled) &&
+                    json_get_optional_bool(json, "manage_fan", &manage_fan);
     cJSON_Delete(json);
     if (!ok) {
         httpd_resp_set_status(req, "400 Bad Request");
@@ -1904,7 +1916,7 @@ static esp_err_t asic_power_handler(httpd_req_t *req)
     }
 
     const uint64_t power_started_us = http_now_us();
-    esp_err_t err = bitaxe_gamma602_set_asic_power(g_state, enabled);
+    esp_err_t err = bitaxe_gamma602_set_asic_power(g_state, enabled, manage_fan);
     log_http_handler_delay("ASIC power apply", power_started_us);
     if (err != ESP_OK) {
         if (err == ESP_ERR_INVALID_STATE) {

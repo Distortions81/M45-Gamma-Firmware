@@ -33,6 +33,7 @@
 #define TPS546_OUTPUT_SETTLE_POLL_MS 10
 #define TPS546_OUTPUT_SETTLE_TIMEOUT_MS 150
 #define ASIC_FREQUENCY_SETTLE_MS 50
+#define ASIC_TEMP_STARTUP_GRACE_MS 3000
 #define ASIC_TEMP_VOLTAGE_UPDATE_DEADBAND_MV 5
 static const char *TAG = "bitaxe_hw";
 static uint8_t g_chip_count = 0;
@@ -42,6 +43,7 @@ static bool g_power_monitor_started = false;
 static bool g_regulator_enabled = false;
 static bool g_tps546_ready = false;
 static uint16_t g_commanded_voltage_mv = 0;
+static TickType_t g_asic_temp_grace_until;
 static portMUX_TYPE g_power_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
 static bitaxe_gamma602_power_snapshot_t g_power_snapshot = {0};
 static float g_power_vin_window[TPS546_POWER_WINDOW_SAMPLES];
@@ -308,13 +310,21 @@ static esp_err_t update_asic_temperature(GlobalState *state, float *temp_c)
 {
     esp_err_t err = bitaxe_fan_read_asic_temp_c(temp_c);
     if (err != ESP_OK) {
+        if (xTaskGetTickCount() < g_asic_temp_grace_until) {
+            ESP_LOGW(TAG, "ignoring startup ASIC temperature read failure: %s",
+                     esp_err_to_name(err));
+            return err;
+        }
         safety_shutdown(state, "ASIC temperature read failed");
         return err;
     }
 
     *temp_c += (float)state->DEVICE_CONFIG.temp_offset;
-    state->POWER_MANAGEMENT_MODULE.chip_temp_avg = *temp_c;
     if (!isfinite(*temp_c)) {
+        if (xTaskGetTickCount() < g_asic_temp_grace_until) {
+            ESP_LOGW(TAG, "ignoring startup ASIC temperature invalid");
+            return ESP_ERR_INVALID_STATE;
+        }
         safety_shutdown(state, "ASIC temperature invalid");
         return ESP_FAIL;
     }
@@ -322,12 +332,18 @@ static esp_err_t update_asic_temperature(GlobalState *state, float *temp_c)
     const float asic_temp_shutdown_c =
         (float)m45_config_get()->safety_asic_temp_max_c;
     if (*temp_c >= asic_temp_shutdown_c) {
+        if (xTaskGetTickCount() < g_asic_temp_grace_until) {
+            ESP_LOGW(TAG, "ignoring startup ASIC temperature %.1f C above %.1f C limit",
+                     *temp_c, asic_temp_shutdown_c);
+            return ESP_ERR_INVALID_STATE;
+        }
         ESP_LOGE(TAG, "ASIC temperature %.1f C reached shutdown limit %.1f C", *temp_c,
                  asic_temp_shutdown_c);
         safety_shutdown(state, "ASIC temperature at or above configured limit");
         return ESP_FAIL;
     }
 
+    state->POWER_MANAGEMENT_MODULE.chip_temp_avg = *temp_c;
     return ESP_OK;
 }
 
@@ -669,6 +685,8 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
     }
     SERIAL_clear_buffer();
     state->ASIC_initalized = true;
+    g_asic_temp_grace_until =
+        xTaskGetTickCount() + pdMS_TO_TICKS(ASIC_TEMP_STARTUP_GRACE_MS);
     set_hw_status("ready");
 
     ESP_LOGI(TAG, "Gamma 602 ASIC ready: %u chip(s), %.0f MHz, %d mV",
@@ -682,7 +700,7 @@ bool bitaxe_gamma602_asic_power_enabled(void)
     return g_regulator_enabled;
 }
 
-esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled)
+esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool manage_fan)
 {
     if (state == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -695,6 +713,12 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled)
         if (state->ASIC_initalized && g_regulator_enabled) {
             return ESP_OK;
         }
+        if (manage_fan) {
+            ESP_RETURN_ON_ERROR(bitaxe_fan_start_for_asic(state), TAG,
+                                "ASIC fan start failed");
+        }
+        g_asic_temp_grace_until =
+            xTaskGetTickCount() + pdMS_TO_TICKS(ASIC_TEMP_STARTUP_GRACE_MS);
         bitaxe_gamma602_clear_jobs(state);
         const esp_err_t err = bitaxe_gamma602_start_hardware(state);
         if (err != ESP_OK && !state->SYSTEM_MODULE.hardware_fault) {
@@ -732,6 +756,13 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled)
             if (err == ESP_OK) {
                 err = vout_err;
             }
+        }
+    }
+
+    if (manage_fan) {
+        const esp_err_t fan_err = bitaxe_fan_stop_for_asic(state);
+        if (fan_err != ESP_OK && err == ESP_OK) {
+            err = fan_err;
         }
     }
 
