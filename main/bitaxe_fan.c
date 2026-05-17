@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "emc2101_regs.h"
 #include "esp_check.h"
@@ -22,7 +23,7 @@
 #define FAN_TARGET_MAX_TEMP_C 66.0f
 #define FAN_TEMP_DEADBAND_C 1.0f
 #define FAN_COOL_SAMPLES_BEFORE_STEP_DOWN 24
-#define FAN_COOL_SAMPLES_BEFORE_AUTO_OFF 80
+#define FAN_COOL_SAMPLES_BEFORE_AUTO_OFF 12
 #define FAN_TEMP_WINDOW_SAMPLES 24
 #define FAN_RPM_WINDOW_SAMPLES 16
 #define FAN_AUTO_MIN_PERCENT 30.0f
@@ -56,9 +57,11 @@ static float g_fan_integral;
 static uint8_t g_fan_cool_samples;
 static uint8_t g_fan_auto_off_samples;
 static float g_fan_temp_window[FAN_TEMP_WINDOW_SAMPLES];
+static float g_fan_temp_window_sum;
 static uint8_t g_fan_temp_window_count;
 static uint8_t g_fan_temp_window_next;
 static uint16_t g_fan_rpm_window[FAN_RPM_WINDOW_SAMPLES];
+static uint32_t g_fan_rpm_window_sum;
 static uint8_t g_fan_rpm_window_count;
 static uint8_t g_fan_rpm_window_next;
 static bool g_fan_failsafe_latched;
@@ -204,18 +207,18 @@ static esp_err_t fan_sample_rpm(GlobalState *state, uint16_t *raw_rpm, uint16_t 
     uint16_t rpm = 0;
     ESP_RETURN_ON_ERROR(emc2101_read_fan_rpm(&rpm), TAG, "EMC2101 fan tach read failed");
 
-    g_fan_rpm_window[g_fan_rpm_window_next] = rpm;
-    g_fan_rpm_window_next = (g_fan_rpm_window_next + 1) % FAN_RPM_WINDOW_SAMPLES;
-    if (g_fan_rpm_window_count < FAN_RPM_WINDOW_SAMPLES) {
+    const uint8_t index = g_fan_rpm_window_next;
+    if (g_fan_rpm_window_count == FAN_RPM_WINDOW_SAMPLES) {
+        g_fan_rpm_window_sum -= g_fan_rpm_window[index];
+    } else {
         ++g_fan_rpm_window_count;
     }
 
-    uint32_t total = 0;
-    for (uint8_t i = 0; i < g_fan_rpm_window_count; ++i) {
-        total += g_fan_rpm_window[i];
-    }
+    g_fan_rpm_window[index] = rpm;
+    g_fan_rpm_window_sum += rpm;
+    g_fan_rpm_window_next = (uint8_t)((index + 1) % FAN_RPM_WINDOW_SAMPLES);
 
-    const uint16_t averaged = (uint16_t)((total + (g_fan_rpm_window_count / 2)) /
+    const uint16_t averaged = (uint16_t)((g_fan_rpm_window_sum + (g_fan_rpm_window_count / 2)) /
                                          g_fan_rpm_window_count);
     state->POWER_MANAGEMENT_MODULE.fan_rpm = averaged;
     if (raw_rpm != NULL) {
@@ -229,7 +232,9 @@ static esp_err_t fan_sample_rpm(GlobalState *state, uint16_t *raw_rpm, uint16_t 
 
 static void fan_reset_rpm_average(GlobalState *state, uint16_t rpm)
 {
+    memset(g_fan_rpm_window, 0, sizeof(g_fan_rpm_window));
     g_fan_rpm_window[0] = rpm;
+    g_fan_rpm_window_sum = rpm;
     g_fan_rpm_window_count = 1;
     g_fan_rpm_window_next = 1;
     state->POWER_MANAGEMENT_MODULE.fan_rpm = rpm;
@@ -487,7 +492,6 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
     }
     const float requested_percent = target_percent;
     target_percent = fan_clean_percent(target_percent);
-    const float auto_min_percent = fan_clean_percent(FAN_AUTO_MIN_PERCENT);
 
     if (g_fan_failsafe_latched) {
         if (fan_no_fan_selected()) {
@@ -518,8 +522,7 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
     }
 
     if (config->fan_auto_off_allowed && requested_percent < FAN_AUTO_MIN_PERCENT) {
-        if (control_temp_c <= (target_temp_c - FAN_AUTO_OFF_COOL_MARGIN_C) &&
-            current_percent <= (auto_min_percent + 0.5f)) {
+        if (control_temp_c <= (target_temp_c - FAN_AUTO_OFF_COOL_MARGIN_C)) {
             if (g_fan_auto_off_samples < FAN_COOL_SAMPLES_BEFORE_AUTO_OFF) {
                 ++g_fan_auto_off_samples;
                 return;
@@ -538,7 +541,7 @@ void bitaxe_fan_update_auto(GlobalState *state, float raw_asic_temp_c, float con
             state->POWER_MANAGEMENT_MODULE.fan_perc = 0.0f;
             m45_log_buffer_append_verbose(
                 TAG,
-                "fan auto raw %.1f C ctl %.1f C: %.0f%% -> 0%% target %.0f%% below %.0f%% min",
+                "fan cold guard raw %.1f C ctl %.1f C: %.0f%% -> 0%% target %.0f%% below %.0f%% min",
                 raw_asic_temp_c, control_temp_c, current_percent, requested_percent,
                 FAN_AUTO_MIN_PERCENT);
             return;
@@ -614,15 +617,15 @@ float bitaxe_fan_control_temp_c(float asic_temp_c)
         return asic_temp_c;
     }
 
-    g_fan_temp_window[g_fan_temp_window_next] = asic_temp_c;
-    g_fan_temp_window_next = (g_fan_temp_window_next + 1) % FAN_TEMP_WINDOW_SAMPLES;
-    if (g_fan_temp_window_count < FAN_TEMP_WINDOW_SAMPLES) {
+    const uint8_t index = g_fan_temp_window_next;
+    if (g_fan_temp_window_count == FAN_TEMP_WINDOW_SAMPLES) {
+        g_fan_temp_window_sum -= g_fan_temp_window[index];
+    } else {
         ++g_fan_temp_window_count;
     }
 
-    float total = 0.0f;
-    for (uint8_t i = 0; i < g_fan_temp_window_count; ++i) {
-        total += g_fan_temp_window[i];
-    }
-    return total / (float)g_fan_temp_window_count;
+    g_fan_temp_window[index] = asic_temp_c;
+    g_fan_temp_window_sum += asic_temp_c;
+    g_fan_temp_window_next = (uint8_t)((index + 1) % FAN_TEMP_WINDOW_SAMPLES);
+    return g_fan_temp_window_sum / (float)g_fan_temp_window_count;
 }

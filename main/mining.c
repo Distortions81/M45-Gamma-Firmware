@@ -151,17 +151,43 @@ void calculate_coinbase_tx_hash_bin(const uint8_t *coinbase_1, size_t coinbase_1
 {
     const size_t extranonce_len = strlen(extranonce) / 2;
     const size_t extranonce_2_len = strlen(extranonce_2) / 2;
-    const size_t tx_len = coinbase_1_len + extranonce_len + extranonce_2_len +
-                          coinbase_2_len;
-    uint8_t tx[tx_len];
+    uint8_t extranonce_bin[extranonce_len > 0 ? extranonce_len : 1];
+    uint8_t extranonce_2_bin[extranonce_2_len > 0 ? extranonce_2_len : 1];
+
+    if (extranonce_len > 0) {
+        hex2bin(extranonce, extranonce_bin, extranonce_len);
+    }
+    if (extranonce_2_len > 0) {
+        hex2bin(extranonce_2, extranonce_2_bin, extranonce_2_len);
+    }
+
+    calculate_coinbase_tx_hash_parts(coinbase_1, coinbase_1_len, extranonce_bin,
+                                     extranonce_len, extranonce_2_bin, extranonce_2_len,
+                                     coinbase_2, coinbase_2_len, dest);
+}
+
+void calculate_coinbase_tx_hash_parts(const uint8_t *coinbase_1, size_t coinbase_1_len,
+                                      const uint8_t *extranonce, size_t extranonce_len,
+                                      const uint8_t *extranonce_2, size_t extranonce_2_len,
+                                      const uint8_t *coinbase_2, size_t coinbase_2_len,
+                                      uint8_t dest[32])
+{
+    const size_t tx_len = coinbase_1_len + extranonce_len + extranonce_2_len + coinbase_2_len;
+    uint8_t tx[tx_len > 0 ? tx_len : 1];
 
     size_t offset = 0;
     if (coinbase_1_len > 0) {
         memcpy(tx + offset, coinbase_1, coinbase_1_len);
         offset += coinbase_1_len;
     }
-    offset += hex2bin(extranonce, tx + offset, tx_len - offset);
-    offset += hex2bin(extranonce_2, tx + offset, tx_len - offset);
+    if (extranonce_len > 0) {
+        memcpy(tx + offset, extranonce, extranonce_len);
+        offset += extranonce_len;
+    }
+    if (extranonce_2_len > 0) {
+        memcpy(tx + offset, extranonce_2, extranonce_2_len);
+        offset += extranonce_2_len;
+    }
     if (coinbase_2_len > 0) {
         memcpy(tx + offset, coinbase_2, coinbase_2_len);
     }
@@ -267,11 +293,17 @@ void extranonce_2_generate(uint64_t extranonce_2, uint32_t length,
                            char dest[static length * 2 + 1])
 {
     uint8_t bytes[length];
-    memset(bytes, 0, length);
+    extranonce_2_generate_bin(extranonce_2, length, bytes);
+    bin2hex(bytes, length, dest, length * 2 + 1);
+}
+
+void extranonce_2_generate_bin(uint64_t extranonce_2, uint32_t length,
+                               uint8_t dest[static length])
+{
+    memset(dest, 0, length);
 
     const size_t copy_len = length < sizeof(extranonce_2) ? length : sizeof(extranonce_2);
-    memcpy(bytes, &extranonce_2, copy_len);
-    bin2hex(bytes, length, dest, length * 2 + 1);
+    memcpy(dest, &extranonce_2, copy_len);
 }
 
 uint32_t increment_bitmask(uint32_t value, uint32_t mask)

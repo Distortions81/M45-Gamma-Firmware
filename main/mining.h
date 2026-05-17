@@ -62,6 +62,11 @@ void calculate_coinbase_tx_hash_bin(const uint8_t *coinbase_1, size_t coinbase_1
                                     const uint8_t *coinbase_2, size_t coinbase_2_len,
                                     const char *extranonce, const char *extranonce_2,
                                     uint8_t dest[32]);
+void calculate_coinbase_tx_hash_parts(const uint8_t *coinbase_1, size_t coinbase_1_len,
+                                      const uint8_t *extranonce, size_t extranonce_len,
+                                      const uint8_t *extranonce_2, size_t extranonce_2_len,
+                                      const uint8_t *coinbase_2, size_t coinbase_2_len,
+                                      uint8_t dest[32]);
 void calculate_merkle_root_hash(const uint8_t coinbase_tx_hash[32],
                                 const uint8_t merkle_branches[][32],
                                 int num_merkle_branches, uint8_t dest[32]);
@@ -71,4 +76,6 @@ double test_nonce_value(const bm_job *job, uint32_t nonce, uint32_t rolled_versi
 double block_target_difficulty(uint32_t compact_target);
 void extranonce_2_generate(uint64_t extranonce_2, uint32_t length,
                            char dest[static length * 2 + 1]);
+void extranonce_2_generate_bin(uint64_t extranonce_2, uint32_t length,
+                               uint8_t dest[static length]);
 uint32_t increment_bitmask(uint32_t value, uint32_t mask);

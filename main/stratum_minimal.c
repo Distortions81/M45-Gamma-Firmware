@@ -163,6 +163,7 @@ static double g_asic_hashrate_error_ghs;
 static double g_asic_error_rate_percent;
 static uint64_t g_asic_hashrate_updated_us;
 static double g_domain_hashrate_samples[ASIC_DOMAIN_HASHRATE_SAMPLE_COUNT];
+static double g_domain_hashrate_sample_sum;
 static size_t g_domain_hashrate_sample_next;
 static size_t g_domain_hashrate_sample_count;
 static double g_domain_hashrate_ghs;
@@ -171,6 +172,10 @@ static char g_current_block_hash[80];
 static char g_active_pool_host[M45_POOL_HOST_MAX + 1];
 static uint16_t g_active_pool_port;
 static bool g_active_using_backup_pool;
+static float g_job_interval_frequency_mhz;
+static int g_job_interval_ms;
+static uint8_t *g_extranonce_bin;
+static size_t g_extranonce_len;
 
 typedef struct {
     char host[M45_POOL_HOST_MAX + 1];
@@ -647,14 +652,15 @@ static void record_asic_register_read(register_type_t register_type, uint8_t asi
     taskENTER_CRITICAL(&g_asic_hashrate_mux);
     if (register_type == REGISTER_TOTAL_COUNT) {
         update_asic_hash_counter(&g_asic_total_counters[asic_nr], value, timestamp_us);
+        update_asic_hashrate_totals_locked(timestamp_us);
     } else if (register_type == REGISTER_ERROR_COUNT) {
         update_asic_hash_counter(&g_asic_error_counters[asic_nr], value, timestamp_us);
+        update_asic_hashrate_totals_locked(timestamp_us);
     } else {
         update_asic_hash_counter(
             &g_asic_domain_counters[(asic_nr * ASIC_HASH_DOMAIN_COUNT) + domain_index], value,
             timestamp_us);
     }
-    update_asic_hashrate_totals_locked(timestamp_us);
     taskEXIT_CRITICAL(&g_asic_hashrate_mux);
 }
 
@@ -662,7 +668,6 @@ static void record_domain_hashrate_sample(uint64_t min_timestamp_us)
 {
     double domain_total_ghs = 0.0;
     size_t valid_domains = 0;
-    double sample_sum = 0.0;
 
     taskENTER_CRITICAL(&g_asic_hashrate_mux);
     for (size_t asic = 0; asic < g_asic_hashrate_counter_count; ++asic) {
@@ -678,16 +683,18 @@ static void record_domain_hashrate_sample(uint64_t min_timestamp_us)
 
     const size_t expected_domains = g_asic_hashrate_counter_count * ASIC_HASH_DOMAIN_COUNT;
     if (expected_domains > 0 && valid_domains == expected_domains) {
-        g_domain_hashrate_samples[g_domain_hashrate_sample_next] = domain_total_ghs;
-        g_domain_hashrate_sample_next =
-            (g_domain_hashrate_sample_next + 1) % ASIC_DOMAIN_HASHRATE_SAMPLE_COUNT;
-        if (g_domain_hashrate_sample_count < ASIC_DOMAIN_HASHRATE_SAMPLE_COUNT) {
+        const size_t index = g_domain_hashrate_sample_next;
+        if (g_domain_hashrate_sample_count == ASIC_DOMAIN_HASHRATE_SAMPLE_COUNT) {
+            g_domain_hashrate_sample_sum -= g_domain_hashrate_samples[index];
+        } else {
             ++g_domain_hashrate_sample_count;
         }
-        for (size_t i = 0; i < g_domain_hashrate_sample_count; ++i) {
-            sample_sum += g_domain_hashrate_samples[i];
-        }
-        g_domain_hashrate_ghs = sample_sum / (double)g_domain_hashrate_sample_count;
+        g_domain_hashrate_samples[index] = domain_total_ghs;
+        g_domain_hashrate_sample_sum += domain_total_ghs;
+        g_domain_hashrate_sample_next =
+            (g_domain_hashrate_sample_next + 1) % ASIC_DOMAIN_HASHRATE_SAMPLE_COUNT;
+        g_domain_hashrate_ghs =
+            g_domain_hashrate_sample_sum / (double)g_domain_hashrate_sample_count;
         g_domain_hashrate_updated_us = (uint64_t)esp_timer_get_time();
     }
     taskEXIT_CRITICAL(&g_asic_hashrate_mux);
@@ -818,6 +825,12 @@ static esp_err_t init_asic_hashrate_monitor(size_t asic_count)
         return ESP_ERR_NO_MEM;
     }
     g_asic_hashrate_counter_count = asic_count;
+    memset(g_domain_hashrate_samples, 0, sizeof(g_domain_hashrate_samples));
+    g_domain_hashrate_sample_sum = 0.0;
+    g_domain_hashrate_sample_next = 0;
+    g_domain_hashrate_sample_count = 0;
+    g_domain_hashrate_ghs = 0.0;
+    g_domain_hashrate_updated_us = 0;
     return ESP_OK;
 }
 
@@ -1930,23 +1943,14 @@ static void stratum_update_payout_from_coinbase(const uint8_t *coinbase, size_t 
 static void stratum_update_payout_from_notify(const mining_notify *work)
 {
     if (work == NULL || g_state == NULL || g_state->extranonce_str == NULL ||
+        (g_extranonce_len > 0 && g_extranonce_bin == NULL) ||
         g_state->extranonce_2_len <= 0 || g_state->extranonce_2_len > MAX_EXTRANONCE2_LEN) {
         set_payout_status(STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
         return;
     }
 
-    const size_t coinbase_1_hex = strlen(work->coinbase_1);
-    const size_t extranonce_hex = strlen(g_state->extranonce_str);
-    const size_t extranonce_2_hex = (size_t)g_state->extranonce_2_len * 2U;
-    const size_t coinbase_2_hex = strlen(work->coinbase_2);
-    const size_t total_hex = coinbase_1_hex + extranonce_hex +
-                             extranonce_2_hex + coinbase_2_hex;
-    if ((total_hex & 1U) != 0) {
-        set_payout_status(STRATUM_PAYOUT_STATUS_PARSE_ERROR, 0);
-        return;
-    }
-
-    const size_t coinbase_len = total_hex / 2U;
+    const size_t coinbase_len = work->coinbase_1_len + g_extranonce_len +
+                                (size_t)g_state->extranonce_2_len + work->coinbase_2_len;
     uint8_t *coinbase = malloc(coinbase_len);
     if (coinbase == NULL) {
         set_payout_status(STRATUM_PAYOUT_STATUS_PARSE_ERROR, 0);
@@ -1954,15 +1958,18 @@ static void stratum_update_payout_from_notify(const mining_notify *work)
     }
 
     size_t offset = 0;
-    offset += hex2bin(work->coinbase_1, coinbase + offset, coinbase_len - offset);
-    offset += hex2bin(g_state->extranonce_str, coinbase + offset, coinbase_len - offset);
+    if (work->coinbase_1_len > 0) {
+        memcpy(coinbase + offset, work->coinbase_1_bin, work->coinbase_1_len);
+        offset += work->coinbase_1_len;
+    }
+    if (g_extranonce_len > 0) {
+        memcpy(coinbase + offset, g_extranonce_bin, g_extranonce_len);
+        offset += g_extranonce_len;
+    }
     memset(coinbase + offset, 0, (size_t)g_state->extranonce_2_len);
     offset += (size_t)g_state->extranonce_2_len;
-    offset += hex2bin(work->coinbase_2, coinbase + offset, coinbase_len - offset);
-    if (offset != coinbase_len) {
-        free(coinbase);
-        set_payout_status(STRATUM_PAYOUT_STATUS_PARSE_ERROR, 0);
-        return;
+    if (work->coinbase_2_len > 0) {
+        memcpy(coinbase + offset, work->coinbase_2_bin, work->coinbase_2_len);
     }
 
     stratum_update_payout_from_coinbase(coinbase, coinbase_len);
@@ -2102,14 +2109,25 @@ static void update_extranonce_values(const char *extranonce, int extranonce_2_le
         return;
     }
 
+    uint8_t *bin = NULL;
+    size_t bin_len = 0;
+    if (!decode_hex_alloc(extranonce, &bin, &bin_len)) {
+        ESP_LOGW(TAG, "ignoring invalid extranonce hex");
+        return;
+    }
+
     char *copy = strdup(extranonce);
     if (copy == NULL) {
+        free(bin);
         ESP_LOGE(TAG, "extranonce alloc failed");
         return;
     }
 
     free(g_state->extranonce_str);
+    free(g_extranonce_bin);
     g_state->extranonce_str = copy;
+    g_extranonce_bin = bin;
+    g_extranonce_len = bin_len;
     g_state->extranonce_2_len = extranonce_2_len;
     STRATUM_LOGI("extranonce ready: len=%d", g_state->extranonce_2_len);
 }
@@ -2501,7 +2519,7 @@ static void stratum_rx_task(void *arg)
 }
 
 static void generate_and_send_work(mining_notify *notification, uint64_t extranonce_2,
-                                   uint32_t work_epoch)
+                                   uint32_t work_epoch, int interval_ms)
 {
     if (atomic_load(&g_work_paused)) {
         metric_inc(&g_metric_job_send_skipped);
@@ -2512,6 +2530,7 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
         return;
     }
     if (!g_state->ASIC_initalized || g_state->extranonce_str == NULL ||
+        (g_extranonce_len > 0 && g_extranonce_bin == NULL) ||
         g_state->extranonce_2_len <= 0 || g_state->extranonce_2_len > MAX_EXTRANONCE2_LEN) {
         metric_inc(&g_metric_job_send_skipped);
         return;
@@ -2520,13 +2539,17 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
 #ifdef M45_ASIC_LOSS_METRICS
     const uint64_t build_started_us = (uint64_t)esp_timer_get_time();
 #endif
+    uint8_t extranonce_2_bin[MAX_EXTRANONCE2_LEN];
     char extranonce_2_str[MAX_EXTRANONCE2_STR];
-    extranonce_2_generate(extranonce_2, g_state->extranonce_2_len, extranonce_2_str);
+    const size_t extranonce_2_len = (size_t)g_state->extranonce_2_len;
+    extranonce_2_generate_bin(extranonce_2, g_state->extranonce_2_len, extranonce_2_bin);
+    bin2hex(extranonce_2_bin, extranonce_2_len, extranonce_2_str, sizeof(extranonce_2_str));
 
     uint8_t coinbase_tx_hash[32];
-    calculate_coinbase_tx_hash_bin(notification->coinbase_1_bin, notification->coinbase_1_len,
-                                   notification->coinbase_2_bin, notification->coinbase_2_len,
-                                   g_state->extranonce_str, extranonce_2_str, coinbase_tx_hash);
+    calculate_coinbase_tx_hash_parts(notification->coinbase_1_bin, notification->coinbase_1_len,
+                                     g_extranonce_bin, g_extranonce_len, extranonce_2_bin,
+                                     extranonce_2_len, notification->coinbase_2_bin,
+                                     notification->coinbase_2_len, coinbase_tx_hash);
 
     uint8_t merkle_root[32];
     calculate_merkle_root_hash(coinbase_tx_hash, (uint8_t(*)[32])notification->merkle_branches,
@@ -2575,18 +2598,23 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
     }
 
     atomic_store(&g_last_job_sent_us, (uint64_t)esp_timer_get_time());
-    record_assigned_work(bm1370_job_interval_ms());
+    record_assigned_work(interval_ms);
 }
 
 static int bm1370_job_interval_ms(void)
 {
+    const float frequency_mhz = g_state->POWER_MANAGEMENT_MODULE.actual_frequency;
+    if (g_job_interval_ms > 0 && g_job_interval_frequency_mhz == frequency_mhz) {
+        return g_job_interval_ms;
+    }
+
     const AsicConfig *asic = &g_state->DEVICE_CONFIG.family.asic;
     const int small_cores_up = _next_power_of_two(asic->small_core_count);
     const int cores_up = _next_power_of_two(asic->core_count);
     const size_t parallel_midstates =
         (cores_up > 0 && small_cores_up >= cores_up) ? (size_t)(small_cores_up / cores_up) : 1;
     const double timeout = calculate_bm_timeout_ms(
-        g_state->POWER_MANAGEMENT_MODULE.actual_frequency,
+        frequency_mhz,
         g_state->DEVICE_CONFIG.family.asic_count,
         asic->small_core_count,
         asic->core_count,
@@ -2594,7 +2622,9 @@ static int bm1370_job_interval_ms(void)
         ASIC_JOB_DISPATCH_PERCENT,
         asic->default_asic_timeout);
     const int interval = (int)timeout;
-    return interval >= ASIC_JOB_MIN_INTERVAL_MS ? interval : ASIC_JOB_MIN_INTERVAL_MS;
+    g_job_interval_frequency_mhz = frequency_mhz;
+    g_job_interval_ms = interval >= ASIC_JOB_MIN_INTERVAL_MS ? interval : ASIC_JOB_MIN_INTERVAL_MS;
+    return g_job_interval_ms;
 }
 
 static void job_task(void *arg)
@@ -2676,7 +2706,7 @@ static void job_task(void *arg)
                 if (scheduled_us != 0 && now_us > scheduled_us) {
                     metric_record_dispatch_late(now_us - scheduled_us, interval_us);
                 }
-                generate_and_send_work(current, extranonce_2++, current_epoch);
+                generate_and_send_work(current, extranonce_2++, current_epoch, interval_ms);
 
                 if (scheduled_us == 0 || now_us > scheduled_us + interval_us) {
                     next_dispatch_us = now_us + interval_us;
