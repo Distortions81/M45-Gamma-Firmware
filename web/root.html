@@ -36,6 +36,20 @@
 <span class=toggle-text><span class=label>Overclocking</span><span class=subvalue>Disabled keeps stock ASIC settings enforced.</span></span></label>
 <div class=oc-form-actions><button class=primary type=submit>Save &amp; Apply</button>
 <span id=overclock-status class=status-text></span></div></article>
+<section id=oc-safety-panel class='panel full oc-safety-panel'><div class=metric-head><div class=label>Safety</div>
+<span id=oc-safety-state class='pill ok'>OK</span></div><div id=oc-safety-clear class=oc-warning-clear>No active overclock notices.</div>
+<div class=oc-warning-list>
+<section id=oc-vr-warning class='oc-warning hidden'><div class=label>VR Cooling</div>
+<div class='value small'>For clocks over 800 MHz, add heatsink to the TPS voltage regulator
+<a class=warning-link href='https://www.solosatoshi.com/mosfet-heatsink-placement-guide' target=_blank rel=noopener><span class=link-ico>&#128279;</span>guide</a>.</div></section>
+<section id=oc-psu-warning class='oc-warning hidden'><div class=label>Power Supply</div>
+<div class='value small'>For clocks over 725 MHz, an upgraded PSU is required
+<a class=warning-link href='https://www.amazon.com/dp/B07DKCMJN9' target=_blank rel=noopener><span class=link-ico>&#128279;</span>buy</a>.</div></section>
+<section id=oc-fan-warning class='oc-warning hidden'><div class=label>Fan Speed</div>
+<div class='value small'>For clocks over 800 MHz, set fan speed to 100%.</div></section>
+<section id=oc-cooling-warning class='oc-warning hidden'><div class=label>Cooling Required</div>
+<div class='value small'>For clocks over 975 MHz, liquid cooling or a very large heatsink is required.</div></section>
+</div></section>
 <article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
 <span id=oc-asic-state class=pill>--</span></div><div id=oc-asic class='value small'>--</div>
 <div id=oc-asic-note class=subvalue></div><div class=oc-power-actions>
@@ -66,20 +80,6 @@
 <div id=cfg-fan-target-field class=field><label for=cfg-fan-target>Target Temp</label><div class=range-line>
 <input id=cfg-fan-target type=range min=35 max=66 step=1><span id=cfg-fan-target-value class=range-value>--C</span></div></div>
 </div></article>
-<section id=oc-safety-panel class='panel full oc-safety-panel'><div class=metric-head><div class=label>Safety</div>
-<span id=oc-safety-state class='pill ok'>OK</span></div><div id=oc-safety-clear class=oc-warning-clear>No active overclock notices.</div>
-<div class=oc-warning-list>
-<section id=oc-vr-warning class='oc-warning hidden'><div class=label>VR Cooling</div>
-<div class='value small'>For clocks over 800 MHz, add heatsink to the TPS voltage regulator 
-<a class=warning-link href='https://www.solosatoshi.com/mosfet-heatsink-placement-guide' target=_blank rel=noopener><span class=link-ico>&#128279;</span>guide</a>.</div></section>
-<section id=oc-psu-warning class='oc-warning hidden'><div class=label>Power Supply</div>
-<div class='value small'>For clocks over 725 MHz, an upgraded PSU is required 
-<a class=warning-link href='https://www.amazon.com/dp/B07DKCMJN9' target=_blank rel=noopener><span class=link-ico>&#128279;</span>buy</a>.</div></section>
-<section id=oc-fan-warning class='oc-warning hidden'><div class=label>Fan Speed</div>
-<div class='value small'>For clocks over 800 MHz, set fan speed to 100%.</div></section>
-<section id=oc-cooling-warning class='oc-warning hidden'><div class=label>Cooling Required</div>
-<div class='value small'>For clocks over 975 MHz, liquid cooling or a very large heatsink is required.</div></section>
-</div></section>
 </form>
 </section></section>
 <section id=calibration-view class=hidden><section class=grid>
