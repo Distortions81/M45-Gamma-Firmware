@@ -38,6 +38,7 @@
 #define WIFI_TEST_CONNECTED_BIT BIT2
 #define WIFI_TEST_FAIL_BIT BIT3
 #define WIFI_MAX_RETRY 8
+#define WIFI_RETRY_BACKOFF_MS 30000
 #define WIFI_TEST_TIMEOUT_MS 15000
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
@@ -61,12 +62,14 @@
 static const char *TAG = "wifi_http";
 static EventGroupHandle_t g_wifi_events;
 static SemaphoreHandle_t g_wifi_test_mutex;
+static SemaphoreHandle_t g_wifi_scan_mutex;
 static GlobalState *g_state;
 static esp_netif_t *g_netif;
 static esp_netif_t *g_ap_netif;
 static int g_retry_count;
 static bool g_connected;
 static bool g_setup_ap_active;
+static volatile bool g_wifi_retry_backoff_pending;
 static volatile bool g_wifi_test_active;
 static volatile bool g_wifi_test_waiting;
 static volatile uint8_t g_wifi_test_disconnect_reason;
@@ -78,6 +81,31 @@ static char g_page_token[17];
 static bool g_last_wifi_test_ok;
 static char g_last_wifi_test_ssid[M45_WIFI_SSID_MAX + 1];
 static char g_last_wifi_test_password[M45_WIFI_PASSWORD_MAX + 1];
+static bool g_wifi_scan_running;
+static bool g_wifi_scan_valid;
+static esp_err_t g_wifi_scan_err = ESP_ERR_INVALID_STATE;
+static wifi_ap_record_t g_wifi_scan_records[SETUP_SCAN_MAX_APS];
+static uint16_t g_wifi_scan_count;
+static portMUX_TYPE g_wifi_test_state_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t g_wifi_test_next_id;
+
+typedef struct {
+    uint32_t id;
+    bool running;
+    bool done;
+    esp_err_t err;
+    int rssi;
+    uint8_t reason;
+    char ip[16];
+} wifi_test_async_state_t;
+
+typedef struct {
+    uint32_t id;
+    char ssid[M45_WIFI_SSID_MAX + 1];
+    char password[M45_WIFI_PASSWORD_MAX + 1];
+} wifi_test_task_args_t;
+
+static wifi_test_async_state_t g_wifi_test_state;
 
 typedef esp_err_t (*http_route_handler_t)(httpd_req_t *req);
 
@@ -540,6 +568,114 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
     return connected ? ESP_OK : test_err;
 }
 
+static bool wifi_test_state_snapshot(wifi_test_async_state_t *snapshot)
+{
+    if (snapshot == NULL) {
+        return false;
+    }
+
+    portENTER_CRITICAL(&g_wifi_test_state_mux);
+    *snapshot = g_wifi_test_state;
+    portEXIT_CRITICAL(&g_wifi_test_state_mux);
+    return snapshot->running || snapshot->done;
+}
+
+static bool wifi_test_begin(uint32_t *id)
+{
+    bool started = false;
+
+    portENTER_CRITICAL(&g_wifi_test_state_mux);
+    if (!g_wifi_test_state.running) {
+        uint32_t next_id = ++g_wifi_test_next_id;
+        if (next_id == 0) {
+            next_id = ++g_wifi_test_next_id;
+        }
+        memset(&g_wifi_test_state, 0, sizeof(g_wifi_test_state));
+        g_wifi_test_state.id = next_id;
+        g_wifi_test_state.running = true;
+        g_wifi_test_state.err = ESP_ERR_INVALID_STATE;
+        if (id != NULL) {
+            *id = next_id;
+        }
+        started = true;
+    }
+    portEXIT_CRITICAL(&g_wifi_test_state_mux);
+
+    return started;
+}
+
+static void wifi_test_finish(uint32_t id, esp_err_t err, int rssi, const char *ip,
+                             uint8_t reason)
+{
+    portENTER_CRITICAL(&g_wifi_test_state_mux);
+    if (g_wifi_test_state.id == id) {
+        g_wifi_test_state.running = false;
+        g_wifi_test_state.done = true;
+        g_wifi_test_state.err = err;
+        g_wifi_test_state.rssi = rssi;
+        g_wifi_test_state.reason = reason;
+        strlcpy(g_wifi_test_state.ip, ip != NULL ? ip : "", sizeof(g_wifi_test_state.ip));
+    }
+    portEXIT_CRITICAL(&g_wifi_test_state_mux);
+}
+
+static void wifi_test_async_task(void *arg)
+{
+    wifi_test_task_args_t *task_args = (wifi_test_task_args_t *)arg;
+    if (task_args == NULL) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int rssi = 0;
+    char ip[16] = "";
+    uint8_t reason = 0;
+    const esp_err_t err = run_wifi_connection_test(task_args->ssid, task_args->password,
+                                                   &rssi, ip, sizeof(ip), &reason);
+    wifi_test_finish(task_args->id, err, rssi, ip, reason);
+    free(task_args);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t send_wifi_test_state(httpd_req_t *req,
+                                      const wifi_test_async_state_t *state)
+{
+    if (state == NULL || (!state->running && !state->done)) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_type(req, "application/json");
+        set_no_store_headers(req);
+        return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no Wi-Fi test\"}");
+    }
+
+    char response[160];
+    httpd_resp_set_type(req, "application/json");
+    set_no_store_headers(req);
+    if (state->running) {
+        httpd_resp_set_status(req, "202 Accepted");
+        snprintf(response, sizeof(response),
+                 "{\"ok\":false,\"running\":true,\"id\":%lu}",
+                 (unsigned long)state->id);
+        return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    }
+
+    if (state->err != ESP_OK) {
+        const char *message =
+            state->err == ESP_ERR_TIMEOUT ? "connection timed out"
+                                          : wifi_disconnect_reason_text(state->reason);
+        httpd_resp_set_status(req, "400 Bad Request");
+        snprintf(response, sizeof(response),
+                 "{\"ok\":false,\"running\":false,\"id\":%lu,\"error\":\"%s\",\"reason\":%u}",
+                 (unsigned long)state->id, message, state->reason);
+        return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    }
+
+    snprintf(response, sizeof(response),
+             "{\"ok\":true,\"running\":false,\"id\":%lu,\"connected\":true,\"ip\":\"%s\","
+             "\"rssi_dbm\":%d}",
+             (unsigned long)state->id, state->ip, state->rssi);
+    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+}
+
 static void wifi_reconnect_task(void *arg)
 {
     (void)arg;
@@ -557,6 +693,7 @@ static void wifi_reconnect_task(void *arg)
     }
     esp_wifi_disconnect();
     if (config->wifi_ssid[0] != '\0') {
+        g_retry_count = 0;
         esp_wifi_connect();
     }
     vTaskDelete(NULL);
@@ -565,6 +702,38 @@ static void wifi_reconnect_task(void *arg)
 static void schedule_wifi_reconnect(void)
 {
     xTaskCreate(wifi_reconnect_task, "wifi_reconn", 3072, NULL, tskIDLE_PRIORITY + 1, NULL);
+}
+
+static void wifi_retry_backoff_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(WIFI_RETRY_BACKOFF_MS));
+    g_wifi_retry_backoff_pending = false;
+
+    if (g_wifi_test_active || g_connected || m45_config_get()->wifi_ssid[0] == '\0') {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGW(TAG, "Wi-Fi still disconnected; retrying after backoff");
+    g_retry_count = 0;
+    esp_wifi_connect();
+    vTaskDelete(NULL);
+}
+
+static void schedule_wifi_retry_backoff(void)
+{
+    if (g_wifi_retry_backoff_pending) {
+        return;
+    }
+
+    g_wifi_retry_backoff_pending = true;
+    if (xTaskCreate(wifi_retry_backoff_task, "wifi_retry", 3072, NULL,
+                    tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
+        g_wifi_retry_backoff_pending = false;
+        ESP_LOGW(TAG, "failed to schedule Wi-Fi retry backoff; retrying immediately");
+        esp_wifi_connect();
+    }
 }
 
 static void json_escape(char *dst, size_t dst_size, const char *src)
@@ -878,6 +1047,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             ESP_LOGW(TAG, "Wi-Fi disconnected, retry %d/%d", g_retry_count, WIFI_MAX_RETRY);
         } else if (has_wifi_config) {
             xEventGroupSetBits(g_wifi_events, WIFI_FAIL_BIT);
+            schedule_wifi_retry_backoff();
+            ESP_LOGW(TAG, "Wi-Fi disconnected after %d retries; backing off for %d ms",
+                     g_retry_count, WIFI_RETRY_BACKOFF_MS);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
@@ -1376,24 +1548,128 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, body, body_len);
 }
 
-static esp_err_t networks_handler(httpd_req_t *req)
+static bool networks_refresh_requested(httpd_req_t *req)
 {
+    char query[32];
+    char value[8];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "refresh", value, sizeof(value)) != ESP_OK) {
+        return false;
+    }
+    return strcmp(value, "1") == 0 || strcmp(value, "true") == 0;
+}
+
+static void wifi_scan_task(void *arg)
+{
+    (void)arg;
     wifi_scan_config_t scan_config = {
         .show_hidden = false,
     };
-    const uint64_t scan_started_us = http_now_us();
+    wifi_ap_record_t records[SETUP_SCAN_MAX_APS] = {0};
+    uint16_t ap_count = SETUP_SCAN_MAX_APS;
     esp_err_t err = esp_wifi_scan_start(&scan_config, true);
-    log_http_handler_delay("Wi-Fi network scan", scan_started_us);
-    if (err != ESP_OK) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        char error_body[80];
-        snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
-        return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
+    if (err == ESP_OK) {
+        err = esp_wifi_scan_get_ap_records(&ap_count, records);
+    } else {
+        ap_count = 0;
     }
 
-    uint16_t ap_count = SETUP_SCAN_MAX_APS;
+    if (g_wifi_scan_mutex != NULL &&
+        xSemaphoreTake(g_wifi_scan_mutex, portMAX_DELAY) == pdTRUE) {
+        if (ap_count > SETUP_SCAN_MAX_APS) {
+            ap_count = SETUP_SCAN_MAX_APS;
+        }
+        g_wifi_scan_running = false;
+        g_wifi_scan_err = err;
+        g_wifi_scan_count = err == ESP_OK ? ap_count : 0;
+        g_wifi_scan_valid = err == ESP_OK;
+        if (err == ESP_OK) {
+            memcpy(g_wifi_scan_records, records,
+                   (size_t)g_wifi_scan_count * sizeof(g_wifi_scan_records[0]));
+        }
+        xSemaphoreGive(g_wifi_scan_mutex);
+    }
+
+    vTaskDelete(NULL);
+}
+
+static esp_err_t start_wifi_scan_async(void)
+{
+    if (g_wifi_scan_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (xSemaphoreTake(g_wifi_scan_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (g_wifi_scan_running) {
+        xSemaphoreGive(g_wifi_scan_mutex);
+        return ESP_OK;
+    }
+    g_wifi_scan_running = true;
+    g_wifi_scan_valid = false;
+    g_wifi_scan_err = ESP_ERR_INVALID_STATE;
+    g_wifi_scan_count = 0;
+    xSemaphoreGive(g_wifi_scan_mutex);
+
+    if (xTaskCreate(wifi_scan_task, "wifi_scan", 4096, NULL, tskIDLE_PRIORITY + 1,
+                    NULL) == pdPASS) {
+        return ESP_OK;
+    }
+
+    if (xSemaphoreTake(g_wifi_scan_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        g_wifi_scan_running = false;
+        g_wifi_scan_err = ESP_ERR_NO_MEM;
+        xSemaphoreGive(g_wifi_scan_mutex);
+    }
+    return ESP_ERR_NO_MEM;
+}
+
+static esp_err_t networks_handler(httpd_req_t *req)
+{
+    const bool refresh = networks_refresh_requested(req);
+    bool running = false;
+    bool valid = false;
+    esp_err_t err = ESP_OK;
+    uint16_t ap_count = 0;
     wifi_ap_record_t records[SETUP_SCAN_MAX_APS] = {0};
-    err = esp_wifi_scan_get_ap_records(&ap_count, records);
+
+    if (g_wifi_scan_mutex == NULL ||
+        xSemaphoreTake(g_wifi_scan_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"scan unavailable\"}");
+    }
+    running = g_wifi_scan_running;
+    valid = g_wifi_scan_valid;
+    err = g_wifi_scan_err;
+    ap_count = g_wifi_scan_count;
+    if (ap_count > SETUP_SCAN_MAX_APS) {
+        ap_count = SETUP_SCAN_MAX_APS;
+    }
+    memcpy(records, g_wifi_scan_records, (size_t)ap_count * sizeof(records[0]));
+    xSemaphoreGive(g_wifi_scan_mutex);
+
+    if (refresh || (!running && !valid)) {
+        const uint64_t scan_started_us = http_now_us();
+        err = start_wifi_scan_async();
+        log_http_handler_delay("Wi-Fi network scan start", scan_started_us);
+        if (err != ESP_OK) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            char error_body[80];
+            snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}",
+                     esp_err_to_name(err));
+            return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
+        }
+        running = true;
+        valid = false;
+    }
+
+    if (running) {
+        httpd_resp_set_type(req, "application/json");
+        set_no_store_headers(req);
+        return httpd_resp_sendstr(req, "{\"scanning\":true,\"networks\":[]}");
+    }
+
     if (err != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
@@ -1403,7 +1679,7 @@ static esp_err_t networks_handler(httpd_req_t *req)
 
     char body[2048];
     size_t offset = 0;
-    int written = snprintf(body, sizeof(body), "{\"networks\":[");
+    int written = snprintf(body, sizeof(body), "{\"scanning\":false,\"networks\":[");
     if (written < 0 || written >= (int)sizeof(body)) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"networks too large\"}");
@@ -1441,6 +1717,41 @@ static esp_err_t networks_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     set_no_store_headers(req);
     return httpd_resp_send(req, body, offset);
+}
+
+static uint32_t wifi_test_id_from_query(httpd_req_t *req)
+{
+    char query[40];
+    char id_text[16];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "id", id_text, sizeof(id_text)) != ESP_OK) {
+        return 0;
+    }
+
+    char *end = NULL;
+    const unsigned long id = strtoul(id_text, &end, 10);
+    return end != id_text ? (uint32_t)id : 0;
+}
+
+static esp_err_t wifi_test_status_handler(httpd_req_t *req)
+{
+    wifi_test_async_state_t state = {0};
+    if (!wifi_test_state_snapshot(&state)) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_type(req, "application/json");
+        set_no_store_headers(req);
+        return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no Wi-Fi test\"}");
+    }
+
+    const uint32_t requested_id = wifi_test_id_from_query(req);
+    if (requested_id != 0 && requested_id != state.id) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_type(req, "application/json");
+        set_no_store_headers(req);
+        return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"Wi-Fi test not found\"}");
+    }
+
+    return send_wifi_test_state(req, &state);
 }
 
 static esp_err_t wifi_test_handler(httpd_req_t *req)
@@ -1487,30 +1798,40 @@ static esp_err_t wifi_test_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"invalid Wi-Fi settings\"}");
     }
 
-    int rssi = 0;
-    char ip[16] = "";
-    uint8_t reason = 0;
-    const uint64_t test_started_us = http_now_us();
-    esp_err_t err = run_wifi_connection_test(test_config.wifi_ssid,
-                                             test_config.wifi_password, &rssi, ip,
-                                             sizeof(ip), &reason);
-    log_http_handler_delay("Wi-Fi connection test", test_started_us);
-    httpd_resp_set_type(req, "application/json");
-    set_no_store_headers(req);
-    if (err != ESP_OK) {
-        const char *message =
-            err == ESP_ERR_TIMEOUT ? "connection timed out" : wifi_disconnect_reason_text(reason);
-        httpd_resp_set_status(req, "400 Bad Request");
-        char error_body[128];
-        snprintf(error_body, sizeof(error_body),
-                 "{\"ok\":false,\"error\":\"%s\",\"reason\":%u}", message, reason);
-        return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
+    wifi_test_async_state_t current = {0};
+    if (wifi_test_state_snapshot(&current) && current.running) {
+        return send_wifi_test_state(req, &current);
     }
 
-    char response[96];
-    snprintf(response, sizeof(response),
-             "{\"ok\":true,\"connected\":true,\"ip\":\"%s\",\"rssi_dbm\":%d}", ip, rssi);
-    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    wifi_test_task_args_t *task_args = calloc(1, sizeof(*task_args));
+    if (task_args == NULL) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+
+    uint32_t test_id = 0;
+    if (!wifi_test_begin(&test_id)) {
+        free(task_args);
+        wifi_test_state_snapshot(&current);
+        return send_wifi_test_state(req, &current);
+    }
+
+    task_args->id = test_id;
+    strlcpy(task_args->ssid, test_config.wifi_ssid, sizeof(task_args->ssid));
+    strlcpy(task_args->password, test_config.wifi_password, sizeof(task_args->password));
+
+    const uint64_t test_started_us = http_now_us();
+    if (xTaskCreate(wifi_test_async_task, "wifi_test", 4096, task_args,
+                    tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
+        wifi_test_finish(test_id, ESP_ERR_NO_MEM, 0, "", 0);
+        free(task_args);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"test task failed\"}");
+    }
+    log_http_handler_delay("Wi-Fi connection test start", test_started_us);
+
+    wifi_test_state_snapshot(&current);
+    return send_wifi_test_state(req, &current);
 }
 
 static esp_err_t setup_post_handler(httpd_req_t *req)
@@ -2074,6 +2395,7 @@ static esp_err_t start_http_server(void)
         {.uri = "/api/setup", .method = HTTP_GET, .handler = setup_get_handler},
         {.uri = "/api/setup", .method = HTTP_POST, .handler = setup_post_handler},
         {.uri = "/api/networks", .method = HTTP_GET, .handler = networks_handler},
+        {.uri = "/api/wifi-test", .method = HTTP_GET, .handler = wifi_test_status_handler},
         {.uri = "/api/wifi-test", .method = HTTP_POST, .handler = wifi_test_handler},
         {.uri = "/api/settings", .method = HTTP_GET, .handler = settings_get_handler},
         {.uri = "/api/settings", .method = HTTP_POST, .handler = settings_post_handler},
@@ -2131,6 +2453,10 @@ esp_err_t wifi_http_start(GlobalState *state)
     }
     g_wifi_test_mutex = xSemaphoreCreateMutex();
     if (g_wifi_test_mutex == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    g_wifi_scan_mutex = xSemaphoreCreateMutex();
+    if (g_wifi_scan_mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
 

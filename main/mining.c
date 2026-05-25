@@ -8,6 +8,9 @@
 #include "utils.h"
 
 #define BM_JOB_POOL_SIZE 32
+#define MINING_COINBASE_TX_MAX_BYTES 4096
+#define MINING_COINBASE_TX_STACK_BYTES 768
+#define MINING_EXTRANONCE_MAX_BYTES 64
 
 static bm_job g_bm_job_pool[BM_JOB_POOL_SIZE];
 static bool g_bm_job_pool_used[BM_JOB_POOL_SIZE];
@@ -128,12 +131,30 @@ void calculate_coinbase_tx_hash(const char *coinbase_1, const char *coinbase_2,
                                 const char *extranonce, const char *extranonce_2,
                                 uint8_t dest[32])
 {
+    if (coinbase_1 == NULL || coinbase_2 == NULL || extranonce == NULL ||
+        extranonce_2 == NULL || dest == NULL) {
+        return;
+    }
+
     const size_t len1 = strlen(coinbase_1);
     const size_t len2 = strlen(extranonce);
     const size_t len3 = strlen(extranonce_2);
     const size_t len4 = strlen(coinbase_2);
     const size_t tx_len = (len1 + len2 + len3 + len4) / 2;
-    uint8_t tx[tx_len];
+    if (tx_len > MINING_COINBASE_TX_MAX_BYTES) {
+        memset(dest, 0, 32);
+        return;
+    }
+
+    uint8_t stack_tx[MINING_COINBASE_TX_STACK_BYTES];
+    uint8_t *tx = stack_tx;
+    if (tx_len > sizeof(stack_tx)) {
+        tx = malloc(tx_len);
+        if (tx == NULL) {
+            memset(dest, 0, 32);
+            return;
+        }
+    }
 
     size_t offset = 0;
     offset += hex2bin(coinbase_1, tx + offset, tx_len - offset);
@@ -142,6 +163,9 @@ void calculate_coinbase_tx_hash(const char *coinbase_1, const char *coinbase_2,
     hex2bin(coinbase_2, tx + offset, tx_len - offset);
 
     double_sha256_bin(tx, tx_len, dest);
+    if (tx != stack_tx) {
+        free(tx);
+    }
 }
 
 void calculate_coinbase_tx_hash_bin(const uint8_t *coinbase_1, size_t coinbase_1_len,
@@ -149,10 +173,20 @@ void calculate_coinbase_tx_hash_bin(const uint8_t *coinbase_1, size_t coinbase_1
                                     const char *extranonce, const char *extranonce_2,
                                     uint8_t dest[32])
 {
+    if (extranonce == NULL || extranonce_2 == NULL || dest == NULL) {
+        return;
+    }
+
     const size_t extranonce_len = strlen(extranonce) / 2;
     const size_t extranonce_2_len = strlen(extranonce_2) / 2;
-    uint8_t extranonce_bin[extranonce_len > 0 ? extranonce_len : 1];
-    uint8_t extranonce_2_bin[extranonce_2_len > 0 ? extranonce_2_len : 1];
+    if (extranonce_len > MINING_EXTRANONCE_MAX_BYTES ||
+        extranonce_2_len > MINING_EXTRANONCE_MAX_BYTES) {
+        memset(dest, 0, 32);
+        return;
+    }
+
+    uint8_t extranonce_bin[MINING_EXTRANONCE_MAX_BYTES];
+    uint8_t extranonce_2_bin[MINING_EXTRANONCE_MAX_BYTES];
 
     if (extranonce_len > 0) {
         hex2bin(extranonce, extranonce_bin, extranonce_len);
@@ -173,7 +207,26 @@ void calculate_coinbase_tx_hash_parts(const uint8_t *coinbase_1, size_t coinbase
                                       uint8_t dest[32])
 {
     const size_t tx_len = coinbase_1_len + extranonce_len + extranonce_2_len + coinbase_2_len;
-    uint8_t tx[tx_len > 0 ? tx_len : 1];
+    if ((coinbase_1_len > 0 && coinbase_1 == NULL) ||
+        (extranonce_len > 0 && extranonce == NULL) ||
+        (extranonce_2_len > 0 && extranonce_2 == NULL) ||
+        (coinbase_2_len > 0 && coinbase_2 == NULL) || dest == NULL ||
+        tx_len > MINING_COINBASE_TX_MAX_BYTES) {
+        if (dest != NULL) {
+            memset(dest, 0, 32);
+        }
+        return;
+    }
+
+    uint8_t stack_tx[MINING_COINBASE_TX_STACK_BYTES];
+    uint8_t *tx = stack_tx;
+    if (tx_len > sizeof(stack_tx)) {
+        tx = malloc(tx_len);
+        if (tx == NULL) {
+            memset(dest, 0, 32);
+            return;
+        }
+    }
 
     size_t offset = 0;
     if (coinbase_1_len > 0) {
@@ -193,6 +246,9 @@ void calculate_coinbase_tx_hash_parts(const uint8_t *coinbase_1, size_t coinbase
     }
 
     double_sha256_bin(tx, tx_len, dest);
+    if (tx != stack_tx) {
+        free(tx);
+    }
 }
 
 void calculate_merkle_root_hash(const uint8_t coinbase_tx_hash[32],

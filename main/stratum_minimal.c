@@ -35,6 +35,8 @@
 #define STRATUM_IDLE_TIMEOUT_MS 120000
 #define TRANSPORT_TIMEOUT_MS 5000
 #define STRATUM_BUFFER_SIZE 1024
+#define STRATUM_MAX_LINE_SIZE 16384
+#define STRATUM_MAX_COINBASE_BYTES 4096
 #define SHARE_ID_SLOTS 16
 #define RESPONSE_ID_SLOTS 16
 #define HASHRATE_WINDOW_US 60000000ULL
@@ -60,6 +62,7 @@
 #define STRATUM_ID_SUGGEST_DIFFICULTY 3
 #define STRATUM_ID_AUTHORIZE 4
 #define STRATUM_ID_EXTRANONCE_SUBSCRIBE 5
+#define STRATUM_SUBMIT_NO_TRANSPORT (-2)
 
 static const char *TAG = "stratum_min";
 
@@ -190,7 +193,7 @@ typedef struct {
     size_t offset;
 } coinbase_reader_t;
 
-static esp_transport_handle_t get_transport(void);
+static bool stratum_runtime_ready(void);
 static uint32_t reset_work_state(bool queue_marker);
 static void set_payout_status(uint8_t status, uint16_t percent_x100);
 
@@ -452,10 +455,16 @@ static void request_stratum_transport_close(bool clear_work)
         reset_work_state(true);
     }
 
-    esp_transport_handle_t transport = get_transport();
+    if (g_transport_lock == NULL) {
+        return;
+    }
+
+    xSemaphoreTake(g_transport_lock, portMAX_DELAY);
+    esp_transport_handle_t transport = g_transport;
     if (transport != NULL) {
         esp_transport_close(transport);
     }
+    xSemaphoreGive(g_transport_lock);
 }
 
 static double error_rate_percent_from_counts(uint32_t valid, uint32_t errors)
@@ -1043,17 +1052,19 @@ static bool take_share_request(int id)
 
 static void set_transport(esp_transport_handle_t transport)
 {
+    if (g_transport_lock == NULL) {
+        g_transport = transport;
+        return;
+    }
+
     xSemaphoreTake(g_transport_lock, portMAX_DELAY);
     g_transport = transport;
     xSemaphoreGive(g_transport_lock);
 }
 
-static esp_transport_handle_t get_transport(void)
+static bool stratum_runtime_ready(void)
 {
-    xSemaphoreTake(g_transport_lock, portMAX_DELAY);
-    esp_transport_handle_t transport = g_transport;
-    xSemaphoreGive(g_transport_lock);
-    return transport;
+    return g_work_queue != NULL && g_transport_lock != NULL && g_work_reset_lock != NULL;
 }
 
 static void drain_work_queue(void)
@@ -1130,6 +1141,11 @@ static bool stratum_note_current_block(const char *prev_block_hash)
 
 void stratum_minimal_reconnect(void)
 {
+    if (!stratum_runtime_ready()) {
+        ESP_LOGW(TAG, "stratum reconnect ignored before runtime start");
+        return;
+    }
+
     atomic_store(&g_next_using_backup_pool, false);
     atomic_store(&g_switch_to_primary_requested, false);
     set_active_primary_pool_endpoint();
@@ -1141,6 +1157,10 @@ void stratum_minimal_reconnect(void)
 
 void stratum_minimal_pause_work(void)
 {
+    if (!stratum_runtime_ready()) {
+        return;
+    }
+
     atomic_store(&g_work_paused, true);
     reset_hashrate_window();
     if (g_work_reset_lock != NULL) {
@@ -1156,6 +1176,10 @@ void stratum_minimal_pause_work(void)
 
 void stratum_minimal_resume_work(void)
 {
+    if (!stratum_runtime_ready()) {
+        return;
+    }
+
     if (g_work_reset_lock != NULL) {
         xSemaphoreTake(g_work_reset_lock, portMAX_DELAY);
     }
@@ -1416,6 +1440,10 @@ static int stratum_send_authorize(esp_transport_handle_t transport)
 
 static esp_err_t rx_buffer_reserve(size_t needed)
 {
+    if (needed > STRATUM_MAX_LINE_SIZE + 1U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     if (needed <= g_rx_buffer_size) {
         return ESP_OK;
     }
@@ -1467,8 +1495,9 @@ static char *receive_jsonrpc_line(esp_transport_handle_t transport)
         }
         last_activity_us = (uint64_t)esp_timer_get_time();
 
-        if (rx_buffer_reserve(g_rx_buffer_len + (size_t)nbytes + 1) != ESP_OK) {
-            ESP_LOGE(TAG, "stratum rx buffer alloc failed");
+        esp_err_t reserve_err = rx_buffer_reserve(g_rx_buffer_len + (size_t)nbytes + 1);
+        if (reserve_err != ESP_OK) {
+            ESP_LOGE(TAG, "stratum rx buffer failed: %s", esp_err_to_name(reserve_err));
             g_rx_buffer_len = 0;
             return NULL;
         }
@@ -1951,6 +1980,11 @@ static void stratum_update_payout_from_notify(const mining_notify *work)
 
     const size_t coinbase_len = work->coinbase_1_len + g_extranonce_len +
                                 (size_t)g_state->extranonce_2_len + work->coinbase_2_len;
+    if (coinbase_len > STRATUM_MAX_COINBASE_BYTES) {
+        set_payout_status(STRATUM_PAYOUT_STATUS_PARSE_ERROR, 0);
+        return;
+    }
+
     uint8_t *coinbase = malloc(coinbase_len);
     if (coinbase == NULL) {
         set_payout_status(STRATUM_PAYOUT_STATUS_PARSE_ERROR, 0);
@@ -1995,17 +2029,41 @@ static char *dup_array_string(cJSON *array, int index)
     return strdup(value);
 }
 
-static bool decode_hex_alloc(const char *hex, uint8_t **out, size_t *out_len)
+static bool hex_char_valid(char ch)
+{
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+           (ch >= 'A' && ch <= 'F');
+}
+
+static bool hex_string_valid(const char *hex)
+{
+    if (hex == NULL) {
+        return false;
+    }
+    for (const char *cursor = hex; *cursor != '\0'; ++cursor) {
+        if (!hex_char_valid(*cursor)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool decode_hex_alloc_limited(const char *hex, size_t max_bytes, uint8_t **out,
+                                     size_t *out_len)
 {
     if (hex == NULL || out == NULL || out_len == NULL) {
         return false;
     }
     const size_t hex_len = strlen(hex);
-    if ((hex_len % 2U) != 0) {
+    if ((hex_len % 2U) != 0 || !hex_string_valid(hex)) {
         return false;
     }
 
     const size_t bin_len = hex_len / 2U;
+    if (bin_len > max_bytes) {
+        return false;
+    }
+
     uint8_t *bin = NULL;
     if (bin_len > 0) {
         bin = malloc(bin_len);
@@ -2057,10 +2115,15 @@ static mining_notify *parse_mining_notify(cJSON *params)
         return NULL;
     }
     if (strlen(work->prev_block_hash) != HASH_SIZE * 2 ||
+        !hex_string_valid(work->prev_block_hash) ||
         hex2bin(work->prev_block_hash, work->prev_block_hash_bin,
                 sizeof(work->prev_block_hash_bin)) != HASH_SIZE ||
-        !decode_hex_alloc(work->coinbase_1, &work->coinbase_1_bin, &work->coinbase_1_len) ||
-        !decode_hex_alloc(work->coinbase_2, &work->coinbase_2_bin, &work->coinbase_2_len)) {
+        !decode_hex_alloc_limited(work->coinbase_1, STRATUM_MAX_COINBASE_BYTES,
+                                  &work->coinbase_1_bin, &work->coinbase_1_len) ||
+        !decode_hex_alloc_limited(work->coinbase_2, STRATUM_MAX_COINBASE_BYTES,
+                                  &work->coinbase_2_bin, &work->coinbase_2_len) ||
+        work->coinbase_1_len + work->coinbase_2_len >
+            STRATUM_MAX_COINBASE_BYTES - (MAX_EXTRANONCE2_LEN * 2U)) {
         ESP_LOGE(TAG, "invalid mining.notify hex fields");
         free_mining_notify(work);
         return NULL;
@@ -2082,7 +2145,14 @@ static mining_notify *parse_mining_notify(cJSON *params)
             free_mining_notify(work);
             return NULL;
         }
-        hex2bin(branch->valuestring, work->merkle_branches + (i * HASH_SIZE), HASH_SIZE);
+        if (strlen(branch->valuestring) != HASH_SIZE * 2 ||
+            !hex_string_valid(branch->valuestring) ||
+            hex2bin(branch->valuestring, work->merkle_branches + (i * HASH_SIZE),
+                    HASH_SIZE) != HASH_SIZE) {
+            ESP_LOGE(TAG, "invalid merkle branch hex");
+            free_mining_notify(work);
+            return NULL;
+        }
     }
 
     const char *version = NULL;
@@ -2111,7 +2181,7 @@ static void update_extranonce_values(const char *extranonce, int extranonce_2_le
 
     uint8_t *bin = NULL;
     size_t bin_len = 0;
-    if (!decode_hex_alloc(extranonce, &bin, &bin_len)) {
+    if (!decode_hex_alloc_limited(extranonce, MAX_EXTRANONCE2_LEN, &bin, &bin_len)) {
         ESP_LOGW(TAG, "ignoring invalid extranonce hex");
         return;
     }
@@ -2542,6 +2612,14 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
     uint8_t extranonce_2_bin[MAX_EXTRANONCE2_LEN];
     char extranonce_2_str[MAX_EXTRANONCE2_STR];
     const size_t extranonce_2_len = (size_t)g_state->extranonce_2_len;
+    const size_t coinbase_len = notification->coinbase_1_len + g_extranonce_len +
+                                extranonce_2_len + notification->coinbase_2_len;
+    if (coinbase_len > STRATUM_MAX_COINBASE_BYTES) {
+        metric_inc(&g_metric_job_send_skipped);
+        ESP_LOGE(TAG, "dropping oversized coinbase work");
+        return;
+    }
+
     extranonce_2_generate_bin(extranonce_2, g_state->extranonce_2_len, extranonce_2_bin);
     bin2hex(extranonce_2_bin, extranonce_2_len, extranonce_2_str, sizeof(extranonce_2_str));
 
@@ -2761,6 +2839,23 @@ static int submit_share(esp_transport_handle_t transport, int request_id, const 
     return stratum_write_message(transport, msg);
 }
 
+static int submit_share_current_transport(int request_id, const bm_job *job, uint32_t nonce,
+                                          uint32_t version_bits)
+{
+    if (g_transport_lock == NULL) {
+        return STRATUM_SUBMIT_NO_TRANSPORT;
+    }
+
+    xSemaphoreTake(g_transport_lock, portMAX_DELAY);
+    esp_transport_handle_t transport = g_transport;
+    int ret = STRATUM_SUBMIT_NO_TRANSPORT;
+    if (transport != NULL) {
+        ret = submit_share(transport, request_id, job, nonce, version_bits);
+    }
+    xSemaphoreGive(g_transport_lock);
+    return ret;
+}
+
 static void result_task(void *arg)
 {
     (void)arg;
@@ -2783,6 +2878,7 @@ static void result_task(void *arg)
             metric_record_rx_wait(rx_duration_us, rx_duration_us >= 9000000ULL);
             metric_inc(&g_metric_rx_null);
 #endif
+            vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
         metric_record_rx_wait(rx_duration_us, false);
@@ -2828,6 +2924,7 @@ static void result_task(void *arg)
 #endif
             STRATUM_LOGI("invalid nonce job id 0x%02x", job_id);
             atomic_fetch_add(&g_nonce_errors, 1);
+            vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
 
@@ -2862,17 +2959,13 @@ static void result_task(void *arg)
                      job_snapshot.jobid, result->asic_nr, result->core_id,
                      result->small_core_id, diff, job_snapshot.pool_diff, current_diff);
 
-        esp_transport_handle_t transport = get_transport();
-        if (transport == NULL) {
-            ESP_LOGW(TAG, "dropping share; no stratum transport");
-            continue;
-        }
-
         const uint32_t version_bits = result->rolled_version ^ job_snapshot.version;
         const int request_id = next_uid();
-        const int ret = submit_share(transport, request_id, &job_snapshot, result->nonce,
-                                     version_bits);
-        if (ret < 0) {
+        const int ret = submit_share_current_transport(request_id, &job_snapshot, result->nonce,
+                                                       version_bits);
+        if (ret == STRATUM_SUBMIT_NO_TRANSPORT) {
+            ESP_LOGW(TAG, "dropping share; no stratum transport");
+        } else if (ret < 0) {
             ESP_LOGW(TAG, "share write failed errno=%d", errno);
         } else {
             mark_share_request(request_id);

@@ -22,6 +22,7 @@
 const $=id=>document.getElementById(id);
 const set=(id,v)=>{$(id).value=v==null?'':v};
 let wifiTestPassed=false,wifiTestKey='',wifiTesting=false;
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function wifiKey(){return `${$('wifi-ssid').value.trim()}\n${$('wifi-pass').value}`}
 function wifiReady(){return wifiTestPassed&&wifiTestKey===wifiKey()}
 function setSaveEnabled(){const has=!!$('wifi-ssid').value.trim();$('wifi-test').disabled=wifiTesting||!has;$('save').disabled=!has||!wifiReady()}
@@ -30,8 +31,11 @@ function resetWifiTest(msg=''){wifiTestPassed=false;wifiTestKey='';setSaveEnable
 async function testWifi(){const ssid=$('wifi-ssid').value.trim();if(!ssid){resetWifiTest('Enter a network name.');return}
 const btn=$('wifi-test');wifiTesting=true;wifiTestPassed=false;setSaveEnabled();btn.textContent='Testing...';status('testing Wi-Fi...');
 try{const body={wifi_ssid:ssid,wifi_password:$('wifi-pass').value};
-const r=await fetch('/api/wifi-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+let r=await fetch('/api/wifi-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+let j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+for(let i=0;j.running&&i<25;i++){await delay(800);r=await fetch(`/api/wifi-test?id=${j.id}`,{cache:'no-store'});
+j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status)}
+if(j.running)throw new Error('connection timed out');if(!j.ok)throw new Error(j.error||'connection failed');
 wifiTestPassed=true;wifiTestKey=wifiKey();status(`Wi-Fi test passed${j.ip?` (${j.ip})`:''}.`,'ok')}
 catch(e){wifiTestPassed=false;wifiTestKey='';status(`Wi-Fi test failed: ${e.message||e}`,'err')}
 finally{wifiTesting=false;btn.textContent='Test Connection';setSaveEnabled()}}
@@ -63,7 +67,9 @@ summary.textContent=`Show ${hidden.length} more`;const extra=document.createElem
 hidden.forEach(n=>extra.appendChild(networkItem(n)));fold.appendChild(summary);fold.appendChild(extra);more.appendChild(fold)}}
 async function scan(){const b=$('scan'),s=$('scan-status'),list=$('networks'),more=$('network-more');b.disabled=true;
 s.className='scan-status scanning';s.textContent='Scanning for networks...';list.innerHTML='<li class=empty>Looking for nearby Wi-Fi networks...</li>';more.innerHTML='';
-try{const r=await fetch('/api/networks',{cache:'no-store'});const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);
+try{let j=null;for(let i=0;i<20;i++){const r=await fetch(`/api/networks${i===0?'?refresh=1':''}`,{cache:'no-store'});
+j=await r.json();if(!r.ok)throw new Error(j.error||r.status);if(!j.scanning)break;await delay(700)}
+if(j&&j.scanning)throw new Error('scan timed out');
 const networks=j.networks||[];renderNetworks(networks);const visible=Math.min(networks.length,3);
 s.className='scan-status';s.textContent=networks.length?`Showing ${visible} of ${networks.length} networks.`:'No networks found.'}
 catch(e){s.className='scan-status';s.textContent=`Scan failed. Try again. ${e.message||e}`}finally{b.disabled=false}}

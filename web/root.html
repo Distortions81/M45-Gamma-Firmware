@@ -551,8 +551,11 @@ setStatus('wifi-test-status',cfgWifiChanged()?'Test Wi-Fi before saving.':'')}
 async function testSettingsWifi(){const ssid=val('cfg-wifi-ssid');if(!ssid){resetSettingsWifiTest();setStatus('wifi-test-status','Enter a Wi-Fi SSID.','err');return}
 const btn=$('cfg-wifi-test');wifiSettingsTesting=true;wifiSettingsTestOk=false;syncWifiTest();btn.textContent='Testing...';setStatus('wifi-test-status','testing Wi-Fi...');
 try{const body={wifi_ssid:ssid},p=cfgWifiPasswordForTest();if(p!=null)body.wifi_password=p;
-const r=await fetch('/api/wifi-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+let r=await fetch('/api/wifi-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+let j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+for(let i=0;j.running&&i<25;i++){await sleep(800);r=await fetch(`/api/wifi-test?id=${j.id}`,{cache:'no-store'});
+j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status)}
+if(j.running)throw new Error('connection timed out');if(!j.ok)throw new Error(j.error||'connection failed');
 wifiSettingsTestOk=true;wifiSettingsTestKey=cfgWifiKey();setStatus('wifi-test-status',`Wi-Fi test passed${j.ip?` (${j.ip})`:''}.`,'ok')}
 catch(e){wifiSettingsTestOk=false;wifiSettingsTestKey='';setStatus('wifi-test-status',`Wi-Fi test failed: ${e.message||e}`,'err')}
 finally{wifiSettingsTesting=false;btn.textContent='Test Connection';syncWifiTest()}}
