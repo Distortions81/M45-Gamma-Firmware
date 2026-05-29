@@ -6,6 +6,9 @@ M45 is experimental firmware for Bitaxe Gamma 602 miners. It boots at stock
 ASIC settings, exposes a local web dashboard, and lets you opt in to fan,
 pool, and overclock controls from the browser.
 
+[Open the Web Flasher](https://distortions81.github.io/M45-ASIC-Firmware/)
+to flash a prepared build from Chrome or Edge using USB serial.
+
 Use it at your own risk. Overclocking or bad cooling can permanently damage
 the ASIC, regulator, fan, wiring, or power supply, and can create a fire risk.
 
@@ -57,6 +60,15 @@ boot setup page.
 Build-time Wi-Fi and pool values are stored in the ignored `sdkconfig` file and
 embedded in the firmware image. Do not share a firmware image that contains
 private credentials.
+
+To produce the static web flasher package locally:
+
+```sh
+scripts/docker-web-flasher.sh
+```
+
+The package is written to `dist/web-flasher/` and includes `index.html`,
+`manifest.json`, and a merged `m45-gamma-firmware.bin` image for ESP Web Tools.
 
 ## Flash
 

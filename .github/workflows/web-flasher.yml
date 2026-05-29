@@ -1,0 +1,58 @@
+name: Web Flasher Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: web-flasher-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build web flasher package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build firmware and web flasher package
+        run: scripts/docker-web-flasher.sh
+
+      - name: Upload web flasher artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: m45-web-flasher
+          path: dist/web-flasher
+          if-no-files-found: error
+
+      - name: Configure GitHub Pages
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/web-flasher
+
+  deploy:
+    name: Deploy web flasher
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
