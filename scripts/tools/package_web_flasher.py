@@ -18,10 +18,6 @@ def die(message):
     return 1
 
 
-def run(args, cwd=None):
-    subprocess.run(args, cwd=cwd, check=True)
-
-
 def git_text(args, default):
     try:
         return subprocess.check_output(["git", *args], text=True).strip() or default
@@ -59,68 +55,41 @@ def load_flash_args(build_dir):
     return json.loads(path.read_text())
 
 
-def sorted_flash_files(flash_files):
-    return sorted(flash_files.items(), key=lambda item: int(item[0], 0))
-
-
-def merge_firmware(build_dir, output_dir, firmware_name, flasher_args):
-    settings = flasher_args["flash_settings"]
-    flash_files = sorted_flash_files(flasher_args["flash_files"])
+def copy_update_firmware(build_dir, output_dir, firmware_name, flasher_args):
+    app = flasher_args["app"]
     chip = flasher_args.get("extra_esptool_args", {}).get("chip", "esp32s3")
-    merged = output_dir / firmware_name
-
-    command = [
-        sys.executable,
-        "-m",
-        "esptool",
-        "--chip",
-        chip,
-        "merge_bin",
-        "-o",
-        str(merged),
-        "--flash_mode",
-        settings["flash_mode"],
-        "--flash_freq",
-        settings["flash_freq"],
-        "--flash_size",
-        settings["flash_size"],
-    ]
-
-    for offset, filename in flash_files:
-        source = build_dir / filename
-        if not source.exists():
-            raise FileNotFoundError(f"missing flash part: {source}")
-        command.extend([offset, str(source)])
-
-    run(command)
-    return chip, merged
+    source = build_dir / app["file"]
+    if not source.exists():
+        raise FileNotFoundError(f"missing app firmware: {source}")
+    firmware = output_dir / firmware_name
+    shutil.copy2(source, firmware)
+    return chip, firmware, [{"path": firmware_name, "offset": int(app["offset"], 0)}]
 
 
-def write_manifest(output_dir, firmware_name, name, version, chip):
+def write_manifest(output_dir, parts, name, version, chip):
     manifest = {
         "name": name,
         "version": version,
-        "new_install_prompt_erase": True,
+        "new_install_prompt_erase": False,
         "new_install_improv_wait_time": 0,
         "builds": [
             {
                 "chipFamily": chip_family(chip),
-                "parts": [
-                    {
-                        "path": firmware_name,
-                        "offset": 0,
-                    }
-                ],
+                "parts": parts,
             }
         ],
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
-def write_index(output_dir, name, version, firmware_name):
+def write_index(output_dir, name, version, firmware_name, parts):
     escaped_name = html.escape(name)
     escaped_version = html.escape(version)
     escaped_firmware = html.escape(firmware_name)
+    parts_html = "\n".join(
+        f"<li><code>{html.escape(part['path'])}</code> at <code>0x{part['offset']:x}</code></li>"
+        for part in parts
+    )
     page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -153,21 +122,25 @@ code {{ background: #111518; border: 1px solid var(--line); border-radius: 5px; 
 <h1>{escaped_name} Web Flasher</h1>
 <p class="lead">Flash Bitaxe Gamma 602 firmware from a browser using USB serial.</p>
 <section class="panel">
-<esp-web-install-button manifest="manifest.json">
-<button slot="activate" type="button">Flash Firmware</button>
-<span slot="unsupported">Use Chrome or Edge on a desktop browser with Web Serial support.</span>
-<span slot="not-allowed">Open this page over HTTPS to use Web Serial.</span>
-</esp-web-install-button>
-<div class="meta">Manifest: <code>manifest.json</code>. Firmware: <code>{escaped_firmware}</code>.</div>
-</section>
-<section class="panel warning">
-<strong>Hardware warning</strong>
-<ul>
-<li>This firmware is for Bitaxe Gamma 602 hardware.</li>
-<li>Overclocking or bad cooling can permanently damage hardware.</li>
-<li>Choose erase on first install if you are replacing unrelated firmware.</li>
-</ul>
-</section>
+	<esp-web-install-button manifest="manifest.json">
+	<button slot="activate" type="button">Flash Firmware</button>
+	<span slot="unsupported">Use Chrome or Edge on a desktop browser with Web Serial support.</span>
+	<span slot="not-allowed">Open this page over HTTPS to use Web Serial.</span>
+	</esp-web-install-button>
+	<div class="meta">Manifest: <code>manifest.json</code>. Firmware: <code>{escaped_firmware}</code>.</div>
+	<ul>
+	{parts_html}
+	</ul>
+	</section>
+	<section class="panel warning">
+	<strong>Hardware warning</strong>
+	<ul>
+	<li>This firmware is for Bitaxe Gamma 602 hardware.</li>
+	<li>Overclocking or bad cooling can permanently damage hardware.</li>
+	<li>This updater writes the app partition only, preserving saved settings.</li>
+	<li>Use a factory flash if you are replacing unrelated firmware.</li>
+	</ul>
+	</section>
 </main>
 </body>
 </html>
@@ -201,16 +174,18 @@ def main():
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True)
 
-        chip, merged = merge_firmware(build_dir, output_dir, args.firmware_name, flasher_args)
-        write_manifest(output_dir, args.firmware_name, args.name, version, chip)
-        write_index(output_dir, args.name, version, args.firmware_name)
+        chip, firmware, parts = copy_update_firmware(
+            build_dir, output_dir, args.firmware_name, flasher_args
+        )
+        write_manifest(output_dir, parts, args.name, version, chip)
+        write_index(output_dir, args.name, version, args.firmware_name, parts)
         copy_metadata(build_dir, output_dir)
         (output_dir / "version.txt").write_text(version + "\n")
     except (KeyError, FileNotFoundError, subprocess.CalledProcessError) as err:
         return die(str(err))
 
     print(f"web flasher package: {output_dir}")
-    print(f"merged firmware: {merged}")
+    print(f"firmware: {firmware}")
     return 0
 
 

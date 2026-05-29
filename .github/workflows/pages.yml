@@ -78,6 +78,18 @@ jobs:
           test -f site/index.html
           test -f site/manifest.json
           test -f site/m45-gamma-firmware.bin
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("site/manifest.json").read_text())
+          parts = manifest["builds"][0]["parts"]
+          expected = [
+              {"path": "m45-gamma-firmware.bin", "offset": 0x10000},
+          ]
+          if parts != expected:
+              raise SystemExit(f"unexpected manifest parts: {parts!r}")
+          PY
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

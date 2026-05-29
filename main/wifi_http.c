@@ -72,6 +72,7 @@ static bool g_setup_ap_active;
 static volatile bool g_wifi_retry_backoff_pending;
 static volatile bool g_wifi_test_active;
 static volatile bool g_wifi_test_waiting;
+static volatile bool g_wifi_test_ignore_assoc_leave;
 static volatile uint8_t g_wifi_test_disconnect_reason;
 static char g_ip[16] = "";
 static char g_setup_ssid[32] = "m-idf";
@@ -504,6 +505,7 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
     g_wifi_test_disconnect_reason = 0;
     g_wifi_test_active = true;
     g_wifi_test_waiting = false;
+    g_wifi_test_ignore_assoc_leave = true;
     xEventGroupClearBits(g_wifi_events, WIFI_TEST_CONNECTED_BIT | WIFI_TEST_FAIL_BIT);
 
     (void)esp_wifi_disconnect();
@@ -517,6 +519,9 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
         g_wifi_test_waiting = true;
         xEventGroupClearBits(g_wifi_events, WIFI_TEST_CONNECTED_BIT | WIFI_TEST_FAIL_BIT);
         test_err = esp_wifi_connect();
+        if (test_err != ESP_OK) {
+            g_wifi_test_ignore_assoc_leave = false;
+        }
     }
 
     if (test_err == ESP_OK) {
@@ -531,6 +536,7 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
     }
 
     g_wifi_test_waiting = false;
+    g_wifi_test_ignore_assoc_leave = false;
     if (connected) {
         wifi_ap_record_t ap_info = {0};
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
@@ -1030,10 +1036,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         const wifi_event_sta_disconnected_t *event =
             (const wifi_event_sta_disconnected_t *)event_data;
         if (g_wifi_test_active) {
+            const uint8_t reason = event != NULL ? event->reason : 0;
             g_connected = false;
             g_ip[0] = '\0';
+            if (g_wifi_test_ignore_assoc_leave && reason == WIFI_REASON_ASSOC_LEAVE) {
+                g_wifi_test_ignore_assoc_leave = false;
+                return;
+            }
+            g_wifi_test_ignore_assoc_leave = false;
             if (g_wifi_test_waiting) {
-                g_wifi_test_disconnect_reason = event != NULL ? event->reason : 0;
+                g_wifi_test_disconnect_reason = reason;
                 xEventGroupSetBits(g_wifi_events, WIFI_TEST_FAIL_BIT);
             }
             return;
@@ -1056,6 +1068,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         snprintf(g_ip, sizeof(g_ip), IPSTR, IP2STR(&event->ip_info.ip));
         g_connected = true;
         g_retry_count = 0;
+        g_wifi_test_ignore_assoc_leave = false;
         xEventGroupSetBits(g_wifi_events,
                            g_wifi_test_active && g_wifi_test_waiting
                                ? WIFI_TEST_CONNECTED_BIT
