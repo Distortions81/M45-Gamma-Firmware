@@ -1192,6 +1192,11 @@ void stratum_minimal_resume_work(void)
     atomic_store(&g_work_paused, false);
 }
 
+bool stratum_minimal_work_paused(void)
+{
+    return atomic_load(&g_work_paused);
+}
+
 static stratum_endpoint_t g_primary_probe_args;
 
 static void stratum_primary_probe_task(void *arg)

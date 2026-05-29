@@ -73,6 +73,11 @@ a release list, and one merged factory image named like
 model: it writes the factory image as one file, skips the NVS settings range by
 default, and only writes that range when you select erase settings.
 
+After flashing a current factory image, the dashboard Update page can install
+later builds over the air. OTA accepts either `build/docker/M45-Firmware.bin`
+or the same `esp-miner-factory-602-*.bin` factory image used by the web flasher.
+Older single-app installs need one web-flasher update before OTA is available.
+
 GitHub Actions builds a factory image when a GitHub Release is published,
 attaches only that `.bin` to the release, and publishes the web flasher through
 GitHub Pages. The Pages site mirrors matching release images so older releases

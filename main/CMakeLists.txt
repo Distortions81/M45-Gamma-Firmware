@@ -57,6 +57,7 @@ idf_component_register(
         "${CMAKE_CURRENT_BINARY_DIR}"
         "third_party/qrcode"
     PRIV_REQUIRES
+        app_update
         driver
         esp_driver_i2c
         esp_event

@@ -295,6 +295,14 @@ if ! command -v idf.py >/dev/null 2>&1; then
     fi
 fi
 
+add_update CONFIG_PARTITION_TABLE_SINGLE_APP bool n
+add_update CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE bool n
+add_update CONFIG_PARTITION_TABLE_TWO_OTA bool n
+add_update CONFIG_PARTITION_TABLE_TWO_OTA_LARGE bool n
+add_update CONFIG_PARTITION_TABLE_CUSTOM bool y
+add_update CONFIG_PARTITION_TABLE_CUSTOM_FILENAME string "partitions_ota.csv"
+add_update CONFIG_PARTITION_TABLE_FILENAME string "partitions_ota.csv"
+
 run_idf() {
     idf.py -B "$BUILD_DIR" "$@"
 }

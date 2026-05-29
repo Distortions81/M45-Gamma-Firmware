@@ -13,10 +13,13 @@
 #include "cJSON.h"
 #include "esp_check.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -42,15 +45,20 @@
 #define WIFI_TEST_TIMEOUT_MS 15000
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 9500
+#define STATUS_JSON_BUFFER_SIZE 9700
 #else
-#define STATUS_JSON_BUFFER_SIZE 8200
+#define STATUS_JSON_BUFFER_SIZE 8400
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 3400
 #define M45_DEVICE_NAME "M45-Bitaxe"
-#define HTTP_URI_HANDLER_SLOTS 34
+#define HTTP_URI_HANDLER_SLOTS 56
 #define HTTP_HANDLER_WARN_MS 100
 #define LOG_CAPTURE_TIMEOUT_MS 5000
+#define OTA_UPLOAD_BUFFER_SIZE 4096
+#define OTA_FACTORY_TABLE_OFFSET 0x8000
+#define OTA_FACTORY_TABLE_SIZE 0xC00
+#define OTA_PARTITION_ENTRY_SIZE 32
+#define OTA_FACTORY_IMAGE_MAGIC 0xE9
 #define SETUP_SCAN_MAX_APS 12
 #define SETUP_AP_CHANNEL 6
 #define SETUP_AP_MAX_CLIENTS 4
@@ -142,6 +150,10 @@ static const char *http_method_name(httpd_method_t method)
         return "GET";
     case HTTP_POST:
         return "POST";
+    case HTTP_PATCH:
+        return "PATCH";
+    case HTTP_OPTIONS:
+        return "OPTIONS";
     default:
         return "HTTP";
     }
@@ -429,6 +441,49 @@ static bool request_has_bad_page_token(httpd_req_t *req)
         return true;
     }
     return strcmp(token, g_page_token) != 0;
+}
+
+static uint32_t read_le32(const uint8_t *data)
+{
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+static bool ota_factory_app_range(const uint8_t *table, size_t *image_offset,
+                                  size_t *image_size)
+{
+    for (size_t offset = 0; offset + OTA_PARTITION_ENTRY_SIZE <= OTA_FACTORY_TABLE_SIZE;
+         offset += OTA_PARTITION_ENTRY_SIZE) {
+        const uint8_t *entry = table + offset;
+        if (entry[0] == 0xff && entry[1] == 0xff) {
+            break;
+        }
+        if (entry[0] != 0xaa || entry[1] != 0x50) {
+            continue;
+        }
+        if (entry[2] != ESP_PARTITION_TYPE_APP) {
+            continue;
+        }
+        const uint32_t app_offset = read_le32(entry + 4);
+        const uint32_t app_size = read_le32(entry + 8);
+        if (app_offset == 0 || app_size == 0) {
+            return false;
+        }
+        *image_offset = app_offset;
+        *image_size = app_size;
+        return true;
+    }
+    return false;
+}
+
+static esp_err_t send_json_error(httpd_req_t *req, const char *status, const char *error)
+{
+    char body[128];
+    snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", error);
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    set_no_store_headers(req);
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t set_sta_config(const char *ssid, const char *password)
@@ -1139,6 +1194,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     const float active_frequency_mhz = g_state->POWER_MANAGEMENT_MODULE.actual_frequency > 0.0f
                                            ? g_state->POWER_MANAGEMENT_MODULE.actual_frequency
                                            : (float)m45_config_effective_asic_frequency_mhz(config);
+    const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+    const bool ota_supported = ota_partition != NULL;
     const uint8_t expected_chip_count =
         chip_count > 0 ? chip_count : g_state->DEVICE_CONFIG.family.asic_count;
     const double expected_hashrate_ghs =
@@ -1230,6 +1287,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"version\":\"%s\","
                  "\"build_id\":\"%s\","
                  "\"build_time\":\"%s\","
+                 "\"ota_supported\":%s,"
                  "\"wifi_connected\":%s,"
                  "\"ip\":\"%s\","
                  "\"wifi_rssi_dbm\":%d,"
@@ -1317,6 +1375,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "}",
                  g_page_token, M45_DEVICE_NAME, APP_BUILD_VERSION, APP_BUILD_ID,
                  APP_BUILD_TIME_UTC,
+                 ota_supported ? "true" : "false",
                  g_connected ? "true" : "false", g_ip, wifi_rssi,
                  hardware_status, booting ? "true" : "false",
                  g_setup_ap_active ? "true" : "false", g_setup_ssid, g_setup_ip,
@@ -2321,6 +2380,150 @@ static esp_err_t block_alert_dismiss_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true,\"block_alert_active\":false}");
 }
 
+static esp_err_t ota_update_handler(httpd_req_t *req)
+{
+    if (request_has_bad_page_token(req)) {
+        return send_page_token_reload(req);
+    }
+    if (g_setup_ap_active) {
+        return send_json_error(req, "409 Conflict", "OTA is unavailable in setup mode");
+    }
+    if (req->content_len <= 0 || req->content_len > (9 * 1024 * 1024)) {
+        return send_json_error(req, "413 Payload Too Large", "invalid firmware size");
+    }
+
+    const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+    if (ota_partition == NULL) {
+        return send_json_error(req, "409 Conflict", "OTA partition is unavailable");
+    }
+
+    uint8_t *buf = malloc(OTA_UPLOAD_BUFFER_SIZE);
+    if (buf == NULL) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+
+    uint8_t partition_table[OTA_FACTORY_TABLE_SIZE] = {0};
+    size_t table_bytes = 0;
+    size_t image_offset = SIZE_MAX;
+    size_t image_size = 0;
+    size_t written = 0;
+    int remaining = req->content_len;
+    size_t received = 0;
+    int chunks = 0;
+    esp_ota_handle_t ota_handle = 0;
+    bool ota_started = false;
+
+    while (remaining > 0) {
+        const int recv_len = httpd_req_recv(req, (char *)buf,
+                                            remaining < OTA_UPLOAD_BUFFER_SIZE
+                                                ? remaining
+                                                : OTA_UPLOAD_BUFFER_SIZE);
+        if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (recv_len <= 0) {
+            if (ota_started) {
+                esp_ota_abort(ota_handle);
+            }
+            free(buf);
+            return send_json_error(req, "500 Internal Server Error", "upload failed");
+        }
+
+        const size_t chunk_start = received;
+        const size_t chunk_end = received + (size_t)recv_len;
+
+        if (image_offset == SIZE_MAX && chunk_start == 0 && buf[0] == OTA_FACTORY_IMAGE_MAGIC) {
+            image_offset = 0;
+            image_size = (size_t)req->content_len;
+        }
+
+        if (image_offset == SIZE_MAX && chunk_end > OTA_FACTORY_TABLE_OFFSET &&
+            table_bytes < OTA_FACTORY_TABLE_SIZE) {
+            size_t copy_start =
+                chunk_start > OTA_FACTORY_TABLE_OFFSET ? chunk_start : OTA_FACTORY_TABLE_OFFSET;
+            size_t copy_end = chunk_end < OTA_FACTORY_TABLE_OFFSET + OTA_FACTORY_TABLE_SIZE
+                                  ? chunk_end
+                                  : OTA_FACTORY_TABLE_OFFSET + OTA_FACTORY_TABLE_SIZE;
+            if (copy_end > copy_start) {
+                const size_t table_offset = copy_start - OTA_FACTORY_TABLE_OFFSET;
+                memcpy(partition_table + table_offset, buf + (copy_start - chunk_start),
+                       copy_end - copy_start);
+                if (table_offset == table_bytes) {
+                    table_bytes += copy_end - copy_start;
+                }
+            }
+            if (table_bytes >= OTA_FACTORY_TABLE_SIZE &&
+                !ota_factory_app_range(partition_table, &image_offset, &image_size)) {
+                if (ota_started) {
+                    esp_ota_abort(ota_handle);
+                }
+                free(buf);
+                return send_json_error(req, "400 Bad Request", "unsupported firmware image");
+            }
+        }
+
+        if (image_offset != SIZE_MAX) {
+            size_t image_end = image_size > SIZE_MAX - image_offset
+                                   ? (size_t)req->content_len
+                                   : image_offset + image_size;
+            if (image_end > (size_t)req->content_len) {
+                image_end = (size_t)req->content_len;
+            }
+            const size_t write_start = chunk_start > image_offset ? chunk_start : image_offset;
+            const size_t write_end = chunk_end < image_end ? chunk_end : image_end;
+            if (write_end > write_start) {
+                const size_t buf_offset = write_start - chunk_start;
+                const size_t write_len = write_end - write_start;
+                if (!ota_started) {
+                    if (buf[buf_offset] != OTA_FACTORY_IMAGE_MAGIC) {
+                        free(buf);
+                        return send_json_error(req, "400 Bad Request", "invalid app image");
+                    }
+                    esp_err_t err = esp_ota_begin(ota_partition, OTA_SIZE_UNKNOWN, &ota_handle);
+                    if (err != ESP_OK) {
+                        free(buf);
+                        return send_json_error(req, "500 Internal Server Error", "OTA begin failed");
+                    }
+                    ota_started = true;
+                }
+                if (written + write_len > ota_partition->size ||
+                    esp_ota_write(ota_handle, buf + buf_offset, write_len) != ESP_OK) {
+                    esp_ota_abort(ota_handle);
+                    free(buf);
+                    return send_json_error(req, "500 Internal Server Error", "OTA write failed");
+                }
+                written += write_len;
+            }
+        } else if (chunk_end >= OTA_FACTORY_TABLE_OFFSET + OTA_FACTORY_TABLE_SIZE) {
+            free(buf);
+            return send_json_error(req, "400 Bad Request", "unsupported firmware image");
+        }
+
+        received = chunk_end;
+        remaining -= recv_len;
+        if (++chunks % 16 == 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    free(buf);
+    if (!ota_started || written == 0) {
+        return send_json_error(req, "400 Bad Request", "empty app image");
+    }
+    if (esp_ota_end(ota_handle) != ESP_OK ||
+        esp_ota_set_boot_partition(ota_partition) != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", "OTA validation failed");
+    }
+    if (xTaskCreate(reboot_task, "ota_reboot", 2048, NULL,
+                    tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
+        return send_json_error(req, "500 Internal Server Error", "reboot task failed");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    set_no_store_headers(req);
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
+}
+
 static void reboot_task(void *arg)
 {
     (void)arg;
@@ -2380,6 +2583,929 @@ static esp_err_t logs_handler(httpd_req_t *req)
     return err;
 }
 
+typedef struct {
+    const m45_config_t *config;
+    stratum_minimal_stats_t stats;
+    bitaxe_gamma602_power_snapshot_t power;
+    bool have_power;
+    int wifi_rssi;
+    uint8_t chip_count;
+    uint8_t expected_chip_count;
+    float asic_temp_c;
+    float active_frequency_mhz;
+    uint16_t voltage_target_mv;
+    uint16_t fan_target_temp_c;
+    double expected_hashrate_ghs;
+    double input_voltage_mv;
+    double output_current_ma;
+    double core_voltage_mv;
+    double asic_power_watts;
+} espminer_api_snapshot_t;
+
+static void set_espminer_api_headers(httpd_req_t *req)
+{
+    set_no_store_headers(req);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods",
+                       "GET, POST, PATCH, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers",
+                       "Content-Type, X-Page-Token");
+}
+
+static esp_err_t send_espminer_json_error(httpd_req_t *req, const char *status,
+                                          const char *error)
+{
+    set_espminer_api_headers(req);
+    return send_json_error(req, status, error);
+}
+
+static esp_err_t send_cjson_response(httpd_req_t *req, cJSON *root)
+{
+    if (root == NULL) {
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (body == NULL) {
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    set_espminer_api_headers(req);
+    const esp_err_t err = httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+    free(body);
+    return err;
+}
+
+static const char *espminer_reset_reason(void)
+{
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+        return "Power-on reset";
+    case ESP_RST_SW:
+        return "Software reset";
+    case ESP_RST_PANIC:
+        return "Exception or panic reset";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+        return "Watchdog reset";
+    case ESP_RST_BROWNOUT:
+        return "Brownout reset";
+    case ESP_RST_USB:
+        return "USB reset";
+    default:
+        return "Unknown reset";
+    }
+}
+
+static void espminer_format_mac(char *dest, size_t dest_len)
+{
+    uint8_t mac[6] = {0};
+    if (esp_wifi_get_mac(WIFI_IF_STA, mac) != ESP_OK) {
+        (void)esp_efuse_mac_get_default(mac);
+    }
+    snprintf(dest, dest_len, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static void espminer_collect_snapshot(espminer_api_snapshot_t *snapshot)
+{
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->config = m45_config_get();
+    stratum_minimal_get_stats(&snapshot->stats);
+    snapshot->have_power = bitaxe_gamma602_power_snapshot(&snapshot->power);
+    snapshot->asic_temp_c =
+        g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg : 0.0f;
+    snapshot->chip_count = bitaxe_gamma602_chip_count();
+
+    const uint8_t configured_chip_count =
+        g_state != NULL ? g_state->DEVICE_CONFIG.family.asic_count : 1;
+    snapshot->expected_chip_count =
+        snapshot->chip_count > 0 ? snapshot->chip_count : configured_chip_count;
+    if (snapshot->expected_chip_count == 0) {
+        snapshot->expected_chip_count = 1;
+    }
+
+    snapshot->active_frequency_mhz =
+        g_state != NULL && g_state->POWER_MANAGEMENT_MODULE.actual_frequency > 0.0f
+            ? g_state->POWER_MANAGEMENT_MODULE.actual_frequency
+            : (float)m45_config_effective_asic_frequency_mhz(snapshot->config);
+    snapshot->voltage_target_mv =
+        m45_config_effective_asic_voltage_mv_for_temp(snapshot->config,
+                                                      snapshot->asic_temp_c);
+    snapshot->fan_target_temp_c =
+        m45_config_effective_fan_target_temp_c(snapshot->config);
+
+    const uint16_t small_core_count =
+        g_state != NULL ? g_state->DEVICE_CONFIG.family.asic.small_core_count : 2040;
+    snapshot->expected_hashrate_ghs =
+        (double)snapshot->active_frequency_mhz * (double)small_core_count *
+        (double)snapshot->expected_chip_count / 1000.0;
+
+    if (snapshot->have_power) {
+        snapshot->input_voltage_mv = (double)snapshot->power.read_vin * 1000.0;
+        snapshot->output_current_ma = (double)snapshot->power.read_iout * 1000.0;
+        snapshot->core_voltage_mv = (double)snapshot->power.read_vout * 1000.0;
+        snapshot->asic_power_watts =
+            (double)snapshot->power.read_vout * (double)snapshot->power.read_iout;
+    } else if (g_state != NULL) {
+        snapshot->input_voltage_mv =
+            (double)g_state->POWER_MANAGEMENT_MODULE.voltage * 1000.0;
+        snapshot->output_current_ma =
+            (double)g_state->POWER_MANAGEMENT_MODULE.current * 1000.0;
+        snapshot->core_voltage_mv =
+            g_state->POWER_MANAGEMENT_MODULE.core_voltage > 0.0f
+                ? (double)g_state->POWER_MANAGEMENT_MODULE.core_voltage * 1000.0
+                : snapshot->voltage_target_mv;
+        snapshot->asic_power_watts = g_state->POWER_MANAGEMENT_MODULE.power;
+    } else {
+        snapshot->core_voltage_mv = snapshot->voltage_target_mv;
+    }
+
+    wifi_ap_record_t ap_info = {0};
+    snapshot->wifi_rssi =
+        g_connected && esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK ? ap_info.rssi : 0;
+}
+
+static void espminer_add_hashrate_monitor(cJSON *root,
+                                          const espminer_api_snapshot_t *snapshot)
+{
+    cJSON *monitor = cJSON_CreateObject();
+    if (monitor == NULL) {
+        return;
+    }
+    cJSON_AddNumberToObject(monitor, "hashrate", snapshot->stats.measured_hashrate_ghs);
+
+    cJSON *asics = cJSON_CreateArray();
+    if (asics != NULL) {
+        cJSON_AddItemToObject(monitor, "asics", asics);
+        const uint8_t asic_count =
+            snapshot->stats.domain_asic_count > 0 ? snapshot->stats.domain_asic_count
+                                                  : snapshot->expected_chip_count;
+        const uint8_t domain_count =
+            snapshot->stats.domain_count > 0 ? snapshot->stats.domain_count
+                                             : STRATUM_HASH_DOMAIN_COUNT;
+        for (uint8_t asic = 0; asic < asic_count && asic < STRATUM_HASHRATE_MAX_ASICS;
+             ++asic) {
+            cJSON *asic_json = cJSON_CreateObject();
+            if (asic_json == NULL) {
+                continue;
+            }
+            cJSON_AddNumberToObject(asic_json, "total",
+                                    asic < snapshot->stats.domain_asic_count
+                                        ? snapshot->stats.domain_hashrate_ghs
+                                        : snapshot->stats.measured_hashrate_ghs);
+            cJSON_AddNumberToObject(asic_json, "errorCount",
+                                    snapshot->stats.nonce_errors);
+            cJSON *domains = cJSON_CreateArray();
+            if (domains != NULL) {
+                for (uint8_t domain = 0; domain < domain_count &&
+                                         domain < STRATUM_HASH_DOMAIN_COUNT;
+                     ++domain) {
+                    const double value =
+                        asic < snapshot->stats.domain_asic_count &&
+                                domain < snapshot->stats.domain_count
+                            ? snapshot->stats.domain_hashrates_ghs[asic][domain]
+                            : 0.0;
+                    cJSON_AddItemToArray(domains, cJSON_CreateNumber(value));
+                }
+                cJSON_AddItemToObject(asic_json, "domains", domains);
+            }
+            cJSON_AddItemToArray(asics, asic_json);
+        }
+    }
+
+    cJSON_AddItemToObject(root, "hashrateMonitor", monitor);
+}
+
+static esp_err_t espminer_system_info_handler(httpd_req_t *req)
+{
+    espminer_api_snapshot_t snapshot;
+    espminer_collect_snapshot(&snapshot);
+    const m45_config_t *config = snapshot.config;
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+
+    const bool using_backup = snapshot.stats.using_backup_pool;
+    const char *active_pool =
+        snapshot.stats.pool_host[0] != '\0'
+            ? snapshot.stats.pool_host
+            : (using_backup ? config->backup_pool_host : config->pool_host);
+    const uint16_t active_pool_port =
+        snapshot.stats.pool_port > 0
+            ? snapshot.stats.pool_port
+            : (using_backup ? config->backup_pool_port : config->pool_port);
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const bool fan_auto = !config->fan_override_enabled;
+    const uint16_t suggested_pool_difficulty =
+        suggested_pool_difficulty_for_config(config);
+    char mac[18];
+    espminer_format_mac(mac, sizeof(mac));
+
+    cJSON_AddNumberToObject(root, "power", snapshot.asic_power_watts);
+    cJSON_AddNumberToObject(root, "voltage", snapshot.input_voltage_mv);
+    cJSON_AddNumberToObject(root, "current", snapshot.output_current_ma);
+    cJSON_AddNumberToObject(root, "temp", snapshot.asic_temp_c);
+    cJSON_AddNumberToObject(root, "temp2", snapshot.asic_temp_c);
+    cJSON_AddNumberToObject(root, "vrTemp",
+                            snapshot.have_power ? snapshot.power.read_temp_c
+                                                : (g_state != NULL
+                                                       ? g_state->POWER_MANAGEMENT_MODULE.vr_temp
+                                                       : 0.0f));
+    cJSON_AddNumberToObject(root, "coreVoltageActual", snapshot.core_voltage_mv);
+    cJSON_AddNumberToObject(root, "actualFrequency", snapshot.active_frequency_mhz);
+    cJSON_AddNumberToObject(root, "expectedHashrate", snapshot.expected_hashrate_ghs);
+    cJSON_AddNumberToObject(root, "fanspeed",
+                            g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.fan_perc : 0);
+    cJSON_AddNumberToObject(root, "fanrpm",
+                            g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.fan_rpm : 0);
+    cJSON_AddNumberToObject(root, "fan2rpm", 0);
+    cJSON_AddNumberToObject(root, "hashRate", snapshot.stats.measured_hashrate_ghs);
+    cJSON_AddNumberToObject(root, "hashRate_1m", snapshot.stats.measured_hashrate_ghs);
+    cJSON_AddNumberToObject(root, "hashRate_10m", snapshot.stats.measured_hashrate_ghs);
+    cJSON_AddNumberToObject(root, "hashRate_1h", snapshot.stats.measured_hashrate_ghs);
+    cJSON_AddNumberToObject(root, "errorPercentage",
+                            snapshot.stats.asic_error_rate_percent);
+    cJSON_AddNumberToObject(root, "sharesAccepted", snapshot.stats.accepted);
+    cJSON_AddNumberToObject(root, "sharesRejected", snapshot.stats.rejected);
+    cJSON_AddNumberToObject(root, "bestDiff", snapshot.stats.best_diff);
+    cJSON_AddNumberToObject(
+        root, "bestSessionDiff",
+        g_state != NULL ? (double)g_state->SYSTEM_MODULE.best_session_nonce_diff : 0.0);
+    cJSON_AddNumberToObject(root, "poolDifficulty",
+                            snapshot.stats.pool_diff > 0.0 ? snapshot.stats.pool_diff
+                                                           : (double)suggested_pool_difficulty);
+    cJSON_AddNumberToObject(root, "responseTime", snapshot.stats.response_time_ms);
+    cJSON_AddNumberToObject(root, "responseShareBatch", 0);
+    cJSON_AddNumberToObject(root, "processTime", 0);
+    cJSON_AddNumberToObject(root, "blockFound",
+                            snapshot.stats.block_alert_active ? 1 : 0);
+    cJSON_AddBoolToObject(root, "showNewBlock", snapshot.stats.block_alert_active);
+    cJSON_AddNumberToObject(root, "freeHeap", esp_get_free_heap_size());
+    cJSON_AddNumberToObject(root, "freeHeapInternal",
+                            heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    cJSON_AddNumberToObject(root, "freeHeapSpiram",
+                            heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(root, "uptimeSeconds",
+                            (uint32_t)(esp_timer_get_time() / 1000000ULL));
+    cJSON_AddNumberToObject(root, "cpuUsage", 0);
+    cJSON_AddBoolToObject(root, "miningPaused", stratum_minimal_work_paused());
+    cJSON_AddNumberToObject(root, "overheat_mode",
+                            g_state != NULL &&
+                                    (g_state->SYSTEM_MODULE.power_fault > 0 ||
+                                     g_state->SYSTEM_MODULE.hardware_fault)
+                                ? 1
+                                : 0);
+    cJSON_AddStringToObject(root, "wifiStatus",
+                            g_connected ? "Connected!" : "Disconnected");
+    cJSON_AddNumberToObject(root, "wifiRSSI", snapshot.wifi_rssi);
+    if (g_state != NULL && g_state->SYSTEM_MODULE.power_fault > 0) {
+        cJSON_AddStringToObject(root, "power_fault", "power fault");
+    }
+    if (g_state != NULL && g_state->SYSTEM_MODULE.hardware_fault) {
+        cJSON_AddStringToObject(root, "hardware_fault",
+                                g_state->SYSTEM_MODULE.hardware_fault_msg);
+    }
+
+    cJSON_AddStringToObject(root, "version", APP_BUILD_VERSION);
+    cJSON_AddStringToObject(root, "axeOSVersion", APP_BUILD_VERSION);
+    cJSON_AddStringToObject(root, "idfVersion", esp_get_idf_version());
+    cJSON_AddStringToObject(root, "boardVersion",
+                            g_state != NULL ? g_state->DEVICE_CONFIG.board_version : "602");
+    cJSON_AddNumberToObject(root, "maxPower",
+                            g_state != NULL ? g_state->DEVICE_CONFIG.power_consumption_target
+                                            : 22);
+    cJSON_AddNumberToObject(root, "nominalVoltage", 5);
+    cJSON_AddNumberToObject(
+        root, "smallCoreCount",
+        g_state != NULL ? g_state->DEVICE_CONFIG.family.asic.small_core_count : 2040);
+    cJSON_AddStringToObject(
+        root, "ASICModel",
+        g_state != NULL ? g_state->DEVICE_CONFIG.family.asic.name : "BM1370");
+    cJSON_AddNumberToObject(root, "isPSRAMAvailable",
+                            heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 0 ? 1 : 0);
+    cJSON_AddStringToObject(root, "resetReason", espminer_reset_reason());
+    cJSON_AddStringToObject(root, "runningPartition",
+                            running != NULL ? running->label : "unknown");
+    cJSON_AddStringToObject(root, "macAddr", mac);
+    cJSON_AddStringToObject(root, "hostname", config->hostname);
+    cJSON_AddStringToObject(root, "ssid", config->wifi_ssid);
+    cJSON_AddStringToObject(root, "wifiPass",
+                            config->wifi_password[0] != '\0' ? "*****" : "");
+    cJSON_AddStringToObject(root, "ipv4", g_connected ? g_ip : "");
+    cJSON_AddStringToObject(root, "ipv6", "");
+    cJSON_AddNumberToObject(root, "apEnabled", g_setup_ap_active ? 1 : 0);
+    cJSON_AddStringToObject(root, "poolConnectionInfo",
+                            snapshot.stats.connected ? active_pool : "Disconnected");
+    cJSON_AddNumberToObject(root, "isUsingFallbackStratum", using_backup ? 1 : 0);
+    cJSON_AddStringToObject(root, "stratumURL", config->pool_host);
+    cJSON_AddNumberToObject(root, "stratumPort", config->pool_port);
+    cJSON_AddStringToObject(root, "stratumUser", config->pool_user);
+    cJSON_AddNumberToObject(root, "stratumSuggestedDifficulty",
+                            suggested_pool_difficulty);
+    cJSON_AddBoolToObject(root, "stratumExtranonceSubscribe", true);
+    cJSON_AddNumberToObject(root, "stratumTLS", 0);
+    cJSON_AddStringToObject(root, "stratumCert", "");
+    cJSON_AddBoolToObject(root, "stratumDecodeCoinbase", true);
+    cJSON_AddStringToObject(root, "fallbackStratumURL", config->backup_pool_host);
+    cJSON_AddNumberToObject(root, "fallbackStratumPort", config->backup_pool_port);
+    cJSON_AddStringToObject(root, "fallbackStratumUser", config->pool_user);
+    cJSON_AddNumberToObject(root, "fallbackStratumSuggestedDifficulty",
+                            suggested_pool_difficulty);
+    cJSON_AddBoolToObject(root, "fallbackStratumExtranonceSubscribe", true);
+    cJSON_AddNumberToObject(root, "fallbackStratumTLS", 0);
+    cJSON_AddStringToObject(root, "fallbackStratumCert", "");
+    cJSON_AddBoolToObject(root, "fallbackStratumDecodeCoinbase", true);
+    cJSON_AddStringToObject(root, "stratumProtocol", "SV1");
+    cJSON_AddStringToObject(root, "activeProtocolLabel", "SV1");
+    cJSON_AddStringToObject(root, "stratumV2AuthorityPubkey", "");
+    cJSON_AddStringToObject(root, "stratumV2ChannelType", "standard");
+    cJSON_AddStringToObject(root, "fallbackStratumV2AuthorityPubkey", "");
+    cJSON_AddStringToObject(root, "fallbackStratumV2ChannelType", "standard");
+    cJSON_AddStringToObject(root, "fallbackStratumProtocol", "SV1");
+    cJSON_AddNumberToObject(root, "overclockEnabled",
+                            config->overclock_enabled ? 1 : 0);
+    cJSON_AddStringToObject(root, "display", "SSD1306 (128x32)");
+    cJSON_AddNumberToObject(root, "rotation", 0);
+    cJSON_AddNumberToObject(root, "invertscreen", 0);
+    cJSON_AddNumberToObject(root, "displayTimeout",
+                            config->display_screensaver_enabled
+                                ? (int32_t)config->display_sleep_minutes * 60
+                                : -1);
+    cJSON_AddNumberToObject(root, "autofanspeed", fan_auto ? 1 : 0);
+    cJSON_AddNumberToObject(root, "manualFanSpeed", config->fan_override_percent);
+    cJSON_AddNumberToObject(root, "minFanSpeed", 35);
+    cJSON_AddNumberToObject(root, "temptarget", snapshot.fan_target_temp_c);
+    cJSON_AddNumberToObject(root, "coreVoltage", snapshot.voltage_target_mv);
+    cJSON_AddNumberToObject(root, "frequency", snapshot.active_frequency_mhz);
+    cJSON_AddNumberToObject(root, "statsFrequency", 30);
+    cJSON_AddNumberToObject(root, "statsLimit", 720);
+    cJSON_AddNumberToObject(root, "boardtemp1", 0);
+    cJSON_AddNumberToObject(root, "boardtemp2", 0);
+    cJSON_AddStringToObject(root, "activePool", active_pool);
+    cJSON_AddNumberToObject(root, "activePoolPort", active_pool_port);
+    cJSON_AddBoolToObject(root, "otaSupported",
+                          esp_ota_get_next_update_partition(NULL) != NULL);
+
+    espminer_add_hashrate_monitor(root, &snapshot);
+    cJSON_AddItemToObject(root, "sharesRejectedReasons", cJSON_CreateArray());
+    cJSON_AddItemToObject(root, "blockSignals", cJSON_CreateArray());
+    cJSON_AddItemToObject(root, "coinbaseOutputs", cJSON_CreateArray());
+
+    return send_cjson_response(req, root);
+}
+
+static void espminer_add_number_options(cJSON *root, const char *name,
+                                        const uint16_t *values, size_t count)
+{
+    cJSON *array = cJSON_CreateArray();
+    if (array == NULL) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        cJSON_AddItemToArray(array, cJSON_CreateNumber(values[i]));
+    }
+    cJSON_AddItemToObject(root, name, array);
+}
+
+static esp_err_t espminer_system_asic_handler(httpd_req_t *req)
+{
+    static const uint16_t frequency_options[] = {
+        400, 425, 450, 475, 500, 525, 550, 575, 600, 625, 650, 700,
+        750, 800, 850, 900, 950, 1000, 1100, 1200, 1300, 1400, 1500,
+    };
+    static const uint16_t voltage_options[] = {
+        700, 750, 800, 850, 900, 950, 1000, 1050, 1100, 1150,
+        1200, 1250, 1300, 1350, 1370,
+    };
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    cJSON_AddStringToObject(root, "ASICModel",
+                            g_state != NULL ? g_state->DEVICE_CONFIG.family.asic.name
+                                            : "BM1370");
+    cJSON_AddStringToObject(root, "deviceModel",
+                            g_state != NULL ? g_state->DEVICE_CONFIG.family.name : "Gamma");
+    cJSON_AddStringToObject(root, "swarmColor", "blue");
+    cJSON_AddNumberToObject(root, "asicCount",
+                            g_state != NULL ? g_state->DEVICE_CONFIG.family.asic_count : 1);
+    cJSON_AddNumberToObject(root, "hashDomains", STRATUM_HASH_DOMAIN_COUNT);
+    cJSON_AddNumberToObject(root, "defaultFrequency", 525);
+    espminer_add_number_options(root, "frequencyOptions", frequency_options,
+                                sizeof(frequency_options) /
+                                    sizeof(frequency_options[0]));
+    cJSON_AddNumberToObject(root, "defaultVoltage", 1150);
+    espminer_add_number_options(root, "voltageOptions", voltage_options,
+                                sizeof(voltage_options) / sizeof(voltage_options[0]));
+    return send_cjson_response(req, root);
+}
+
+static bool espminer_stat_label_selected(const char *label, const char *columns)
+{
+    if (columns == NULL || columns[0] == '\0') {
+        return true;
+    }
+
+    const size_t label_len = strlen(label);
+    const char *cursor = columns;
+    while (*cursor != '\0') {
+        while (*cursor == ',' || *cursor == ' ') {
+            ++cursor;
+        }
+        const char *end = cursor;
+        while (*end != '\0' && *end != ',') {
+            ++end;
+        }
+        if ((size_t)(end - cursor) == label_len &&
+            strncmp(cursor, label, label_len) == 0) {
+            return true;
+        }
+        cursor = end;
+    }
+    return false;
+}
+
+static double espminer_stat_value(const espminer_api_snapshot_t *snapshot,
+                                  const char *label)
+{
+    if (strcmp(label, "hashrate") == 0 || strcmp(label, "hashrate_1m") == 0 ||
+        strcmp(label, "hashrate_10m") == 0 || strcmp(label, "hashrate_1h") == 0) {
+        return snapshot->stats.measured_hashrate_ghs;
+    }
+    if (strcmp(label, "errorPercentage") == 0) {
+        return snapshot->stats.asic_error_rate_percent;
+    }
+    if (strcmp(label, "asicTemp") == 0 || strcmp(label, "asicTemp2") == 0) {
+        return snapshot->asic_temp_c;
+    }
+    if (strcmp(label, "vrTemp") == 0) {
+        return snapshot->have_power ? snapshot->power.read_temp_c
+                                    : (g_state != NULL
+                                           ? g_state->POWER_MANAGEMENT_MODULE.vr_temp
+                                           : 0.0f);
+    }
+    if (strcmp(label, "asicVoltage") == 0) {
+        return snapshot->core_voltage_mv;
+    }
+    if (strcmp(label, "voltage") == 0) {
+        return snapshot->input_voltage_mv;
+    }
+    if (strcmp(label, "power") == 0) {
+        return snapshot->asic_power_watts;
+    }
+    if (strcmp(label, "current") == 0) {
+        return snapshot->output_current_ma;
+    }
+    if (strcmp(label, "fanSpeed") == 0) {
+        return g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.fan_perc : 0.0;
+    }
+    if (strcmp(label, "fanRpm") == 0) {
+        return g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.fan_rpm : 0.0;
+    }
+    if (strcmp(label, "fan2Rpm") == 0) {
+        return 0.0;
+    }
+    if (strcmp(label, "wifiRssi") == 0) {
+        return snapshot->wifi_rssi;
+    }
+    if (strcmp(label, "freeHeap") == 0) {
+        return esp_get_free_heap_size();
+    }
+    if (strcmp(label, "responseTime") == 0) {
+        return snapshot->stats.response_time_ms;
+    }
+    return 0.0;
+}
+
+static esp_err_t espminer_system_statistics_handler(httpd_req_t *req)
+{
+    static const char *labels[] = {
+        "hashrate", "hashrate_1m", "hashrate_10m", "hashrate_1h",
+        "errorPercentage", "asicTemp", "asicTemp2", "vrTemp", "asicVoltage",
+        "voltage", "power", "current", "fanSpeed", "fanRpm", "fan2Rpm",
+        "wifiRssi", "freeHeap", "responseTime",
+    };
+
+    char query[192] = "";
+    char columns[160] = "";
+    bool has_selection = false;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "columns", columns, sizeof(columns)) == ESP_OK) {
+        for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i) {
+            if (espminer_stat_label_selected(labels[i], columns)) {
+                has_selection = true;
+                break;
+            }
+        }
+        if (!has_selection) {
+            columns[0] = '\0';
+        }
+    }
+
+    espminer_api_snapshot_t snapshot;
+    espminer_collect_snapshot(&snapshot);
+    const uint64_t timestamp_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    cJSON_AddNumberToObject(root, "currentTimestamp", (double)timestamp_ms);
+
+    cJSON *label_array = cJSON_CreateArray();
+    cJSON *statistics = cJSON_CreateArray();
+    cJSON *values = cJSON_CreateArray();
+    if (label_array == NULL || statistics == NULL || values == NULL) {
+        cJSON_Delete(root);
+        cJSON_Delete(label_array);
+        cJSON_Delete(statistics);
+        cJSON_Delete(values);
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i) {
+        if (espminer_stat_label_selected(labels[i], columns)) {
+            cJSON_AddItemToArray(label_array, cJSON_CreateString(labels[i]));
+            cJSON_AddItemToArray(values,
+                                 cJSON_CreateNumber(espminer_stat_value(&snapshot,
+                                                                         labels[i])));
+        }
+    }
+    cJSON_AddItemToArray(label_array, cJSON_CreateString("timestamp"));
+    cJSON_AddItemToArray(values, cJSON_CreateNumber((double)timestamp_ms));
+    cJSON_AddItemToArray(statistics, values);
+    cJSON_AddItemToObject(root, "labels", label_array);
+    cJSON_AddItemToObject(root, "statistics", statistics);
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_system_scoreboard_handler(httpd_req_t *req)
+{
+    return send_cjson_response(req, cJSON_CreateArray());
+}
+
+static esp_err_t espminer_wifi_scan_handler(httpd_req_t *req)
+{
+    bool running = false;
+    bool valid = false;
+    esp_err_t err = ESP_OK;
+    uint16_t ap_count = 0;
+    wifi_ap_record_t records[SETUP_SCAN_MAX_APS] = {0};
+
+    if (g_wifi_scan_mutex == NULL ||
+        xSemaphoreTake(g_wifi_scan_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return send_espminer_json_error(req, "500 Internal Server Error",
+                                        "scan unavailable");
+    }
+    running = g_wifi_scan_running;
+    valid = g_wifi_scan_valid;
+    err = g_wifi_scan_err;
+    ap_count = g_wifi_scan_count;
+    if (ap_count > SETUP_SCAN_MAX_APS) {
+        ap_count = SETUP_SCAN_MAX_APS;
+    }
+    memcpy(records, g_wifi_scan_records, (size_t)ap_count * sizeof(records[0]));
+    xSemaphoreGive(g_wifi_scan_mutex);
+
+    if (!running && !valid) {
+        const uint64_t scan_started_us = http_now_us();
+        err = start_wifi_scan_async();
+        log_http_handler_delay("ESP-Miner Wi-Fi scan start", scan_started_us);
+        if (err != ESP_OK) {
+            return send_espminer_json_error(req, "500 Internal Server Error",
+                                            esp_err_to_name(err));
+        }
+        running = true;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *networks = cJSON_CreateArray();
+    if (root == NULL || networks == NULL) {
+        cJSON_Delete(root);
+        cJSON_Delete(networks);
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    cJSON_AddItemToObject(root, "networks", networks);
+
+    if (running) {
+        return send_cjson_response(req, root);
+    }
+    if (err != ESP_OK) {
+        cJSON_Delete(root);
+        return send_espminer_json_error(req, "500 Internal Server Error",
+                                        esp_err_to_name(err));
+    }
+
+    for (uint16_t i = 0; i < ap_count; ++i) {
+        if (records[i].ssid[0] == '\0') {
+            continue;
+        }
+        cJSON *network = cJSON_CreateObject();
+        if (network == NULL) {
+            continue;
+        }
+        cJSON_AddStringToObject(network, "ssid", (const char *)records[i].ssid);
+        cJSON_AddNumberToObject(network, "rssi", records[i].rssi);
+        cJSON_AddNumberToObject(network, "authmode", records[i].authmode);
+        cJSON_AddItemToArray(networks, network);
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_restart_handler(httpd_req_t *req)
+{
+    if (xTaskCreate(reboot_task, "api_restart", 2048, NULL,
+                    tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
+        return send_espminer_json_error(req, "500 Internal Server Error",
+                                        "reboot task failed");
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root != NULL) {
+        cJSON_AddStringToObject(root, "message", "System will restart shortly.");
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_pause_handler(httpd_req_t *req)
+{
+    stratum_minimal_pause_work();
+    cJSON *root = cJSON_CreateObject();
+    if (root != NULL) {
+        cJSON_AddStringToObject(root, "message", "Mining paused");
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_resume_handler(httpd_req_t *req)
+{
+    stratum_minimal_resume_work();
+    cJSON *root = cJSON_CreateObject();
+    if (root != NULL) {
+        cJSON_AddStringToObject(root, "message", "Mining resumed");
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_identify_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root != NULL) {
+        cJSON_AddStringToObject(root, "message", "Identify acknowledged");
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_block_dismiss_handler(httpd_req_t *req)
+{
+    stratum_minimal_dismiss_block_alert();
+    cJSON *root = cJSON_CreateObject();
+    if (root != NULL) {
+        cJSON_AddNumberToObject(root, "blockFound", 0);
+        cJSON_AddBoolToObject(root, "showNewBlock", false);
+        cJSON_AddStringToObject(root, "message", "Block found notification dismissed");
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_ota_handler(httpd_req_t *req)
+{
+    set_espminer_api_headers(req);
+    return ota_update_handler(req);
+}
+
+static esp_err_t espminer_otawww_handler(httpd_req_t *req)
+{
+    (void)req;
+    return send_espminer_json_error(req, "501 Not Implemented",
+                                    "WWW OTA partition is not available");
+}
+
+static esp_err_t espminer_logs_handler(httpd_req_t *req)
+{
+    set_espminer_api_headers(req);
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"m45-logs.txt\"");
+    return logs_handler(req);
+}
+
+static bool espminer_json_copy_string(cJSON *root, const char *name, char *dst,
+                                      size_t dst_size, bool skip_mask)
+{
+    cJSON *item = cJSON_GetObjectItem(root, name);
+    if (item == NULL) {
+        return true;
+    }
+    if (!cJSON_IsString(item) || item->valuestring == NULL ||
+        strlen(item->valuestring) >= dst_size) {
+        return false;
+    }
+    if (skip_mask && strcmp(item->valuestring, "*****") == 0) {
+        return true;
+    }
+    strlcpy(dst, item->valuestring, dst_size);
+    return true;
+}
+
+static bool espminer_json_get_optional_bool(cJSON *root, const char *name, bool *dst)
+{
+    cJSON *item = cJSON_GetObjectItem(root, name);
+    if (item == NULL) {
+        return true;
+    }
+    if (cJSON_IsBool(item)) {
+        *dst = cJSON_IsTrue(item);
+        return true;
+    }
+    if (cJSON_IsNumber(item) && (item->valueint == 0 || item->valueint == 1)) {
+        *dst = item->valueint != 0;
+        return true;
+    }
+    return false;
+}
+
+static bool espminer_json_get_optional_u16(cJSON *root, const char *name, uint16_t *dst,
+                                           int min, int max)
+{
+    cJSON *item = cJSON_GetObjectItem(root, name);
+    if (item == NULL) {
+        return true;
+    }
+    if (!cJSON_IsNumber(item) || item->valuedouble < min || item->valuedouble > max) {
+        return false;
+    }
+    *dst = (uint16_t)item->valueint;
+    return true;
+}
+
+static bool espminer_apply_patch_json(cJSON *json, m45_config_t *config)
+{
+    bool ok =
+        espminer_json_copy_string(json, "hostname", config->hostname,
+                                  sizeof(config->hostname), false) &&
+        espminer_json_copy_string(json, "ssid", config->wifi_ssid,
+                                  sizeof(config->wifi_ssid), false) &&
+        espminer_json_copy_string(json, "wifiPass", config->wifi_password,
+                                  sizeof(config->wifi_password), true) &&
+        espminer_json_copy_string(json, "stratumURL", config->pool_host,
+                                  sizeof(config->pool_host), false) &&
+        espminer_json_copy_string(json, "stratumUser", config->pool_user,
+                                  sizeof(config->pool_user), false) &&
+        espminer_json_copy_string(json, "stratumPassword", config->pool_pass,
+                                  sizeof(config->pool_pass), true) &&
+        espminer_json_copy_string(json, "fallbackStratumURL",
+                                  config->backup_pool_host,
+                                  sizeof(config->backup_pool_host), false) &&
+        espminer_json_get_optional_u16(json, "stratumPort", &config->pool_port, 1,
+                                       65535) &&
+        espminer_json_get_optional_u16(json, "fallbackStratumPort",
+                                       &config->backup_pool_port, 1, 65535) &&
+        espminer_json_get_optional_bool(json, "overclockEnabled",
+                                        &config->overclock_enabled) &&
+        espminer_json_get_optional_u16(json, "frequency",
+                                       &config->asic_frequency_mhz,
+                                       M45_ASIC_FREQUENCY_MIN_MHZ,
+                                       M45_ASIC_FREQUENCY_MAX_MHZ) &&
+        espminer_json_get_optional_u16(json, "coreVoltage", &config->asic_voltage_mv,
+                                       500, 1370) &&
+        espminer_json_get_optional_u16(json, "manualFanSpeed",
+                                       &config->fan_override_percent, 0, 100) &&
+        espminer_json_get_optional_u16(json, "temptarget",
+                                       &config->fan_target_temp_c, 35, 66);
+    if (!ok) {
+        return false;
+    }
+
+    bool autofanspeed = false;
+    cJSON *autofan = cJSON_GetObjectItem(json, "autofanspeed");
+    if (autofan != NULL) {
+        if (!espminer_json_get_optional_bool(json, "autofanspeed", &autofanspeed)) {
+            return false;
+        }
+        config->fan_override_enabled = !autofanspeed;
+    }
+
+    cJSON *difficulty = cJSON_GetObjectItem(json, "stratumSuggestedDifficulty");
+    if (difficulty != NULL) {
+        if (!cJSON_IsNumber(difficulty) || difficulty->valuedouble < 0 ||
+            difficulty->valuedouble > 65535) {
+            return false;
+        }
+        config->pool_difficulty = (uint16_t)difficulty->valueint;
+        config->pool_difficulty_auto = config->pool_difficulty == 0;
+        if (config->pool_difficulty_auto) {
+            config->pool_difficulty = suggested_pool_difficulty_for_config(config);
+        }
+    }
+
+    if (cJSON_GetObjectItem(json, "temptarget") != NULL) {
+        config->fan_target_override_enabled = true;
+    }
+    return true;
+}
+
+static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 4096) {
+        return send_espminer_json_error(req, "413 Payload Too Large", "invalid size");
+    }
+
+    char *body = calloc(1, (size_t)req->content_len + 1);
+    if (body == NULL) {
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+
+    int received = 0;
+    while (received < req->content_len) {
+        const int ret = httpd_req_recv(req, body + received, req->content_len - received);
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (ret <= 0) {
+            free(body);
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    body[received] = '\0';
+
+    cJSON *json = cJSON_Parse(body);
+    free(body);
+    if (json == NULL || !cJSON_IsObject(json)) {
+        cJSON_Delete(json);
+        return send_espminer_json_error(req, "400 Bad Request", "bad json");
+    }
+
+    m45_config_t config = *m45_config_get();
+    const bool ok = espminer_apply_patch_json(json, &config);
+    cJSON_Delete(json);
+
+    if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
+        config.pool_user[0] == '\0' ||
+        (config.fan_override_percent != 0 &&
+         (config.fan_override_percent < 35 || config.fan_override_percent > 100)) ||
+        config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||
+        !safety_settings_valid_for_tune(&config)) {
+        return send_espminer_json_error(req, "400 Bad Request", "invalid settings");
+    }
+
+    const m45_config_t old_config = *m45_config_get();
+    const bool wifi_credentials_changed_now =
+        wifi_credentials_changed(&old_config, &config);
+    const bool hostname_changed =
+        settings_string_changed(old_config.hostname, config.hostname);
+    const bool pool_reconnect = active_pool_settings_changed(&old_config, &config);
+
+    esp_err_t err = apply_hardware_settings(&old_config, &config);
+    if (err != ESP_OK) {
+        return send_espminer_json_error(req, "500 Internal Server Error",
+                                        esp_err_to_name(err));
+    }
+
+    uint64_t started_us = http_now_us();
+    err = m45_config_save(&config);
+    log_http_handler_delay("ESP-Miner settings NVS save", started_us);
+    if (err != ESP_OK) {
+        esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
+        if (revert_err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to restore hardware settings after ESP-Miner save error: %s",
+                     esp_err_to_name(revert_err));
+        }
+        return send_espminer_json_error(req, "500 Internal Server Error",
+                                        esp_err_to_name(err));
+    }
+
+    apply_runtime_state(m45_config_get());
+    if (pool_reconnect) {
+        stratum_minimal_reconnect();
+    }
+    if (hostname_changed && !wifi_credentials_changed_now) {
+        schedule_wifi_reconnect();
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root != NULL) {
+        cJSON_AddBoolToObject(root, "ok", true);
+        cJSON_AddBoolToObject(root, "restart", wifi_credentials_changed_now);
+        cJSON_AddBoolToObject(root, "pool_reconnect", pool_reconnect);
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t espminer_options_handler(httpd_req_t *req)
+{
+    set_espminer_api_headers(req);
+    httpd_resp_set_status(req, "204 No Content");
+    return httpd_resp_send(req, NULL, 0);
+}
+
 static esp_err_t health_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/plain");
@@ -2404,9 +3530,39 @@ static esp_err_t start_http_server(void)
         {.uri = "/settings", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/overclock", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/calibration", .method = HTTP_GET, .handler = root_handler},
+        {.uri = "/update", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/logs", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_handler},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler},
+        {.uri = "/api/system/info", .method = HTTP_GET,
+         .handler = espminer_system_info_handler},
+        {.uri = "/api/system/asic", .method = HTTP_GET,
+         .handler = espminer_system_asic_handler},
+        {.uri = "/api/system/statistics", .method = HTTP_GET,
+         .handler = espminer_system_statistics_handler},
+        {.uri = "/api/system/scoreboard", .method = HTTP_GET,
+         .handler = espminer_system_scoreboard_handler},
+        {.uri = "/api/system/wifi/scan", .method = HTTP_GET,
+         .handler = espminer_wifi_scan_handler},
+        {.uri = "/api/system/logs", .method = HTTP_GET,
+         .handler = espminer_logs_handler},
+        {.uri = "/api/system", .method = HTTP_PATCH,
+         .handler = espminer_system_patch_handler},
+        {.uri = "/api/system/restart", .method = HTTP_POST,
+         .handler = espminer_restart_handler},
+        {.uri = "/api/system/pause", .method = HTTP_POST,
+         .handler = espminer_pause_handler},
+        {.uri = "/api/system/resume", .method = HTTP_POST,
+         .handler = espminer_resume_handler},
+        {.uri = "/api/system/identify", .method = HTTP_POST,
+         .handler = espminer_identify_handler},
+        {.uri = "/api/system/blockFound/dismiss", .method = HTTP_POST,
+         .handler = espminer_block_dismiss_handler},
+        {.uri = "/api/system/OTA", .method = HTTP_POST,
+         .handler = espminer_ota_handler},
+        {.uri = "/api/system/OTAWWW", .method = HTTP_POST,
+         .handler = espminer_otawww_handler},
+        {.uri = "/api/*", .method = HTTP_OPTIONS, .handler = espminer_options_handler},
         {.uri = "/api/setup", .method = HTTP_GET, .handler = setup_get_handler},
         {.uri = "/api/setup", .method = HTTP_POST, .handler = setup_post_handler},
         {.uri = "/api/networks", .method = HTTP_GET, .handler = networks_handler},
@@ -2422,6 +3578,7 @@ static esp_err_t start_http_server(void)
          .handler = best_diff_reset_handler},
         {.uri = "/api/block-alert/dismiss", .method = HTTP_POST,
          .handler = block_alert_dismiss_handler},
+        {.uri = "/api/ota", .method = HTTP_POST, .handler = ota_update_handler},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = reboot_handler},
         {.uri = "/api/logs", .method = HTTP_GET, .handler = logs_handler},
         {.uri = "/health", .method = HTTP_GET, .handler = health_handler},

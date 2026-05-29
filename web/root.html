@@ -29,6 +29,10 @@
 <span id=logs-state class='pill warn'>CONNECTING</span></div></div>
 <pre id=logs-output class=logs-output></pre></article></section>
 <section id=update-view class=hidden>
+<div class=tabbar role=tablist aria-label=Update>
+<button id=update-tab-release class='tab active' type=button role=tab aria-selected=true>Releases</button>
+<button id=update-tab-ota class=tab type=button role=tab aria-selected=false>OTA</button></div>
+<section id=update-release-tab>
 <section class=grid>
 <article class='panel wide update-card'><div class=label>Current Version</div>
 <div id=update-current class='value small'>--</div>
@@ -45,6 +49,18 @@
 <div id=update-assets class=update-assets></div>
 <div class=label>Release Notes</div><div id=update-notes class=release-notes></div></article>
 </section></section>
+<section id=update-ota-tab class=hidden>
+<section class=grid>
+<article class='panel full update-card'><div class=metric-head><div class=label>OTA Firmware</div>
+<span id=ota-state class=pill>READY</span></div>
+<div id=ota-summary class=subvalue>Upload a M45 app image or Gamma 602 factory image.</div>
+<div class=ota-picker><input id=ota-file type=file accept='.bin,application/octet-stream'>
+<button id=ota-upload class=secondary type=button disabled>Upload &amp; Install</button>
+<button id=ota-install-latest class=secondary type=button disabled>Install Latest</button></div>
+<progress id=ota-progress class=ota-progress max=100 value=0></progress>
+<span id=ota-status class=status-text></span></article>
+</section></section>
+</section>
 <section id=overclock-view class=hidden>
 <section class='grid oc-grid'>
 <form id=overclock-form class='oc-form full' novalidate>
@@ -195,7 +211,8 @@ const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CA
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
-let currentBuildVersion='',latestRelease=null,releaseCheckInFlight=false;
+let currentBuildVersion='',latestRelease=null,latestFactoryAsset=null,releaseCheckInFlight=false,releaseAutoCheckStarted=false;
+let otaSupported=false,otaUploadInFlight=false;
 function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
 $('dashboard-view').classList.toggle('hidden',view!=='stats');
 $('overclock-view').classList.toggle('hidden',view!=='overclock');
@@ -221,6 +238,8 @@ $('settings-reset-cancel').onclick=()=>{$('settings-reset-modal').classList.add(
 $('settings-reset-modal').onclick=e=>{if(e.target===$('settings-reset-modal'))$('settings-reset-cancel').click()};
 $('update-privacy-cancel').onclick=()=>{$('update-privacy-modal').classList.add('hidden')};
 $('update-privacy-modal').onclick=e=>{if(e.target===$('update-privacy-modal'))$('update-privacy-cancel').click()};
+$('update-tab-release').onclick=()=>showUpdateTab('release');
+$('update-tab-ota').onclick=()=>showUpdateTab('ota');
 let dismissedFault=sessionStorage.getItem('dismissedFault')||'';
 $('fault-close').onclick=()=>{dismissedFault=$('fault-panel').dataset.reason||'';
 sessionStorage.setItem('dismissedFault',dismissedFault);$('fault-panel').classList.add('hidden')};
@@ -590,26 +609,33 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function statusJson(){const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);throw new Error('refreshing')}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))throw new Error('refreshing');return s}
-function updateVersionFromStatus(s){currentBuildVersion=s.version||s.build_id||'unknown';
+function updateVersionFromStatus(s){currentBuildVersion=s.version||s.build_id||'unknown';otaSupported=s.ota_supported===true;
 txt('update-current',currentBuildVersion);txt('update-build-id',s.build_id||'unknown');txt('update-build-time',s.build_time||'unknown');
-if(latestRelease)renderLatestRelease(latestRelease)}
+syncOtaControls();if(latestRelease)renderLatestRelease(latestRelease);maybeAutoCheckRelease()}
 function releaseCompareVersion(v){return String(v||'').replace(/-dirty$/,'').replace(/\+.*/,'')}
+function currentMatchesReleaseTag(tag){const current=releaseCompareVersion(currentBuildVersion),release=String(tag||'');
+return current===release||current.startsWith(`${release}-`)}
 function setUpdateState(cls,text){const el=$('update-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
 function setUpdateMessage(msg,cls='',fade=false){setStatus('update-status',msg,cls,fade)}
 function localBool(key){try{return localStorage.getItem(key)==='1'}catch(_){return false}}
 function setLocalBool(key,value){try{if(value)localStorage.setItem(key,'1');else localStorage.removeItem(key)}catch(_){}}
+function showUpdateTab(tab){const ota=tab==='ota';$('update-release-tab').classList.toggle('hidden',ota);$('update-ota-tab').classList.toggle('hidden',!ota);
+$('update-tab-release').classList.toggle('active',!ota);$('update-tab-ota').classList.toggle('active',ota);
+$('update-tab-release').setAttribute('aria-selected',String(!ota));$('update-tab-ota').setAttribute('aria-selected',String(ota))}
+function setUpdateAvailable(available){$('update-badge').classList.toggle('hidden',!available)}
 function releaseAssetSize(size){size=Number(size);if(!Number.isFinite(size)||size<=0)return'';return size>=1048576?`${n(size/1048576,2)} MB`:`${n(size/1024,0)} KB`}
 function matchingFactoryAssets(release){const tag=release&&release.tag_name||'';const assets=Array.isArray(release&&release.assets)?release.assets:[];
 return assets.filter(a=>a&&a.name&&a.name.startsWith(`${UPDATE_ASSET_PREFIX}${tag}`)&&a.name.endsWith('.bin'))}
+function factoryMirrorUrl(release,asset){return `${UPDATE_WEB_FLASHER_URL}firmware/${encodeURIComponent(release.tag_name)}/${encodeURIComponent(asset.name)}`}
 function addUpdateAsset(asset){const row=document.createElement('div');row.className='update-asset';
 const link=document.createElement('a');link.href=asset.browser_download_url;link.target='_blank';link.rel='noopener';link.textContent=asset.name;
 const meta=document.createElement('span');meta.textContent=releaseAssetSize(asset.size);row.appendChild(link);row.appendChild(meta);$('update-assets').appendChild(row)}
 function renderLatestRelease(release){latestRelease=release;const tag=release.tag_name||release.name||'unknown';
 txt('update-latest',release.name||tag);$('update-release-link').href=release.html_url||'#';$('update-release-link').classList.remove('hidden');
-const same=releaseCompareVersion(currentBuildVersion)===tag;setUpdateState(same?'ok':'warn',same?'CURRENT':'NEW');
-txt('update-summary',same?'Current build matches the latest release.':`Latest release is ${tag}. Use the web flasher to install the factory image.`);
+const same=currentMatchesReleaseTag(tag);setUpdateAvailable(!same);setUpdateState(same?'ok':'warn',same?'CURRENT':'NEW');
+txt('update-summary',same?'Current build is based on the latest release.':`Latest release is ${tag}.`);
 txt('update-release-date',release.published_at?release.published_at.slice(0,10):'--');
-$('update-assets').textContent='';const assets=matchingFactoryAssets(release);
+$('update-assets').textContent='';const assets=matchingFactoryAssets(release);latestFactoryAsset=assets[0]||null;syncOtaControls();
 if(assets.length)assets.forEach(addUpdateAsset);else{const row=document.createElement('div');row.className='update-asset';
 const msg=document.createElement('span');msg.textContent='No Gamma 602 factory image found in this release.';row.appendChild(msg);$('update-assets').appendChild(row)}
 $('update-notes').textContent=release.body||'No release notes.';$('update-release-panel').classList.remove('hidden')}
@@ -617,16 +643,41 @@ async function checkLatestRelease(){if(releaseCheckInFlight)return;releaseCheckI
 $('update-check').disabled=true;setUpdateState('warn','CHECKING');setUpdateMessage('checking GitHub releases...');
 try{const r=await fetch(UPDATE_RELEASES_URL,{cache:'no-store'});if(!r.ok)throw new Error(`GitHub API ${r.status}`);
 const releases=await r.json();const latest=(Array.isArray(releases)?releases:[]).find(x=>x&&!x.prerelease&&!x.draft);
-if(!latest){setUpdateState('warn','NONE');txt('update-latest','--');txt('update-summary','No published release was found.');setUpdateMessage('no published release found','err');return}
+if(!latest){setUpdateAvailable(false);latestFactoryAsset=null;syncOtaControls();setUpdateState('warn','NONE');txt('update-latest','--');txt('update-summary','No published release was found.');setUpdateMessage('no published release found','err');return}
 renderLatestRelease(latest);setUpdateMessage('release check complete','ok',true)}
 catch(e){setUpdateState('bad','FAILED');setUpdateMessage(`release check failed: ${e.message||e}`,'err')}
 finally{releaseCheckInFlight=false;$('update-check').disabled=false}}
+function maybeAutoCheckRelease(){if(releaseAutoCheckStarted||!currentBuildVersion||!localBool(UPDATE_PRIVACY_KEY))return;
+releaseAutoCheckStarted=true;checkLatestRelease()}
 function handleUpdateCheck(){if(localBool(UPDATE_PRIVACY_KEY)){checkLatestRelease();return}
 $('update-privacy-modal').classList.remove('hidden')}
 $('update-check').onclick=handleUpdateCheck;
 $('update-privacy-continue').onclick=()=>{setLocalBool(UPDATE_PRIVACY_KEY,$('update-privacy-ignore').checked);
 $('update-privacy-modal').classList.add('hidden');checkLatestRelease()};
 $('update-web-flasher').href=UPDATE_WEB_FLASHER_URL;
+function setOtaState(cls,text){const el=$('ota-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
+function setOtaMessage(msg,cls='',fade=false){setStatus('ota-status',msg,cls,fade)}
+function syncOtaControls(){const file=$('ota-file').files&&$('ota-file').files[0];$('ota-upload').disabled=otaUploadInFlight||!otaSupported||!file;
+$('ota-install-latest').disabled=otaUploadInFlight||!otaSupported||!latestRelease||!latestFactoryAsset;
+setOtaState(otaSupported?'ok':'warn',otaSupported?'READY':'UNAVAILABLE');
+txt('ota-summary',otaSupported?'Upload a M45 app image or Gamma 602 factory image.':'Flash once with the web flasher to enable OTA partitions.')}
+function uploadOtaBlob(blob,label){return new Promise((resolve,reject)=>{if(otaUploadInFlight){reject(new Error('OTA already running'));return}
+otaUploadInFlight=true;syncOtaControls();$('ota-progress').value=0;setOtaState('warn','UPDATING');setOtaMessage(`uploading ${label}...`);
+const xhr=new XMLHttpRequest();xhr.open('POST','/api/ota');xhr.setRequestHeader('X-Page-Token',PAGE_TOKEN);
+xhr.upload.onprogress=e=>{if(e.lengthComputable){const pct=Math.round(e.loaded*100/e.total);$('ota-progress').value=pct;setOtaMessage(`uploading ${pct}%...`)}};
+xhr.onload=()=>{otaUploadInFlight=false;syncOtaControls();let body={};try{body=JSON.parse(xhr.responseText||'{}')}catch(_){}
+if(xhr.status===409&&body.page_token){reloadFresh(body.page_token);resolve();return}
+if(xhr.status>=200&&xhr.status<300){$('ota-progress').value=100;setOtaState('ok','REBOOTING');setOtaMessage('update installed, rebooting...','ok');setTimeout(()=>location.reload(),7000);resolve();return}
+setOtaState('bad','FAILED');reject(new Error(body.error||xhr.statusText||`HTTP ${xhr.status}`))};
+xhr.onerror=()=>{otaUploadInFlight=false;syncOtaControls();setOtaState('bad','FAILED');reject(new Error('upload failed'))};
+xhr.send(blob)})}
+async function uploadSelectedOta(){const file=$('ota-file').files&&$('ota-file').files[0];if(!file){setOtaMessage('choose a firmware image first','err');return}
+try{await uploadOtaBlob(file,file.name)}catch(e){setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
+async function installLatestOta(){if(!latestRelease||!latestFactoryAsset){setOtaMessage('check releases first','err');return}
+const url=factoryMirrorUrl(latestRelease,latestFactoryAsset);try{setOtaMessage(`downloading ${latestRelease.tag_name}...`);
+const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`download failed: ${r.status}`);
+const blob=await r.blob();await uploadOtaBlob(blob,latestFactoryAsset.name)}catch(e){setOtaState('bad','FAILED');setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
+$('ota-file').onchange=syncOtaControls;$('ota-upload').onclick=uploadSelectedOta;$('ota-install-latest').onclick=installLatestOta;syncOtaControls();
 function tuneBody(){const fanMode=val('cfg-fan-mode');return{overclock_enabled:$('cfg-overclock-enabled').checked,
 frequency_mhz:Number(val('cfg-frequency')),voltage_mv:Number(val('cfg-voltage')),
 asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,fan_override_enabled:fanMode!=='auto',
