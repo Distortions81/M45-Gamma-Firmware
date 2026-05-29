@@ -1,4 +1,4 @@
-name: Web Flasher Build
+name: Web Flasher Pages
 
 on:
   release:
@@ -32,8 +32,13 @@ jobs:
 
       - name: Build firmware and web flasher package
         env:
-          PACKAGE_VERSION: ${{ github.event.release.tag_name || inputs.version || github.ref_name }}
-        run: scripts/docker-web-flasher.sh --version "$PACKAGE_VERSION"
+          PACKAGE_VERSION: ${{ github.event.release.tag_name || inputs.version }}
+        run: |
+          if [ -n "$PACKAGE_VERSION" ]; then
+            scripts/docker-web-flasher.sh --version "$PACKAGE_VERSION"
+          else
+            scripts/docker-web-flasher.sh
+          fi
 
       - name: Archive web flasher package
         run: tar -czf m45-web-flasher.tar.gz -C dist web-flasher
@@ -42,9 +47,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: m45-web-flasher
-          path: |
-            dist/web-flasher
-            m45-web-flasher.tar.gz
+          path: dist/web-flasher
+          if-no-files-found: error
+
+      - name: Upload web flasher archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: m45-web-flasher-archive
+          path: m45-web-flasher.tar.gz
           if-no-files-found: error
 
       - name: Upload release assets
@@ -60,11 +70,11 @@ jobs:
             --clobber
 
       - name: Configure GitHub Pages
-        if: github.event_name == 'release'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/configure-pages@v5
 
       - name: Upload GitHub Pages artifact
-        if: github.event_name == 'release'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist/web-flasher
@@ -72,7 +82,7 @@ jobs:
   deploy:
     name: Deploy web flasher
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
