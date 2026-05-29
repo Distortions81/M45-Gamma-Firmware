@@ -138,6 +138,10 @@ condition is detected. Default shutdown limits are:
 - TPS546 output current reaches `30 A`.
 - TPS546 or temperature monitor reads fail while hardware is active.
 
+The TPS546D24A/TPS546D24S current limit can be raised to `40 A` from the
+dashboard safety settings if your board, cooling, and power wiring can support
+it.
+
 These limits are last-resort protections, not a substitute for proper cooling,
 power delivery, and monitoring.
 

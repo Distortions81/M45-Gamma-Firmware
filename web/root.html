@@ -96,8 +96,8 @@
 <div class=field><label for=limit-asic-temp-max>ASIC Stop C</label><input id=limit-asic-temp-max type=number min=45 max=69 step=1></div>
 <div class=field><label for=limit-tps546-temp-expected>VR Watch C</label><input id=limit-tps546-temp-expected type=number min=40 max=98 step=1></div>
 <div class=field><label for=limit-tps546-temp-max>VR Stop C</label><input id=limit-tps546-temp-max type=number min=60 max=98 step=1></div>
-<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=30 step=.5></div>
-<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=30 step=.5></div>
+<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=40 step=.5></div>
+<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=40 step=.5></div>
 <div id=oc-limit-power-note class='formula-note'>Power limits update from the current VOUT target.</div>
 </div></article>
 <article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
@@ -427,7 +427,7 @@ warnHigh:l.asic_voltage_expected_max_v,badLow:l.asic_voltage_min_v,badHigh:l.asi
 text:`Watch ${n(l.asic_voltage_expected_min_v,3)}-${n(l.asic_voltage_expected_max_v,3)} V | stop <${n(l.asic_voltage_min_v,3)} or >=${n(l.asic_voltage_max_v,3)} V`});
 setMetric('watts',haveTps?s.asic_power_watts:NaN,1,{min:10,max:50,goodMin:0,goodMax:l.power_warn_w,
 warnHigh:l.power_warn_w,badHigh:l.power_fault_w,text:`Watch ${n(l.power_warn_w,1)} W | fault ${n(l.power_fault_w,1)} W`});
-setMetric('iout',haveTps?s.tps546_read_iout:NaN,2,{min:10,max:30,goodMin:0,goodMax:l.iout_warn_a,
+setMetric('iout',haveTps?s.tps546_read_iout:NaN,2,{min:10,max:40,goodMin:0,goodMax:l.iout_warn_a,
 warnHigh:l.iout_warn_a,badHigh:l.iout_fault_a,text:`Watch ${n(l.iout_warn_a,1)} A | fault ${n(l.iout_fault_a,1)} A`});
 const fanAuto=s.fan_auto===true,fanNearMax=fanAuto&&num(s.fan_percent)>80;
 const fanColdOff=fanAuto&&num(s.fan_percent)<=0.5&&Number.isFinite(asicTemp)&&asicTemp<(asicTempTarget-1);
