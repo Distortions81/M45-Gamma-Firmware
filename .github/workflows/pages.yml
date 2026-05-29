@@ -1,0 +1,92 @@
+name: Web Flasher Pages
+
+on:
+  workflow_run:
+    workflows:
+      - Build & Release Firmware
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for a manual Pages publish
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy web flasher
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'release')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out repository
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build web flasher package
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$PACKAGE_VERSION" ]; then
+            scripts/docker-web-flasher.sh --version "$PACKAGE_VERSION"
+          else
+            scripts/docker-web-flasher.sh
+          fi
+          mv dist/web-flasher site
+
+      - name: Download release web flasher package
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          mkdir -p downloaded
+          gh run download "$RUN_ID" --name m45-web-flasher --dir downloaded
+          if test -f downloaded/index.html; then
+            mv downloaded site
+          elif test -f downloaded/web-flasher/index.html; then
+            mv downloaded/web-flasher site
+          elif test -f downloaded/dist/web-flasher/index.html; then
+            mv downloaded/dist/web-flasher site
+          else
+            find downloaded -maxdepth 3 -type f -print
+            echo "Could not find web flasher index.html in downloaded artifact" >&2
+            exit 1
+          fi
+
+      - name: Validate web flasher package
+        run: |
+          test -f site/index.html
+          test -f site/manifest.json
+          test -f site/m45-gamma-firmware.bin
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

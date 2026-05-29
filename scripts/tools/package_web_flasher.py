@@ -10,7 +10,7 @@ import sys
 
 DEFAULT_NAME = "M45 Gamma Firmware"
 DEFAULT_FIRMWARE = "m45-gamma-firmware.bin"
-REPO_URL = "https://github.com/Distortions81/M45-ASIC-Firmware"
+REPO_URL = "https://github.com/Distortions81/M45-Gamma-Firmware"
 
 
 def die(message):

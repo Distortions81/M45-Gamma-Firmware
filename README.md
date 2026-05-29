@@ -6,7 +6,7 @@ M45 is experimental firmware for Bitaxe Gamma 602 miners. It boots at stock
 ASIC settings, exposes a local web dashboard, and lets you opt in to fan,
 pool, and overclock controls from the browser.
 
-[Open the Web Flasher](https://distortions81.github.io/M45-ASIC-Firmware/)
+[Open the Web Flasher](https://distortions81.github.io/M45-Gamma-Firmware/)
 to flash a prepared build from Chrome or Edge using USB serial.
 
 Use it at your own risk. Overclocking or bad cooling can permanently damage
@@ -69,8 +69,10 @@ scripts/docker-web-flasher.sh
 
 The package is written to `dist/web-flasher/` and includes `index.html`,
 `manifest.json`, and a merged `m45-gamma-firmware.bin` image for ESP Web Tools.
-GitHub Actions builds release assets when a GitHub Release is published. Run
-the web flasher workflow manually from `main` to publish the GitHub Pages site.
+GitHub Actions builds a release firmware image when a GitHub Release is
+published, and publishes the web flasher package through GitHub Pages. Release
+attachments include the firmware `.bin`; the web flasher `index.html` and
+`manifest.json` stay on the Pages site.
 
 ## Flash
 
