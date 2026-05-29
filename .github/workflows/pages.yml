@@ -77,6 +77,8 @@ jobs:
         run: |
           test -f site/index.html
           test -f site/manifest.json
+          test -f site/bootloader.bin
+          test -f site/partition-table.bin
           test -f site/m45-gamma-firmware.bin
           python3 - <<'PY'
           import json
@@ -85,6 +87,8 @@ jobs:
           manifest = json.loads(Path("site/manifest.json").read_text())
           parts = manifest["builds"][0]["parts"]
           expected = [
+              {"path": "bootloader.bin", "offset": 0},
+              {"path": "partition-table.bin", "offset": 0x8000},
               {"path": "m45-gamma-firmware.bin", "offset": 0x10000},
           ]
           if parts != expected:

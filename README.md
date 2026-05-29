@@ -68,12 +68,13 @@ scripts/docker-web-flasher.sh
 ```
 
 The package is written to `dist/web-flasher/` and includes `index.html`,
-`manifest.json`, and `m45-gamma-firmware.bin` for ESP Web Tools. The web
-flasher writes the app partition only, so saved settings survive an update.
-GitHub Actions builds a release firmware image when a GitHub Release is
-published, and publishes the web flasher package through GitHub Pages. Release
-attachments include the firmware `.bin`; the web flasher `index.html` and
-`manifest.json` stay on the Pages site.
+`manifest.json`, bootloader, partition table, and app images for ESP Web Tools.
+Leave erase unchecked in the flasher to keep saved settings; select erase to
+reset settings while flashing a complete bootable image. GitHub Actions builds
+a release firmware image when a GitHub Release is published, and publishes the
+web flasher package through GitHub Pages. Release attachments include the
+firmware `.bin`; the web flasher `index.html` and `manifest.json` stay on the
+Pages site.
 
 ## Flash
 

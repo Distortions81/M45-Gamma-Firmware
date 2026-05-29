@@ -55,22 +55,44 @@ def load_flash_args(build_dir):
     return json.loads(path.read_text())
 
 
-def copy_update_firmware(build_dir, output_dir, firmware_name, flasher_args):
-    app = flasher_args["app"]
+def sorted_flash_files(flash_files):
+    return sorted(flash_files.items(), key=lambda item: int(item[0], 0))
+
+
+def output_flash_name(filename, app_filename, firmware_name):
+    if filename == app_filename:
+        return firmware_name
+    return pathlib.PurePosixPath(filename).name
+
+
+def copy_flash_parts(build_dir, output_dir, firmware_name, flasher_args):
+    app_filename = flasher_args["app"]["file"]
     chip = flasher_args.get("extra_esptool_args", {}).get("chip", "esp32s3")
-    source = build_dir / app["file"]
-    if not source.exists():
-        raise FileNotFoundError(f"missing app firmware: {source}")
-    firmware = output_dir / firmware_name
-    shutil.copy2(source, firmware)
-    return chip, firmware, [{"path": firmware_name, "offset": int(app["offset"], 0)}]
+    parts = []
+    firmware = None
+
+    for offset, filename in sorted_flash_files(flasher_args["flash_files"]):
+        source = build_dir / filename
+        if not source.exists():
+            raise FileNotFoundError(f"missing flash part: {source}")
+        output_name = output_flash_name(filename, app_filename, firmware_name)
+        output_path = output_dir / output_name
+        shutil.copy2(source, output_path)
+        if filename == app_filename:
+            firmware = output_path
+        parts.append({"path": output_name, "offset": int(offset, 0)})
+
+    if firmware is None:
+        raise FileNotFoundError(f"app firmware '{app_filename}' not found in flash files")
+
+    return chip, firmware, parts
 
 
-def write_manifest(output_dir, parts, name, version, chip):
+def write_manifest(output_dir, filename, parts, name, version, chip):
     manifest = {
         "name": name,
         "version": version,
-        "new_install_prompt_erase": False,
+        "new_install_prompt_erase": True,
         "new_install_improv_wait_time": 0,
         "builds": [
             {
@@ -79,7 +101,7 @@ def write_manifest(output_dir, parts, name, version, chip):
             }
         ],
     }
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (output_dir / filename).write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def write_index(output_dir, name, version, firmware_name, parts):
@@ -122,25 +144,25 @@ code {{ background: #111518; border: 1px solid var(--line); border-radius: 5px; 
 <h1>{escaped_name} Web Flasher</h1>
 <p class="lead">Flash Bitaxe Gamma 602 firmware from a browser using USB serial.</p>
 <section class="panel">
-	<esp-web-install-button manifest="manifest.json">
-	<button slot="activate" type="button">Flash Firmware</button>
-	<span slot="unsupported">Use Chrome or Edge on a desktop browser with Web Serial support.</span>
-	<span slot="not-allowed">Open this page over HTTPS to use Web Serial.</span>
-	</esp-web-install-button>
-	<div class="meta">Manifest: <code>manifest.json</code>. Firmware: <code>{escaped_firmware}</code>.</div>
-	<ul>
-	{parts_html}
-	</ul>
-	</section>
-	<section class="panel warning">
-	<strong>Hardware warning</strong>
-	<ul>
-	<li>This firmware is for Bitaxe Gamma 602 hardware.</li>
-	<li>Overclocking or bad cooling can permanently damage hardware.</li>
-	<li>This updater writes the app partition only, preserving saved settings.</li>
-	<li>Use a factory flash if you are replacing unrelated firmware.</li>
-	</ul>
-	</section>
+<esp-web-install-button manifest="manifest.json">
+<button slot="activate" type="button">Flash Firmware</button>
+<span slot="unsupported">Use Chrome or Edge on a desktop browser with Web Serial support.</span>
+<span slot="not-allowed">Open this page over HTTPS to use Web Serial.</span>
+</esp-web-install-button>
+<div class="meta">Manifest: <code>manifest.json</code>. Firmware: <code>{escaped_firmware}</code>.</div>
+<ul>
+{parts_html}
+</ul>
+</section>
+<section class="panel warning">
+<strong>Hardware warning</strong>
+<ul>
+<li>This firmware is for Bitaxe Gamma 602 hardware.</li>
+<li>Leave erase unchecked to keep saved Wi-Fi, pool, and tuning settings.</li>
+<li>Select erase to reset settings while flashing a bootable image.</li>
+<li>Overclocking or bad cooling can permanently damage hardware.</li>
+</ul>
+</section>
 </main>
 </body>
 </html>
@@ -174,10 +196,10 @@ def main():
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True)
 
-        chip, firmware, parts = copy_update_firmware(
+        chip, firmware, parts = copy_flash_parts(
             build_dir, output_dir, args.firmware_name, flasher_args
         )
-        write_manifest(output_dir, parts, args.name, version, chip)
+        write_manifest(output_dir, "manifest.json", parts, args.name, version, chip)
         write_index(output_dir, args.name, version, args.firmware_name, parts)
         copy_metadata(build_dir, output_dir)
         (output_dir / "version.txt").write_text(version + "\n")
