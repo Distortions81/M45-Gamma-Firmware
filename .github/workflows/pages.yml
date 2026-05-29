@@ -60,7 +60,7 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           mkdir -p downloaded
-          gh run download "$RUN_ID" --name m45-web-flasher --dir downloaded
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name m45-web-flasher --dir downloaded
           if test -f downloaded/index.html; then
             mv downloaded site
           elif test -f downloaded/web-flasher/index.html; then
