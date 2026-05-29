@@ -1,0 +1,10 @@
+.git
+build
+build_metrics
+managed_components
+dependencies.lock
+sdkconfig
+sdkconfig.old
+
+__pycache__
+*.pyc

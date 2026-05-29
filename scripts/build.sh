@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 SDKCONFIG="$REPO_DIR/sdkconfig"
+BUILD_DIR="${M45_BUILD_DIR:-build}"
 IDF_EXPORT="${IDF_EXPORT_SCRIPT:-}"
 BUILD=0
 FLASH_PORT=""
@@ -40,6 +41,7 @@ Device:
 Actions:
   --show
   --build
+  --build-dir DIR
   --flash PORT
   --monitor
   --idf-export PATH
@@ -232,6 +234,16 @@ while [[ $# -gt 0 ]]; do
             IDF_EXPORT="${1#*=}"
             shift
             ;;
+        --build-dir)
+            need_value "$1" "${2-}"
+            BUILD_DIR="$2"
+            shift 2
+            ;;
+        --build-dir=*)
+            BUILD_DIR="${1#*=}"
+            [[ -n "$BUILD_DIR" ]] || die "--build-dir requires a value"
+            shift
+            ;;
         --build)
             BUILD=1
             shift
@@ -283,8 +295,12 @@ if ! command -v idf.py >/dev/null 2>&1; then
     fi
 fi
 
+run_idf() {
+    idf.py -B "$BUILD_DIR" "$@"
+}
+
 if [[ ! -f "$SDKCONFIG" ]]; then
-    idf.py reconfigure
+    run_idf reconfigure
 fi
 
 if [[ ${#UPDATE_ITEMS[@]} -gt 0 ]]; then
@@ -341,7 +357,7 @@ path.write_text("\n".join(lines) + "\n")
 PY
 fi
 
-idf.py reconfigure
+run_idf reconfigure
 
 if [[ "$SHOW" -eq 1 ]]; then
     python3 - "$SDKCONFIG" <<'PY'
@@ -386,15 +402,15 @@ PY
 fi
 
 if [[ "$BUILD" -eq 1 ]]; then
-    idf.py build
+    run_idf build
 fi
 
 if [[ -n "$FLASH_PORT" ]]; then
     if [[ "$MONITOR" -eq 1 ]]; then
-        idf.py -p "$FLASH_PORT" flash monitor
+        run_idf -p "$FLASH_PORT" flash monitor
     else
-        idf.py -p "$FLASH_PORT" flash
+        run_idf -p "$FLASH_PORT" flash
     fi
 elif [[ "$MONITOR" -eq 1 ]]; then
-    idf.py monitor
+    run_idf monitor
 fi

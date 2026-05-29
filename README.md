@@ -2,19 +2,12 @@
 
 ![M45 Bitaxe Speed Alpha web dashboard](docs/screenshots/dashboard.png)
 
-Alpha firmware for Bitaxe Gamma 602 speed testing, overclocking, and local
-telemetry.
+M45 is experimental firmware for Bitaxe Gamma 602 miners. It boots at stock
+ASIC settings, exposes a local web dashboard, and lets you opt in to fan,
+pool, and overclock controls from the browser.
 
-M45 is a focused ESP-IDF firmware for users who want faster startup, direct
-ASIC speed controls, a compact local web dashboard, and clearer mining
-telemetry than a general-purpose Bitaxe firmware. It boots with stock ASIC
-settings by default and requires an explicit opt-in before overclock presets
-can be applied.
-
-Use this firmware at your own risk. Overclocking can permanently damage the
-ASIC, voltage regulator, fan, wiring, or power supply, and can create a fire
-risk. Do not run high clocks without the right cooling, power supply, and
-temperature monitoring.
+Use it at your own risk. Overclocking or bad cooling can permanently damage
+the ASIC, regulator, fan, wiring, or power supply, and can create a fire risk.
 
 ## Supported Hardware
 
@@ -28,54 +21,27 @@ This firmware targets Bitaxe Gamma 602 hardware:
 
 Other boards may need source changes before they are safe to run.
 
-## What It Does
+## Build With Docker
 
-- Starts the TPS546 regulator directly and validates ASIC voltage early.
-- Brings the fan to 100% PWM at early boot before Wi-Fi, display, regulator,
-  or ASIC setup.
-- Provides a local web UI for live stats, settings, fan control, pool setup,
-  and overclock presets.
-- Shows OLED QR codes for first-time Wi-Fi setup and quick local web dashboard
-  access.
-- Applies web setting changes at runtime without requiring a reboot.
-- Keeps overclocking disabled by default; when disabled, saved high clock or
-  voltage values are ignored and stock settings are enforced.
-- Includes stock-through-high overclock presets, manual frequency and voltage
-  controls, and voltage offset adjustment.
-- Shows ASIC state, clock, voltage, hashrate, ASIC temperature, regulator
-  temperature, fan, power, best diff, block-found alerts, and pool status.
-- Supports primary and backup Stratum pools with automatic return to the
-  primary pool.
-- Decodes coinbase payout data to check wallet percentage and warn when the
-  configured wallet is not found.
-- Clears stale Stratum work when pool difficulty changes.
-- Uses no-store web headers and a per-boot page token to avoid stale cached UI
-  and API responses after refreshes.
-
-## Safety Limits
-
-The firmware holds ASIC reset low and turns TPS546 output off if a critical
-condition is detected. These are the default limits; the web overclock panel
-can tighten the local warning and shutdown thresholds:
-
-- ASIC temperature reaches `69 C`.
-- Enabled ASIC VOUT falls below `0.700 V`.
-- ASIC VOUT reaches `1.400 V`.
-- TPS546 temperature reaches `98 C`.
-- Input VIN reaches `5.5 V`.
-- TPS546 output current reaches `30 A`.
-- TPS546 or temperature monitor reads fail while hardware is active.
-
-These limits are last-resort protections, not a substitute for proper cooling
-or power delivery.
-
-## Build And Configure
-
-Install ESP-IDF for `esp32s3`, source the ESP-IDF environment, then configure
-and build:
+Docker is the easiest build path. You do not need to install ESP-IDF on your
+host machine.
 
 ```sh
-scripts/build.sh \
+scripts/docker-build.sh
+```
+
+The first run builds a local Docker image from `espressif/idf:v5.5.3`. Firmware
+artifacts are written to `build/docker/`, including:
+
+- `build/docker/M45-Firmware.bin`
+- `build/docker/bootloader/bootloader.bin`
+- `build/docker/partition_table/partition-table.bin`
+- `build/docker/flasher_args.json`
+
+You can bake default Wi-Fi and pool settings into the firmware:
+
+```sh
+scripts/docker-build.sh \
   --wifi-ssid "My WiFi" \
   --wifi-pass "secret" \
   --pool-host public-pool.io \
@@ -85,61 +51,86 @@ scripts/build.sh \
   --build
 ```
 
-Flash after building:
+You can also skip those options and configure Wi-Fi and mining from the first
+boot setup page.
+
+Build-time Wi-Fi and pool values are stored in the ignored `sdkconfig` file and
+embedded in the firmware image. Do not share a firmware image that contains
+private credentials.
+
+## Flash
+
+On Linux, the Docker wrapper can pass a serial device into the container:
 
 ```sh
-scripts/build.sh --flash /dev/ttyUSB0
+scripts/docker-build.sh --flash /dev/ttyUSB0
 ```
 
-On first boot without saved Wi-Fi credentials, the device starts a temporary
-setup AP named `m-XXXX` and shows a Wi-Fi QR code on the OLED. Scan it to join
-the setup network, then open the displayed setup address to configure Wi-Fi and
-mining pool settings.
-
-After the device joins Wi-Fi, the OLED shows the local web dashboard address and
-an HTTP QR code. Scan that QR code from a phone or tablet on the same network to
-open the web panel directly.
-
-You can also use standard ESP-IDF commands:
+Use `/dev/ttyACM0` instead if that is how your board appears. Add `--monitor`
+to open the serial monitor after flashing:
 
 ```sh
-idf.py set-target esp32s3
-idf.py build
+scripts/docker-build.sh --flash /dev/ttyUSB0 --monitor
+```
+
+If USB passthrough from Docker is not available on your machine, build with
+Docker and flash from a host ESP-IDF shell:
+
+```sh
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-## Source Stats
+## First Boot
 
-Tracked source and build-configuration files total `14,147` lines across `54`
-files:
+If the device has no saved Wi-Fi credentials, it starts a temporary setup
+network named `m-XXXX` and shows a Wi-Fi QR code on the OLED. Join that
+network, open the displayed setup address, then enter Wi-Fi and pool settings.
 
-| Area | Files | Lines |
-| --- | ---: | ---: |
-| C source | 19 | 11,332 |
-| C headers | 20 | 842 |
-| Web HTML | 7 | 835 |
-| Web CSS | 1 | 250 |
-| Shell scripts | 1 | 400 |
-| Python tools | 2 | 269 |
-| Kconfig | 1 | 105 |
-| CMake | 2 | 89 |
-| ESP-IDF defaults | 1 | 25 |
+After the device joins Wi-Fi, the OLED shows the local dashboard address and an
+HTTP QR code. Open that address from a phone or computer on the same network.
 
-These counts exclude README, license, notice, Git, and generated build files.
+## What You Get
 
-## Upstream References
+- Live dashboard for hashrate, ASIC state, temperatures, fan, power, best diff,
+  block-found alerts, and pool status.
+- Runtime settings for Wi-Fi, mining pool, fan mode, and ASIC speed.
+- Overclocking disabled by default. When disabled, stock clock and voltage are
+  enforced even if higher saved values exist.
+- Primary and backup Stratum pools with automatic return to the primary pool.
+- Wallet payout detection from coinbase data when the pool exposes enough
+  information.
 
-This firmware uses BM1370 ASIC hardware and protocol details from
-[`bitaxeorg/esp-miner`](https://github.com/bitaxeorg/esp-miner), including
-chip detection, initialization register writes, UART baud commands, frequency
-register programming, nonce-space setup, job packet format, result decoding,
-register reads, and version-rolling result handling.
+## Safety Behavior
+
+The firmware holds ASIC reset low and turns TPS546 output off if a critical
+condition is detected. Default shutdown limits are:
+
+- ASIC temperature reaches `69 C`.
+- Enabled ASIC VOUT falls below `0.700 V`.
+- ASIC VOUT reaches `1.400 V`.
+- TPS546 temperature reaches `98 C`.
+- Input VIN reaches `5.5 V`.
+- TPS546 output current reaches `30 A`.
+- TPS546 or temperature monitor reads fail while hardware is active.
+
+These limits are last-resort protections, not a substitute for proper cooling,
+power delivery, and monitoring.
+
+## Build Without Docker
+
+If ESP-IDF `v5.5.3` is installed locally:
+
+```sh
+scripts/build.sh --build
+scripts/build.sh --flash /dev/ttyUSB0
+```
+
+`scripts/build.sh --help` lists all build-time configuration options.
 
 ## Licensing
 
 This repository is licensed under GPL-3.0. See `LICENSE`.
 
 Third-party license details and upstream hardware references are tracked in
-`THIRD_PARTY_NOTICES.md`. The esp-miner GPL text is kept at
-`LICENSES/esp-miner-GPL-3.0.txt`, and the bundled QR code library uses the MIT
-license text at `LICENSES/MIT.txt`.
+`THIRD_PARTY_NOTICES.md`. BM1370 hardware and protocol references come from
+[`bitaxeorg/esp-miner`](https://github.com/bitaxeorg/esp-miner).
