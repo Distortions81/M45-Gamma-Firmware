@@ -206,7 +206,7 @@ $('oc-enable-modal').onclick=e=>{if(e.target===$('oc-enable-modal'))$('oc-enable
 $('block-dismiss').onclick=async()=>{try{await fetch('/api/block-alert/dismiss',{method:'POST'});
 $('block-banner').classList.add('hidden');refresh()}catch(e){alert(`dismiss failed: ${e.message||e}`)}};
 $('payout-info-button').onclick=e=>e.currentTarget.blur();
-function routeView(){return location.pathname==='/settings'?'settings':location.pathname==='/overclock'?'overclock':location.pathname==='/calibration'?'calibration':location.pathname==='/logs'?'logs':'stats'}
+function routeView(){if(location.pathname==='/calibration')history.replaceState(null,'','/'+location.search+location.hash);return location.pathname==='/settings'?'settings':location.pathname==='/overclock'?'overclock':location.pathname==='/logs'?'logs':'stats'}
 const val=id=>$(id).value.trim();const setVal=(id,v)=>{$(id).value=v==null?'':v};
 function human(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return'--';
 const u=['','K','M','G','T','P','E'];let i=0;while(v>=1000&&i<u.length-1){v/=1000;i++}
