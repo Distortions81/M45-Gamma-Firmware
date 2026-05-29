@@ -1,14 +1,18 @@
 name: Web Flasher Build
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
+  release:
+    types:
+      - published
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for a manual web flasher build
+        required: false
+        type: string
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -23,23 +27,44 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Build firmware and web flasher package
-        run: scripts/docker-web-flasher.sh
+        env:
+          PACKAGE_VERSION: ${{ github.event.release.tag_name || inputs.version || github.ref_name }}
+        run: scripts/docker-web-flasher.sh --version "$PACKAGE_VERSION"
+
+      - name: Archive web flasher package
+        run: tar -czf m45-web-flasher.tar.gz -C dist web-flasher
 
       - name: Upload web flasher artifact
         uses: actions/upload-artifact@v4
         with:
           name: m45-web-flasher
-          path: dist/web-flasher
+          path: |
+            dist/web-flasher
+            m45-web-flasher.tar.gz
           if-no-files-found: error
 
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/web-flasher/index.html \
+            dist/web-flasher/manifest.json \
+            dist/web-flasher/m45-gamma-firmware.bin \
+            m45-web-flasher.tar.gz \
+            --clobber
+
       - name: Configure GitHub Pages
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.event_name == 'release'
         uses: actions/configure-pages@v5
 
       - name: Upload GitHub Pages artifact
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.event_name == 'release'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist/web-flasher
@@ -47,7 +72,7 @@ jobs:
   deploy:
     name: Deploy web flasher
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

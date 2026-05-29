@@ -69,6 +69,8 @@ scripts/docker-web-flasher.sh
 
 The package is written to `dist/web-flasher/` and includes `index.html`,
 `manifest.json`, and a merged `m45-gamma-firmware.bin` image for ESP Web Tools.
+GitHub Actions builds and publishes that web flasher package when a GitHub
+Release is published.
 
 ## Flash
 
