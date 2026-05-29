@@ -51,6 +51,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
+          firmware="$(find dist/web-flasher -maxdepth 1 -type f -name 'esp-miner-factory-602-*.bin' -print -quit)"
+          test -n "$firmware"
           gh release upload "$RELEASE_TAG" \
-            dist/web-flasher/m45-gamma-firmware.bin \
+            "$firmware" \
             --clobber

@@ -36,7 +36,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out repository
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -73,26 +72,34 @@ jobs:
             exit 1
           fi
 
+      - name: Sync release firmware mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/tools/sync_web_flasher_releases.py --site-dir site --board-version 602
+
       - name: Validate web flasher package
         run: |
           test -f site/index.html
-          test -f site/manifest.json
-          test -f site/bootloader.bin
-          test -f site/partition-table.bin
-          test -f site/m45-gamma-firmware.bin
+          test -f site/firmware-releases.json
+          test ! -e site/manifest.json
+          test ! -e site/bootloader.bin
+          test ! -e site/partition-table.bin
+          shopt -s nullglob
+          firmware=(site/esp-miner-factory-602-*.bin)
+          test "${#firmware[@]}" -ge 1
           python3 - <<'PY'
           import json
           from pathlib import Path
 
-          manifest = json.loads(Path("site/manifest.json").read_text())
-          parts = manifest["builds"][0]["parts"]
-          expected = [
-              {"path": "bootloader.bin", "offset": 0},
-              {"path": "partition-table.bin", "offset": 0x8000},
-              {"path": "m45-gamma-firmware.bin", "offset": 0x10000},
-          ]
-          if parts != expected:
-              raise SystemExit(f"unexpected manifest parts: {parts!r}")
+          manifest = json.loads(Path("site/firmware-releases.json").read_text())
+          releases = manifest.get("releases") or []
+          if not releases:
+              raise SystemExit("release manifest has no firmware entries")
+          for release in releases:
+              path = Path("site") / release["path"]
+              if not path.exists():
+                  raise SystemExit(f"missing firmware listed in manifest: {path}")
           PY
 
       - name: Configure GitHub Pages

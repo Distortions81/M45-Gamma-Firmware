@@ -10,13 +10,14 @@ BUILD_IMAGE=1
 BUILD_DIR="build/docker"
 OUTPUT_DIR="dist/web-flasher"
 VERSION=""
+BOARD_VERSION="602"
 
 usage() {
     cat <<EOF
 Usage:
   scripts/docker-web-flasher.sh [options]
 
-Build firmware in Docker and produce an ESP Web Tools package.
+Build firmware in Docker and produce a Bitaxe-style web flasher package.
 
 Options:
   --docker-image NAME   Image name to build and run (default: $IMAGE)
@@ -24,7 +25,8 @@ Options:
   --no-image-build      Reuse an existing local image
   --build-dir DIR       ESP-IDF build directory (default: $BUILD_DIR)
   --output DIR          Web flasher output directory (default: $OUTPUT_DIR)
-  --version TEXT        Firmware version for manifest and page
+  --version TEXT        Firmware version for page and factory image name
+  --board-version N     Bitaxe board version for factory image naming (default: $BOARD_VERSION)
   -h, --help            Show this help
 EOF
 }
@@ -96,6 +98,16 @@ while [[ $# -gt 0 ]]; do
             [[ -n "$VERSION" ]] || die "--version requires a value"
             shift
             ;;
+        --board-version)
+            need_value "$1" "${2-}"
+            BOARD_VERSION="$2"
+            shift 2
+            ;;
+        --board-version=*)
+            BOARD_VERSION="${1#*=}"
+            [[ -n "$BOARD_VERSION" ]] || die "--board-version requires a value"
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -132,8 +144,8 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
         git config --global --add safe.directory /opt/esp/idf/components/openthread/openthread >/dev/null 2>&1 || true
         scripts/build.sh --build-dir "$1" --build
         if [[ -n "$3" ]]; then
-            scripts/package-web-flasher.sh --build-dir "$1" --output "$2" --version "$3"
+            scripts/package-web-flasher.sh --build-dir "$1" --output "$2" --version "$3" --board-version "$4"
         else
-            scripts/package-web-flasher.sh --build-dir "$1" --output "$2"
+            scripts/package-web-flasher.sh --build-dir "$1" --output "$2" --board-version "$4"
         fi
-    ' bash "$BUILD_DIR" "$OUTPUT_DIR" "$VERSION"
+    ' bash "$BUILD_DIR" "$OUTPUT_DIR" "$VERSION" "$BOARD_VERSION"

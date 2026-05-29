@@ -7,6 +7,7 @@ REPO_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="build/docker"
 OUTPUT_DIR="dist/web-flasher"
 VERSION=""
+BOARD_VERSION="602"
 
 usage() {
     cat <<'EOF'
@@ -16,7 +17,8 @@ Usage:
 Options:
   --build-dir DIR   ESP-IDF build directory (default: build/docker)
   --output DIR      Web flasher output directory (default: dist/web-flasher)
-  --version TEXT    Firmware version for manifest and page
+  --version TEXT    Firmware version for page and factory image name
+  --board-version N Bitaxe board version for factory image naming (default: 602)
   -h, --help        Show this help
 EOF
 }
@@ -64,6 +66,16 @@ while [[ $# -gt 0 ]]; do
             [[ -n "$VERSION" ]] || die "--version requires a value"
             shift
             ;;
+        --board-version)
+            need_value "$1" "${2-}"
+            BOARD_VERSION="$2"
+            shift 2
+            ;;
+        --board-version=*)
+            BOARD_VERSION="${1#*=}"
+            [[ -n "$BOARD_VERSION" ]] || die "--board-version requires a value"
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -79,6 +91,7 @@ cd "$REPO_DIR"
 ARGS=(
     --build-dir "$BUILD_DIR"
     --output "$OUTPUT_DIR"
+    --board-version "$BOARD_VERSION"
 )
 
 if [[ -n "$VERSION" ]]; then

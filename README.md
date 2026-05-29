@@ -68,13 +68,15 @@ scripts/docker-web-flasher.sh
 ```
 
 The package is written to `dist/web-flasher/` and includes `index.html`,
-`manifest.json`, bootloader, partition table, and app images for ESP Web Tools.
-Leave erase unchecked in the flasher to keep saved settings; select erase to
-reset settings while flashing a complete bootable image. GitHub Actions builds
-a release firmware image when a GitHub Release is published, and publishes the
-web flasher package through GitHub Pages. Release attachments include the
-firmware `.bin`; the web flasher `index.html` and `manifest.json` stay on the
-Pages site.
+a release list, and one merged factory image named like
+`esp-miner-factory-602-v0.0.1.bin`. The web flasher follows the Bitaxe flasher
+model: it writes the factory image as one file, skips the NVS settings range by
+default, and only writes that range when you select erase settings.
+
+GitHub Actions builds a factory image when a GitHub Release is published,
+attaches only that `.bin` to the release, and publishes the web flasher through
+GitHub Pages. The Pages site mirrors matching release images so older releases
+can be selected from the flasher.
 
 ## Flash
 
