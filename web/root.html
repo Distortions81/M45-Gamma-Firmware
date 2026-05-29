@@ -28,6 +28,23 @@
 <label class=log-toggle><input id=logs-verbose type=checkbox>Verbose</label>
 <span id=logs-state class='pill warn'>CONNECTING</span></div></div>
 <pre id=logs-output class=logs-output></pre></article></section>
+<section id=update-view class=hidden>
+<section class=grid>
+<article class='panel wide update-card'><div class=label>Current Version</div>
+<div id=update-current class='value small'>--</div>
+<dl class=compact><dt>Build</dt><dd id=update-build-id>--</dd><dt>Built</dt><dd id=update-build-time>--</dd></dl></article>
+<article class='panel wide update-card'><div class=metric-head><div class=label>Latest Release</div>
+<span id=update-state class=pill>UNCHECKED</span></div>
+<div id=update-latest class='value small'>--</div><div id=update-summary class=subvalue>Press Check to query GitHub releases.</div>
+<div class=update-actions><button id=update-check class=secondary type=button>Check</button>
+<a id=update-web-flasher class='secondary link-button' href='https://distortions81.github.io/M45-Gamma-Firmware/' target=_blank rel=noopener>Web Flasher</a>
+<a id=update-release-link class='secondary link-button hidden' href='#' target=_blank rel=noopener>Release</a></div>
+<span id=update-status class=status-text></span></article>
+<article id=update-release-panel class='panel full update-card hidden'><div class=metric-head><div class=label>Release Files</div>
+<span id=update-release-date class=pill>--</span></div>
+<div id=update-assets class=update-assets></div>
+<div class=label>Release Notes</div><div id=update-notes class=release-notes></div></article>
+</section></section>
 <section id=overclock-view class=hidden>
 <section class='grid oc-grid'>
 <form id=overclock-form class='oc-form full' novalidate>
@@ -166,6 +183,10 @@ const LIMIT_DEFAULTS={inputMin:4500,inputExpectedMin:4800,inputExpectedMax:5400,
 asicMin:700,asicMax:1400,asicTempExpected:60,asicTempMax:69,tpsTempExpected:85,tpsTempMax:98,
 ioutWarnDa:250,ioutFaultDa:300};
 const REFRESH_WARN_MS=10000;
+const UPDATE_REPO='Distortions81/M45-Gamma-Firmware',UPDATE_ASSET_PREFIX='esp-miner-factory-602-';
+const UPDATE_RELEASES_URL=`https://api.github.com/repos/${UPDATE_REPO}/releases`;
+const UPDATE_WEB_FLASHER_URL='https://distortions81.github.io/M45-Gamma-Firmware/';
+const UPDATE_PRIVACY_KEY='m45_ignore_release_check_warning';
 const CAL_BASE_TIMEOUT_MS=180000,CAL_STEP_TIMEOUT_MS=90000,CAL_SAMPLE_POLL_MS=1000,CAL_BASE_SAMPLE_MS=20000,CAL_STEP_SAMPLE_MS=15000;
 const CAL_START_MV=1200,CAL_MIN_MV=750,CAL_DOWN_STEP_MV=10,CAL_UP_STEP_MV=5,CAL_SAFETY_MV=10;
 const CAL_TARGET_TEMP_C=61,CAL_TEMP_MARGIN_C=2;
@@ -174,10 +195,12 @@ const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CA
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
+let currentBuildVersion='',latestRelease=null,releaseCheckInFlight=false;
 function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
 $('dashboard-view').classList.toggle('hidden',view!=='stats');
 $('overclock-view').classList.toggle('hidden',view!=='overclock');
 $('calibration-view').classList.toggle('hidden',view!=='calibration');
+$('update-view').classList.toggle('hidden',view!=='update');
 $('logs-view').classList.toggle('hidden',view!=='logs');
 $('settings-view').classList.toggle('hidden',view!=='settings');
 }
@@ -185,6 +208,7 @@ $('status-btn').onclick=()=>{if(location.pathname!=='/'){location.href='/';}};
 $('overclock-btn').onclick=()=>{if(location.pathname!=='/overclock'){location.href='/overclock';}};
 $('calibration-btn').onclick=()=>{if(location.pathname!=='/calibration'){location.href='/calibration';}};
 $('settings-btn').onclick=()=>{if(location.pathname!=='/settings'){location.href='/settings';}};
+$('update-btn').onclick=()=>{if(location.pathname!=='/update'){location.href='/update';}};
 $('logs-btn').onclick=()=>{if(location.pathname!=='/logs'){location.href='/logs';}};
 $('reboot-btn').onclick=()=>{$('reboot-modal').classList.remove('hidden')};
 $('reboot-cancel').onclick=()=>{$('reboot-modal').classList.add('hidden')};
@@ -195,6 +219,8 @@ $('best-reset-modal').onclick=e=>{if(e.target===$('best-reset-modal'))$('best-re
 $('settings-reset').onclick=()=>{$('settings-reset-modal').classList.remove('hidden')};
 $('settings-reset-cancel').onclick=()=>{$('settings-reset-modal').classList.add('hidden')};
 $('settings-reset-modal').onclick=e=>{if(e.target===$('settings-reset-modal'))$('settings-reset-cancel').click()};
+$('update-privacy-cancel').onclick=()=>{$('update-privacy-modal').classList.add('hidden')};
+$('update-privacy-modal').onclick=e=>{if(e.target===$('update-privacy-modal'))$('update-privacy-cancel').click()};
 let dismissedFault=sessionStorage.getItem('dismissedFault')||'';
 $('fault-close').onclick=()=>{dismissedFault=$('fault-panel').dataset.reason||'';
 sessionStorage.setItem('dismissedFault',dismissedFault);$('fault-panel').classList.add('hidden')};
@@ -206,7 +232,8 @@ $('oc-enable-modal').onclick=e=>{if(e.target===$('oc-enable-modal'))$('oc-enable
 $('block-dismiss').onclick=async()=>{try{await fetch('/api/block-alert/dismiss',{method:'POST'});
 $('block-banner').classList.add('hidden');refresh()}catch(e){alert(`dismiss failed: ${e.message||e}`)}};
 $('payout-info-button').onclick=e=>e.currentTarget.blur();
-function routeView(){if(location.pathname==='/calibration')history.replaceState(null,'','/'+location.search+location.hash);return location.pathname==='/settings'?'settings':location.pathname==='/overclock'?'overclock':location.pathname==='/logs'?'logs':'stats'}
+function routeView(){if(location.pathname==='/calibration')history.replaceState(null,'','/'+location.search+location.hash);
+return location.pathname==='/settings'?'settings':location.pathname==='/overclock'?'overclock':location.pathname==='/update'?'update':location.pathname==='/logs'?'logs':'stats'}
 const val=id=>$(id).value.trim();const setVal=(id,v)=>{$(id).value=v==null?'':v};
 function human(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return'--';
 const u=['','K','M','G','T','P','E'];let i=0;while(v>=1000&&i<u.length-1){v/=1000;i++}
@@ -563,6 +590,43 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function statusJson(){const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);throw new Error('refreshing')}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))throw new Error('refreshing');return s}
+function updateVersionFromStatus(s){currentBuildVersion=s.version||s.build_id||'unknown';
+txt('update-current',currentBuildVersion);txt('update-build-id',s.build_id||'unknown');txt('update-build-time',s.build_time||'unknown');
+if(latestRelease)renderLatestRelease(latestRelease)}
+function releaseCompareVersion(v){return String(v||'').replace(/-dirty$/,'').replace(/\+.*/,'')}
+function setUpdateState(cls,text){const el=$('update-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
+function setUpdateMessage(msg,cls='',fade=false){setStatus('update-status',msg,cls,fade)}
+function localBool(key){try{return localStorage.getItem(key)==='1'}catch(_){return false}}
+function setLocalBool(key,value){try{if(value)localStorage.setItem(key,'1');else localStorage.removeItem(key)}catch(_){}}
+function releaseAssetSize(size){size=Number(size);if(!Number.isFinite(size)||size<=0)return'';return size>=1048576?`${n(size/1048576,2)} MB`:`${n(size/1024,0)} KB`}
+function matchingFactoryAssets(release){const tag=release&&release.tag_name||'';const assets=Array.isArray(release&&release.assets)?release.assets:[];
+return assets.filter(a=>a&&a.name&&a.name.startsWith(`${UPDATE_ASSET_PREFIX}${tag}`)&&a.name.endsWith('.bin'))}
+function addUpdateAsset(asset){const row=document.createElement('div');row.className='update-asset';
+const link=document.createElement('a');link.href=asset.browser_download_url;link.target='_blank';link.rel='noopener';link.textContent=asset.name;
+const meta=document.createElement('span');meta.textContent=releaseAssetSize(asset.size);row.appendChild(link);row.appendChild(meta);$('update-assets').appendChild(row)}
+function renderLatestRelease(release){latestRelease=release;const tag=release.tag_name||release.name||'unknown';
+txt('update-latest',release.name||tag);$('update-release-link').href=release.html_url||'#';$('update-release-link').classList.remove('hidden');
+const same=releaseCompareVersion(currentBuildVersion)===tag;setUpdateState(same?'ok':'warn',same?'CURRENT':'NEW');
+txt('update-summary',same?'Current build matches the latest release.':`Latest release is ${tag}. Use the web flasher to install the factory image.`);
+txt('update-release-date',release.published_at?release.published_at.slice(0,10):'--');
+$('update-assets').textContent='';const assets=matchingFactoryAssets(release);
+if(assets.length)assets.forEach(addUpdateAsset);else{const row=document.createElement('div');row.className='update-asset';
+const msg=document.createElement('span');msg.textContent='No Gamma 602 factory image found in this release.';row.appendChild(msg);$('update-assets').appendChild(row)}
+$('update-notes').textContent=release.body||'No release notes.';$('update-release-panel').classList.remove('hidden')}
+async function checkLatestRelease(){if(releaseCheckInFlight)return;releaseCheckInFlight=true;
+$('update-check').disabled=true;setUpdateState('warn','CHECKING');setUpdateMessage('checking GitHub releases...');
+try{const r=await fetch(UPDATE_RELEASES_URL,{cache:'no-store'});if(!r.ok)throw new Error(`GitHub API ${r.status}`);
+const releases=await r.json();const latest=(Array.isArray(releases)?releases:[]).find(x=>x&&!x.prerelease&&!x.draft);
+if(!latest){setUpdateState('warn','NONE');txt('update-latest','--');txt('update-summary','No published release was found.');setUpdateMessage('no published release found','err');return}
+renderLatestRelease(latest);setUpdateMessage('release check complete','ok',true)}
+catch(e){setUpdateState('bad','FAILED');setUpdateMessage(`release check failed: ${e.message||e}`,'err')}
+finally{releaseCheckInFlight=false;$('update-check').disabled=false}}
+function handleUpdateCheck(){if(localBool(UPDATE_PRIVACY_KEY)){checkLatestRelease();return}
+$('update-privacy-modal').classList.remove('hidden')}
+$('update-check').onclick=handleUpdateCheck;
+$('update-privacy-continue').onclick=()=>{setLocalBool(UPDATE_PRIVACY_KEY,$('update-privacy-ignore').checked);
+$('update-privacy-modal').classList.add('hidden');checkLatestRelease()};
+$('update-web-flasher').href=UPDATE_WEB_FLASHER_URL;
 function tuneBody(){const fanMode=val('cfg-fan-mode');return{overclock_enabled:$('cfg-overclock-enabled').checked,
 frequency_mhz:Number(val('cfg-frequency')),voltage_mv:Number(val('cfg-voltage')),
 asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,fan_override_enabled:fanMode!=='auto',
@@ -711,6 +775,7 @@ const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFr
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setFault(s);setBoot(s);
 const device=s.device_name||'M45-Bitaxe';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
 txt('build-id',s.build_id||'unknown');txt('build-time',s.build_time||'unknown');
+updateVersionFromStatus(s);
 txt('tps-model',s.tps546_model||'--');
 const asicOn=s.booting===true||s.asic_power_enabled!==false;
 txt('asic-model',s.asic_ready?asicName(s):s.booting?'Booting':asicOn?'Not ready':'Off');$('asic-model').className=s.asic_ready?'summary-value':'summary-value muted';

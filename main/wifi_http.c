@@ -42,9 +42,9 @@
 #define WIFI_TEST_TIMEOUT_MS 15000
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 9200
+#define STATUS_JSON_BUFFER_SIZE 9500
 #else
-#define STATUS_JSON_BUFFER_SIZE 7900
+#define STATUS_JSON_BUFFER_SIZE 8200
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 3400
 #define M45_DEVICE_NAME "M45-Bitaxe"
@@ -1227,6 +1227,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "{"
                  "\"page_token\":\"%s\","
                  "\"device_name\":\"%s\","
+                 "\"version\":\"%s\","
                  "\"build_id\":\"%s\","
                  "\"build_time\":\"%s\","
                  "\"wifi_connected\":%s,"
@@ -1314,7 +1315,8 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"fan_expected_percent\":%.0f"
                  "}"
                  "}",
-                 g_page_token, M45_DEVICE_NAME, APP_BUILD_ID, APP_BUILD_TIME_UTC,
+                 g_page_token, M45_DEVICE_NAME, APP_BUILD_VERSION, APP_BUILD_ID,
+                 APP_BUILD_TIME_UTC,
                  g_connected ? "true" : "false", g_ip, wifi_rssi,
                  hardware_status, booting ? "true" : "false",
                  g_setup_ap_active ? "true" : "false", g_setup_ssid, g_setup_ip,

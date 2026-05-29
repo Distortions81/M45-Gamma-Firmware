@@ -6,6 +6,12 @@
 <div class=dialog><h2 id=settings-reset-title>Factory Reset</h2><p>This clears saved Wi-Fi and mining settings, then reboots the device.</p>
 <div class=actions><button id=settings-reset-confirm class=danger type=button>Reset Settings</button>
 <button id=settings-reset-cancel class=primary type=button>Cancel</button></div></div></div>
+<div id=update-privacy-modal class='modal hidden' role=dialog aria-modal=true aria-labelledby=update-privacy-title>
+<div class=dialog><h2 id=update-privacy-title>Check GitHub Releases</h2>
+<p>This contacts github.com from your browser to check for the latest firmware release.</p>
+<label class=modal-check for=update-privacy-ignore><input id=update-privacy-ignore type=checkbox>Don't show again</label>
+<div class=actions><button id=update-privacy-continue class=primary type=button>Continue</button>
+<button id=update-privacy-cancel class=secondary type=button>Cancel</button></div></div></div>
 <div id=risk-modal class='modal hidden' role=dialog aria-modal=true aria-labelledby=risk-title>
 <div class=dialog><h2 id=risk-title>Hardware Failure Risk</h2>
 <p>These settings are outside the expected operating range and could cause a quick hardware failure.</p>
