@@ -62,9 +62,8 @@ static void set_hw_status(const char *status)
     strlcpy(g_hw_status, status, sizeof(g_hw_status));
 }
 
-static TPS546_CONFIG gamma_tps546_config(void)
+static TPS546_CONFIG gamma_tps546_config_from(const m45_config_t *active)
 {
-    const m45_config_t *active = m45_config_get();
     TPS546_CONFIG config = {0};
     config.TPS546_INIT_PHASE = TPS546_INIT_PHASE_SINGLE;
     config.TPS546_INIT_VIN_ON =
@@ -85,6 +84,11 @@ static TPS546_CONFIG gamma_tps546_config(void)
     config.TPS546_INIT_STACK_CONFIG = 0x0000;
     config.TPS546_INIT_SYNC_CONFIG = 0x10;
     return config;
+}
+
+static TPS546_CONFIG gamma_tps546_config(void)
+{
+    return gamma_tps546_config_from(m45_config_get());
 }
 
 static esp_err_t asic_reset_level(int level)
@@ -796,9 +800,10 @@ esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequen
     return ESP_OK;
 }
 
-esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv)
+esp_err_t bitaxe_gamma602_set_voltage_mv_for_config(GlobalState *state, uint16_t voltage_mv,
+                                                    const m45_config_t *config)
 {
-    const m45_config_t *active = m45_config_get();
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     if (state == NULL || voltage_mv < 500 || voltage_mv > 1370 ||
         voltage_mv < active->safety_asic_voltage_min_mv ||
         voltage_mv >= active->safety_asic_voltage_max_mv) {
@@ -819,6 +824,28 @@ esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv
     }
     if (ret == ESP_OK) {
         g_commanded_voltage_mv = voltage_mv;
+        set_hw_status("ready");
+    }
+    return ret;
+}
+
+esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv)
+{
+    return bitaxe_gamma602_set_voltage_mv_for_config(state, voltage_mv, m45_config_get());
+}
+
+esp_err_t bitaxe_gamma602_apply_safety_limits(const m45_config_t *config)
+{
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!g_tps546_ready) {
+        return ESP_OK;
+    }
+
+    set_hw_status("limit update");
+    const esp_err_t ret = TPS546_apply_limits(gamma_tps546_config_from(config));
+    if (ret == ESP_OK) {
         set_hw_status("ready");
     }
     return ret;

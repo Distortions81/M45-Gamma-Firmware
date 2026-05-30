@@ -95,6 +95,7 @@ typedef struct {
 #define TPS546_STATUS_MFR_SYNC  0x02
 
 esp_err_t TPS546_init(TPS546_CONFIG config);
+esp_err_t TPS546_apply_limits(TPS546_CONFIG config);
 esp_err_t TPS546_set_vout(float volts);
 esp_err_t TPS546_clear_faults(void);
 esp_err_t TPS546_snapshot_status(TPS546_StatusSnapshot *snapshot);

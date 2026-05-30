@@ -27,8 +27,8 @@ width:5px;height:5px;border-radius:50%;background:currentColor}
 .calibration-ico:before{content:'';position:absolute;left:3px;right:3px;top:7px;height:2px;background:currentColor}
 .calibration-ico:after{content:'';position:absolute;top:3px;bottom:3px;left:7px;width:2px;background:currentColor}
 .update-ico{position:relative;width:18px;height:18px;border:2px solid currentColor;border-radius:50%;
-border-left-color:transparent}.update-ico:before{content:'';position:absolute;right:-3px;top:0;width:6px;height:6px;
-border-top:2px solid currentColor;border-right:2px solid currentColor;transform:rotate(45deg)}
+border-left-color:transparent}.update-ico:before{content:'';position:absolute;right:-3px;top:-1px;width:7px;height:7px;
+border-top:2px solid currentColor;border-right:2px solid currentColor}
 .settings-ico{width:18px;height:18px;display:grid;place-items:center;font-size:18px;
 line-height:1;color:currentColor}
 .reboot-ico{width:18px;height:18px;display:grid;place-items:center;font-size:18px;
@@ -121,6 +121,7 @@ color:var(--text);padding:0 10px;font:inherit}.field input:focus,.field select:f
 .oc-warning{border:1px solid #725c22;border-radius:6px;background:#211a0f;padding:10px}
 .oc-warning .value.small{font-size:15px;font-weight:650;line-height:1.25;margin-top:6px}
 .oc-limits-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.oc-limits-card.oc-limits-unrestricted-active{border-color:#725c22;background:#251f12}
 .oc-limits-card .secondary{height:30px;font-size:12px}
 .calibration-row{grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .cal-metric .value{font-size:24px}.cal-metric .subvalue{min-height:15px}

@@ -366,6 +366,42 @@ static esp_err_t write_boot_config(void)
     return ESP_OK;
 }
 
+static esp_err_t write_limit_config(void)
+{
+    ESP_LOGI(TAG, "runtime limits: VIN %.2f-%.2f V, VOUT %.3f-%.3f V, IOUT %.1f/%.1f A",
+             s_config.TPS546_INIT_VIN_OFF, s_config.TPS546_INIT_VIN_OV_FAULT_LIMIT,
+             s_config.TPS546_INIT_VOUT_MIN, s_config.TPS546_INIT_VOUT_MAX,
+             s_config.TPS546_INIT_IOUT_OC_WARN_LIMIT, s_config.TPS546_INIT_IOUT_OC_FAULT_LIMIT);
+
+    ESP_RETURN_ON_ERROR(tps_write_linear11(PMBUS_VIN_ON, s_config.TPS546_INIT_VIN_ON,
+                                           "VIN_ON"),
+                        TAG, "write VIN_ON failed");
+    ESP_RETURN_ON_ERROR(tps_write_linear11(PMBUS_VIN_OFF, s_config.TPS546_INIT_VIN_OFF,
+                                           "VIN_OFF"),
+                        TAG, "write VIN_OFF failed");
+    ESP_RETURN_ON_ERROR(tps_write_linear11(PMBUS_VIN_OV_FAULT_LIMIT,
+                                           s_config.TPS546_INIT_VIN_OV_FAULT_LIMIT,
+                                           "VIN_OV_FAULT_LIMIT"),
+                        TAG, "write VIN_OV_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(tps_write_ulinear16(PMBUS_VOUT_MIN, s_config.TPS546_INIT_VOUT_MIN,
+                                            "VOUT_MIN"),
+                        TAG, "write VOUT_MIN failed");
+    ESP_RETURN_ON_ERROR(tps_write_ulinear16(PMBUS_VOUT_MAX, s_config.TPS546_INIT_VOUT_MAX,
+                                            "VOUT_MAX"),
+                        TAG, "write VOUT_MAX failed");
+    ESP_RETURN_ON_ERROR(tps_write_linear11(PMBUS_IOUT_OC_WARN_LIMIT,
+                                           s_config.TPS546_INIT_IOUT_OC_WARN_LIMIT,
+                                           "IOUT_OC_WARN_LIMIT"),
+                        TAG, "write IOUT_OC_WARN_LIMIT failed");
+    ESP_RETURN_ON_ERROR(tps_write_linear11(PMBUS_IOUT_OC_FAULT_LIMIT,
+                                           s_config.TPS546_INIT_IOUT_OC_FAULT_LIMIT,
+                                           "IOUT_OC_FAULT_LIMIT"),
+                        TAG, "write IOUT_OC_FAULT_LIMIT failed");
+    ESP_RETURN_ON_ERROR(TPS546_clear_faults(), TAG, "clear faults failed");
+
+    return ESP_OK;
+}
+
 esp_err_t TPS546_clear_faults(void)
 {
     return tps_write_addr(PMBUS_CLEAR_FAULTS);
@@ -396,6 +432,19 @@ esp_err_t TPS546_init(TPS546_CONFIG config)
     ESP_RETURN_ON_ERROR(TPS546_clear_faults(), TAG, "clear faults failed");
 
     return ESP_OK;
+}
+
+esp_err_t TPS546_apply_limits(TPS546_CONFIG config)
+{
+    ESP_RETURN_ON_FALSE(s_tps546_i2c_handle != NULL, ESP_ERR_INVALID_STATE, TAG,
+                        "TPS546 is not initialized");
+    const TPS546_CONFIG old_config = s_config;
+    s_config = config;
+    const esp_err_t err = write_limit_config();
+    if (err != ESP_OK) {
+        s_config = old_config;
+    }
+    return err;
 }
 
 const char *TPS546_model(void)

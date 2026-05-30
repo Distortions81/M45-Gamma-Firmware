@@ -5,6 +5,7 @@
 
 #include "esp_err.h"
 #include "global_state.h"
+#include "m45_config.h"
 
 typedef struct {
     bool valid;
@@ -47,6 +48,9 @@ bool bitaxe_gamma602_asic_power_enabled(void);
 esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool manage_fan);
 esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequency_mhz);
 esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv);
+esp_err_t bitaxe_gamma602_set_voltage_mv_for_config(GlobalState *state, uint16_t voltage_mv,
+                                                    const m45_config_t *config);
+esp_err_t bitaxe_gamma602_apply_safety_limits(const m45_config_t *config);
 void bitaxe_gamma602_clear_jobs(GlobalState *state);
 uint8_t bitaxe_gamma602_chip_count(void);
 const char *bitaxe_gamma602_status(void);

@@ -138,6 +138,7 @@ static void set_defaults(m45_config_t *config)
     config->fan_target_temp_c = M45_FAN_TARGET_DEFAULT_C;
     config->display_screensaver_enabled = true;
     config->display_sleep_minutes = M45_DISPLAY_SLEEP_DEFAULT_MINUTES;
+    config->safety_limits_unrestricted = false;
     set_default_safety_limits(config);
     config->best_diff = 0.0;
 }
@@ -234,30 +235,34 @@ static void sanitize_config(m45_config_t *config)
         config->fan_target_temp_c > M45_FAN_TARGET_MAX_C) {
         config->fan_target_temp_c = M45_FAN_TARGET_DEFAULT_C;
     }
-    config->safety_input_voltage_min_mv =
-        default_if_outside(config->safety_input_voltage_min_mv,
-                           M45_SAFETY_INPUT_VOLTAGE_MIN_DEFAULT_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV);
-    config->safety_input_voltage_max_mv =
-        default_if_outside(config->safety_input_voltage_max_mv,
-                           M45_SAFETY_INPUT_VOLTAGE_MAX_DEFAULT_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV);
+    if (!config->safety_limits_unrestricted) {
+        config->safety_input_voltage_min_mv =
+            default_if_outside(config->safety_input_voltage_min_mv,
+                               M45_SAFETY_INPUT_VOLTAGE_MIN_DEFAULT_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV);
+        config->safety_input_voltage_max_mv =
+            default_if_outside(config->safety_input_voltage_max_mv,
+                               M45_SAFETY_INPUT_VOLTAGE_MAX_DEFAULT_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV);
+    }
     if (config->safety_input_voltage_min_mv >= config->safety_input_voltage_max_mv) {
         config->safety_input_voltage_min_mv = M45_SAFETY_INPUT_VOLTAGE_MIN_DEFAULT_MV;
         config->safety_input_voltage_max_mv = M45_SAFETY_INPUT_VOLTAGE_MAX_DEFAULT_MV;
     }
-    config->safety_input_voltage_expected_min_mv =
-        default_if_outside(config->safety_input_voltage_expected_min_mv,
-                           M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MIN_DEFAULT_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV);
-    config->safety_input_voltage_expected_max_mv =
-        default_if_outside(config->safety_input_voltage_expected_max_mv,
-                           M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MAX_DEFAULT_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
-                           M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV);
+    if (!config->safety_limits_unrestricted) {
+        config->safety_input_voltage_expected_min_mv =
+            default_if_outside(config->safety_input_voltage_expected_min_mv,
+                               M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MIN_DEFAULT_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV);
+        config->safety_input_voltage_expected_max_mv =
+            default_if_outside(config->safety_input_voltage_expected_max_mv,
+                               M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MAX_DEFAULT_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                               M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV);
+    }
     if (config->safety_input_voltage_expected_min_mv >=
             config->safety_input_voltage_expected_max_mv ||
         config->safety_input_voltage_expected_min_mv <
@@ -280,58 +285,66 @@ static void sanitize_config(m45_config_t *config)
                 config->safety_input_voltage_max_mv;
         }
     }
-    config->safety_asic_voltage_min_mv =
-        default_if_outside(config->safety_asic_voltage_min_mv,
-                           M45_SAFETY_ASIC_VOLTAGE_MIN_DEFAULT_MV,
-                           M45_SAFETY_ASIC_VOLTAGE_MIN_MIN_MV,
-                           M45_SAFETY_ASIC_VOLTAGE_MIN_MAX_MV);
-    config->safety_asic_voltage_max_mv =
-        default_if_outside(config->safety_asic_voltage_max_mv,
-                           M45_SAFETY_ASIC_VOLTAGE_MAX_DEFAULT_MV,
-                           M45_SAFETY_ASIC_VOLTAGE_MAX_MIN_MV,
-                           M45_SAFETY_ASIC_VOLTAGE_MAX_MAX_MV);
+    if (!config->safety_limits_unrestricted) {
+        config->safety_asic_voltage_min_mv =
+            default_if_outside(config->safety_asic_voltage_min_mv,
+                               M45_SAFETY_ASIC_VOLTAGE_MIN_DEFAULT_MV,
+                               M45_SAFETY_ASIC_VOLTAGE_MIN_MIN_MV,
+                               M45_SAFETY_ASIC_VOLTAGE_MIN_MAX_MV);
+        config->safety_asic_voltage_max_mv =
+            default_if_outside(config->safety_asic_voltage_max_mv,
+                               M45_SAFETY_ASIC_VOLTAGE_MAX_DEFAULT_MV,
+                               M45_SAFETY_ASIC_VOLTAGE_MAX_MIN_MV,
+                               M45_SAFETY_ASIC_VOLTAGE_MAX_MAX_MV);
+    }
     if (config->safety_asic_voltage_min_mv >= config->safety_asic_voltage_max_mv) {
         config->safety_asic_voltage_min_mv = M45_SAFETY_ASIC_VOLTAGE_MIN_DEFAULT_MV;
         config->safety_asic_voltage_max_mv = M45_SAFETY_ASIC_VOLTAGE_MAX_DEFAULT_MV;
     }
-    config->safety_asic_temp_max_c =
-        default_if_outside(config->safety_asic_temp_max_c,
-                           M45_SAFETY_ASIC_TEMP_MAX_DEFAULT_C,
-                           M45_SAFETY_ASIC_TEMP_MAX_MIN_C,
-                           M45_SAFETY_ASIC_TEMP_MAX_MAX_C);
-    config->safety_asic_temp_expected_max_c =
-        default_if_outside(config->safety_asic_temp_expected_max_c,
-                           M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_DEFAULT_C,
-                           M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_MIN_C,
-                           M45_SAFETY_ASIC_TEMP_MAX_MAX_C);
+    if (!config->safety_limits_unrestricted) {
+        config->safety_asic_temp_max_c =
+            default_if_outside(config->safety_asic_temp_max_c,
+                               M45_SAFETY_ASIC_TEMP_MAX_DEFAULT_C,
+                               M45_SAFETY_ASIC_TEMP_MAX_MIN_C,
+                               M45_SAFETY_ASIC_TEMP_MAX_MAX_C);
+        config->safety_asic_temp_expected_max_c =
+            default_if_outside(config->safety_asic_temp_expected_max_c,
+                               M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_DEFAULT_C,
+                               M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_MIN_C,
+                               M45_SAFETY_ASIC_TEMP_MAX_MAX_C);
+    }
     if (config->safety_asic_temp_expected_max_c > config->safety_asic_temp_max_c) {
         config->safety_asic_temp_expected_max_c =
             config->safety_asic_temp_max_c;
     }
-    config->safety_tps546_temp_max_c =
-        default_if_outside(config->safety_tps546_temp_max_c,
-                           M45_SAFETY_TPS546_TEMP_MAX_DEFAULT_C,
-                           M45_SAFETY_TPS546_TEMP_MAX_MIN_C,
-                           M45_SAFETY_TPS546_TEMP_MAX_MAX_C);
-    config->safety_tps546_temp_expected_max_c =
-        default_if_outside(config->safety_tps546_temp_expected_max_c,
-                           M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_DEFAULT_C,
-                           M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C,
-                           M45_SAFETY_TPS546_TEMP_MAX_MAX_C);
+    if (!config->safety_limits_unrestricted) {
+        config->safety_tps546_temp_max_c =
+            default_if_outside(config->safety_tps546_temp_max_c,
+                               M45_SAFETY_TPS546_TEMP_MAX_DEFAULT_C,
+                               M45_SAFETY_TPS546_TEMP_MAX_MIN_C,
+                               M45_SAFETY_TPS546_TEMP_MAX_MAX_C);
+        config->safety_tps546_temp_expected_max_c =
+            default_if_outside(config->safety_tps546_temp_expected_max_c,
+                               M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_DEFAULT_C,
+                               M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C,
+                               M45_SAFETY_TPS546_TEMP_MAX_MAX_C);
+    }
     if (config->safety_tps546_temp_expected_max_c > config->safety_tps546_temp_max_c) {
         config->safety_tps546_temp_expected_max_c =
             config->safety_tps546_temp_max_c;
     }
-    config->safety_iout_fault_deciamps =
-        default_if_outside(config->safety_iout_fault_deciamps,
-                           M45_SAFETY_IOUT_FAULT_DEFAULT_DA,
-                           M45_SAFETY_IOUT_FAULT_MIN_DA,
-                           M45_SAFETY_IOUT_FAULT_MAX_DA);
-    config->safety_iout_warn_deciamps =
-        default_if_outside(config->safety_iout_warn_deciamps,
-                           M45_SAFETY_IOUT_WARN_DEFAULT_DA,
-                           M45_SAFETY_IOUT_WARN_MIN_DA,
-                           M45_SAFETY_IOUT_FAULT_MAX_DA);
+    if (!config->safety_limits_unrestricted) {
+        config->safety_iout_fault_deciamps =
+            default_if_outside(config->safety_iout_fault_deciamps,
+                               M45_SAFETY_IOUT_FAULT_DEFAULT_DA,
+                               M45_SAFETY_IOUT_FAULT_MIN_DA,
+                               M45_SAFETY_IOUT_FAULT_MAX_DA);
+        config->safety_iout_warn_deciamps =
+            default_if_outside(config->safety_iout_warn_deciamps,
+                               M45_SAFETY_IOUT_WARN_DEFAULT_DA,
+                               M45_SAFETY_IOUT_WARN_MIN_DA,
+                               M45_SAFETY_IOUT_FAULT_MAX_DA);
+    }
     if (config->safety_iout_warn_deciamps > config->safety_iout_fault_deciamps) {
         config->safety_iout_warn_deciamps = config->safety_iout_fault_deciamps;
     }
@@ -396,6 +409,9 @@ esp_err_t m45_config_load(void)
     load_u8(nvs, "screensaver", &display_screensaver_enabled);
     g_config.display_screensaver_enabled = display_screensaver_enabled != 0;
     load_u16(nvs, "sleep_min", &g_config.display_sleep_minutes);
+    uint8_t safety_limits_unrestricted = g_config.safety_limits_unrestricted ? 1 : 0;
+    load_u8(nvs, "lim_unres", &safety_limits_unrestricted);
+    g_config.safety_limits_unrestricted = safety_limits_unrestricted != 0;
     load_u16(nvs, "lim_vin_min", &g_config.safety_input_voltage_min_mv);
     load_u16(nvs, "lim_vin_emin", &g_config.safety_input_voltage_expected_min_mv);
     load_u16(nvs, "lim_vin_emax", &g_config.safety_input_voltage_expected_max_mv);
@@ -508,6 +524,9 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "sleep_min", clean.display_sleep_minutes);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "lim_unres", clean.safety_limits_unrestricted ? 1 : 0);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "lim_vin_min", clean.safety_input_voltage_min_mv);

@@ -233,7 +233,7 @@ code { background: #111518; border: 1px solid var(--line); border-radius: 5px; p
 <label for="firmware-select">Firmware</label>
 <select id="firmware-select"></select>
 </div>
-<label class="check" for="erase-settings"><input id="erase-settings" type="checkbox"><span>Erase settings<small>Unchecked keeps saved Wi-Fi, pool, and tuning settings.</small></span></label>
+<label class="check" for="erase-settings"><input id="erase-settings" type="checkbox"><span>Erase settings<small>Select this when flashing from stock Bitaxe/ESP-Miner or other firmware.</small></span></label>
 <button id="flash-button" type="button">Connect &amp; Flash</button>
 <progress id="progress" max="100" value="0"></progress>
 <div id="status" class="status">Ready.</div>
@@ -243,8 +243,8 @@ code { background: #111518; border: 1px solid var(--line); border-radius: 5px; p
 <strong>Hardware warning</strong>
 <ul>
 <li>This firmware is for Bitaxe Gamma 602 hardware.</li>
-<li>Default flashing skips NVS at <code>0x9000-0xefff</code> so settings stay intact.</li>
-<li>Select erase settings only when you want to reset Wi-Fi, pool, and tuning settings.</li>
+<li>Default flashing skips NVS at <code>0x9000-0xefff</code> so M45 settings stay intact.</li>
+<li>Select erase settings when flashing from stock Bitaxe/ESP-Miner or other firmware.</li>
 <li>Overclocking or bad cooling can permanently damage hardware.</li>
 </ul>
 </section>

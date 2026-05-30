@@ -43,13 +43,14 @@
 #define WIFI_MAX_RETRY 8
 #define WIFI_RETRY_BACKOFF_MS 30000
 #define WIFI_TEST_TIMEOUT_MS 15000
+#define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
 #define STATUS_JSON_BUFFER_SIZE 9700
 #else
 #define STATUS_JSON_BUFFER_SIZE 8400
 #endif
-#define SETTINGS_JSON_BUFFER_SIZE 3400
+#define SETTINGS_JSON_BUFFER_SIZE 3800
 #define M45_DEVICE_NAME "M45-Bitaxe"
 #define HTTP_URI_HANDLER_SLOTS 56
 #define HTTP_HANDLER_WARN_MS 100
@@ -567,7 +568,10 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
     vTaskDelay(pdMS_TO_TICKS(WIFI_TEST_RESTORE_DELAY_MS));
 
     test_err = set_sta_config(ssid, password);
-    if (test_err == ESP_OK) {
+    for (int attempt = 1; test_err == ESP_OK && !connected && attempt <= WIFI_TEST_ATTEMPTS;
+         ++attempt) {
+        *reason = 0;
+        g_wifi_test_disconnect_reason = 0;
         g_connected = false;
         g_ip[0] = '\0';
         g_retry_count = 0;
@@ -576,10 +580,9 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
         test_err = esp_wifi_connect();
         if (test_err != ESP_OK) {
             g_wifi_test_ignore_assoc_leave = false;
+            break;
         }
-    }
 
-    if (test_err == ESP_OK) {
         const EventBits_t bits =
             xEventGroupWaitBits(g_wifi_events, WIFI_TEST_CONNECTED_BIT | WIFI_TEST_FAIL_BIT,
                                 pdTRUE, pdFALSE, pdMS_TO_TICKS(WIFI_TEST_TIMEOUT_MS));
@@ -587,6 +590,15 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
         if (!connected) {
             test_err = (bits & WIFI_TEST_FAIL_BIT) != 0 ? ESP_FAIL : ESP_ERR_TIMEOUT;
             *reason = g_wifi_test_disconnect_reason;
+            if (attempt < WIFI_TEST_ATTEMPTS) {
+                ESP_LOGW(TAG, "Wi-Fi test attempt %d failed (%s, reason %u); retrying",
+                         attempt, esp_err_to_name(test_err), *reason);
+                test_err = ESP_OK;
+                g_wifi_test_waiting = false;
+                g_wifi_test_ignore_assoc_leave = true;
+                (void)esp_wifi_disconnect();
+                vTaskDelay(pdMS_TO_TICKS(WIFI_TEST_RESTORE_DELAY_MS));
+            }
         }
     }
 
@@ -1012,6 +1024,34 @@ static void apply_runtime_state(const m45_config_t *config)
     g_state->SYSTEM_MODULE.pool_pass = (char *)config->pool_pass;
 }
 
+static bool safety_settings_changed(const m45_config_t *old_config,
+                                    const m45_config_t *new_config)
+{
+    return old_config->safety_input_voltage_min_mv !=
+               new_config->safety_input_voltage_min_mv ||
+           old_config->safety_input_voltage_expected_min_mv !=
+               new_config->safety_input_voltage_expected_min_mv ||
+           old_config->safety_input_voltage_expected_max_mv !=
+               new_config->safety_input_voltage_expected_max_mv ||
+           old_config->safety_input_voltage_max_mv !=
+               new_config->safety_input_voltage_max_mv ||
+           old_config->safety_asic_voltage_min_mv !=
+               new_config->safety_asic_voltage_min_mv ||
+           old_config->safety_asic_voltage_max_mv !=
+               new_config->safety_asic_voltage_max_mv ||
+           old_config->safety_asic_temp_expected_max_c !=
+               new_config->safety_asic_temp_expected_max_c ||
+           old_config->safety_asic_temp_max_c != new_config->safety_asic_temp_max_c ||
+           old_config->safety_tps546_temp_expected_max_c !=
+               new_config->safety_tps546_temp_expected_max_c ||
+           old_config->safety_tps546_temp_max_c !=
+               new_config->safety_tps546_temp_max_c ||
+           old_config->safety_iout_warn_deciamps !=
+               new_config->safety_iout_warn_deciamps ||
+           old_config->safety_iout_fault_deciamps !=
+               new_config->safety_iout_fault_deciamps;
+}
+
 static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
                                          const m45_config_t *new_config)
 {
@@ -1023,10 +1063,35 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
         m45_config_effective_asic_voltage_mv_for_temp(new_config, asic_temp_c);
     const uint16_t old_frequency_mhz = m45_config_effective_asic_frequency_mhz(old_config);
     const uint16_t new_frequency_mhz = m45_config_effective_asic_frequency_mhz(new_config);
+    const bool safety_changed = safety_settings_changed(old_config, new_config);
+    const bool voltage_needs_new_limits =
+        new_voltage_mv < old_config->safety_asic_voltage_min_mv ||
+        new_voltage_mv >= old_config->safety_asic_voltage_max_mv;
+    bool safety_limits_applied = false;
+
+    if (safety_changed && voltage_needs_new_limits) {
+        const uint64_t started_us = http_now_us();
+        esp_err_t err = bitaxe_gamma602_apply_safety_limits(new_config);
+        log_http_handler_delay("TPS546 safety limit apply", started_us);
+        if (err != ESP_OK) {
+            return err;
+        }
+        safety_limits_applied = true;
+    }
+
     if (old_voltage_mv != new_voltage_mv) {
         const uint64_t started_us = http_now_us();
-        esp_err_t err = bitaxe_gamma602_set_voltage_mv(g_state, new_voltage_mv);
+        esp_err_t err =
+            bitaxe_gamma602_set_voltage_mv_for_config(g_state, new_voltage_mv, new_config);
         log_http_handler_delay("ASIC voltage apply", started_us);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    if (safety_changed && !safety_limits_applied) {
+        const uint64_t started_us = http_now_us();
+        esp_err_t err = bitaxe_gamma602_apply_safety_limits(new_config);
+        log_http_handler_delay("TPS546 safety limit apply", started_us);
         if (err != ESP_OK) {
             return err;
         }
@@ -1523,6 +1588,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"display_screensaver_enabled\":%s,"
                  "\"display_sleep_minutes\":%u,"
                  "\"display_sleep_max_minutes\":%u,"
+                 "\"safety_limits_unrestricted\":%s,"
                  "\"limit_input_voltage_min_mv\":%u,"
                  "\"limit_input_voltage_expected_min_mv\":%u,"
                  "\"limit_input_voltage_expected_max_mv\":%u,"
@@ -1553,6 +1619,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  config->display_screensaver_enabled ? "true" : "false",
                  (unsigned)config->display_sleep_minutes,
                  (unsigned)M45_DISPLAY_SLEEP_MAX_MINUTES,
+                 config->safety_limits_unrestricted ? "true" : "false",
                  config->safety_input_voltage_min_mv,
                  config->safety_input_voltage_expected_min_mv,
                  config->safety_input_voltage_expected_max_mv,
@@ -2016,7 +2083,10 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     }
 
     m45_config_t config = *m45_config_get();
-    const bool ok =
+    bool ok = json_get_optional_bool(json, "safety_limits_unrestricted",
+                                     &config.safety_limits_unrestricted);
+    const bool unrestricted_limits = config.safety_limits_unrestricted;
+    ok = ok &&
         json_get_string(json, "wifi_ssid", config.wifi_ssid, sizeof(config.wifi_ssid), true) &&
         json_get_string(json, "wifi_password", config.wifi_password,
                         sizeof(config.wifi_password), false) &&
@@ -2053,52 +2123,64 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                               M45_DISPLAY_SLEEP_MAX_MINUTES) &&
         json_get_optional_u16(json, "limit_input_voltage_min_mv",
                               &config.safety_input_voltage_min_mv,
-                              M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
-                              M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV) &&
         json_get_optional_u16(json, "limit_input_voltage_expected_min_mv",
                               &config.safety_input_voltage_expected_min_mv,
-                              M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
-                              M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_input_voltage_expected_max_mv",
                               &config.safety_input_voltage_expected_max_mv,
-                              M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
-                              M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_input_voltage_max_mv",
                               &config.safety_input_voltage_max_mv,
-                              M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV,
-                              M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_asic_voltage_min_mv",
                               &config.safety_asic_voltage_min_mv,
-                              M45_SAFETY_ASIC_VOLTAGE_MIN_MIN_MV,
-                              M45_SAFETY_ASIC_VOLTAGE_MIN_MAX_MV) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_ASIC_VOLTAGE_MIN_MIN_MV,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_ASIC_VOLTAGE_MIN_MAX_MV) &&
         json_get_optional_u16(json, "limit_asic_voltage_max_mv",
                               &config.safety_asic_voltage_max_mv,
-                              M45_SAFETY_ASIC_VOLTAGE_MAX_MIN_MV,
-                              M45_SAFETY_ASIC_VOLTAGE_MAX_MAX_MV) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_ASIC_VOLTAGE_MAX_MIN_MV,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_ASIC_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_asic_temp_expected_max_c",
                               &config.safety_asic_temp_expected_max_c,
-                              M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_MIN_C,
-                              M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_MIN_C,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_asic_temp_max_c",
                               &config.safety_asic_temp_max_c,
-                              M45_SAFETY_ASIC_TEMP_MAX_MIN_C,
-                              M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_ASIC_TEMP_MAX_MIN_C,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_tps546_temp_expected_max_c",
                               &config.safety_tps546_temp_expected_max_c,
-                              M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C,
-                              M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_tps546_temp_max_c",
                               &config.safety_tps546_temp_max_c,
-                              M45_SAFETY_TPS546_TEMP_MAX_MIN_C,
-                              M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_TPS546_TEMP_MAX_MIN_C,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_iout_warn_deciamps",
                               &config.safety_iout_warn_deciamps,
-                              M45_SAFETY_IOUT_WARN_MIN_DA,
-                              M45_SAFETY_IOUT_FAULT_MAX_DA) &&
+                              unrestricted_limits ? 0 : M45_SAFETY_IOUT_WARN_MIN_DA,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_IOUT_FAULT_MAX_DA) &&
         json_get_optional_u16(json, "limit_iout_fault_deciamps",
                               &config.safety_iout_fault_deciamps,
-                              M45_SAFETY_IOUT_FAULT_MIN_DA,
-                              M45_SAFETY_IOUT_FAULT_MAX_DA);
+                              unrestricted_limits ? 0 : M45_SAFETY_IOUT_FAULT_MIN_DA,
+                              unrestricted_limits ? UINT16_MAX
+                                                  : M45_SAFETY_IOUT_FAULT_MAX_DA);
     cJSON_Delete(json);
 
     if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||

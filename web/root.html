@@ -73,6 +73,8 @@
 </div></section>
 <article id=oc-limits-card class='panel full oc-card oc-limits-card'><div class=metric-head><div class=label>Limits</div>
 <button id=oc-limits-defaults class=secondary type=button>Defaults</button></div>
+<label class='toggle-row oc-limits-unrestricted' for=limit-unrestricted><input id=limit-unrestricted type=checkbox>
+<span class=toggle-text><span class=label>Unrestricted Limits</span><span class=subvalue>Allow safety limits outside normal ranges.</span></span></label>
 <div class='settings-form oc-card-fields oc-limits-grid'>
 <div class=field><label for=limit-input-voltage-min>VIN Stop Low mV</label><input id=limit-input-voltage-min type=number min=4500 max=5200 step=50></div>
 <div class=field><label for=limit-input-voltage-expected-min>VIN Watch Low mV</label><input id=limit-input-voltage-expected-min type=number min=4500 max=5500 step=50></div>
@@ -84,8 +86,8 @@
 <div class=field><label for=limit-asic-temp-max>ASIC Stop C</label><input id=limit-asic-temp-max type=number min=45 max=69 step=1></div>
 <div class=field><label for=limit-tps546-temp-expected>VR Watch C</label><input id=limit-tps546-temp-expected type=number min=40 max=98 step=1></div>
 <div class=field><label for=limit-tps546-temp-max>VR Stop C</label><input id=limit-tps546-temp-max type=number min=60 max=98 step=1></div>
-<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=40 step=.5></div>
-<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=40 step=.5></div>
+<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=30 step=.5></div>
+<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=30 step=.5></div>
 <div id=oc-limit-power-note class='formula-note'>Power limits update from the current VOUT target.</div>
 </div></article>
 <article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
@@ -186,6 +188,20 @@ const STOCK_FREQUENCY=525,STOCK_VOLTAGE=1150,MAX_FREQUENCY=1500;
 const LIMIT_DEFAULTS={inputMin:4500,inputExpectedMin:4800,inputExpectedMax:5400,inputMax:5500,
 asicMin:700,asicMax:1400,asicTempExpected:60,asicTempMax:69,tpsTempExpected:85,tpsTempMax:98,
 ioutWarnDa:250,ioutFaultDa:300};
+const LIMIT_MAX_U16=65535,LIMIT_MAX_DECIAMPS_A=6553.5;
+const LIMIT_RANGES={
+'limit-input-voltage-min':[4500,5200,0,LIMIT_MAX_U16],
+'limit-input-voltage-expected-min':[4500,5500,0,LIMIT_MAX_U16],
+'limit-input-voltage-expected-max':[4500,5500,0,LIMIT_MAX_U16],
+'limit-input-voltage-max':[5000,5500,0,LIMIT_MAX_U16],
+'limit-asic-voltage-min':[700,1200,0,LIMIT_MAX_U16],
+'limit-asic-voltage-max':[800,1400,0,LIMIT_MAX_U16],
+'limit-asic-temp-expected':[35,69,0,LIMIT_MAX_U16],
+'limit-asic-temp-max':[45,69,0,LIMIT_MAX_U16],
+'limit-tps546-temp-expected':[40,98,0,LIMIT_MAX_U16],
+'limit-tps546-temp-max':[60,98,0,LIMIT_MAX_U16],
+'limit-iout-warn':[5,30,0,LIMIT_MAX_DECIAMPS_A],
+'limit-iout-fault':[6,30,0,LIMIT_MAX_DECIAMPS_A]};
 const REFRESH_WARN_MS=10000;
 const UPDATE_REPO='Distortions81/M45-Gamma-Firmware',UPDATE_ASSET_PREFIX='esp-miner-factory-602-';
 const UPDATE_RELEASES_URL=`https://api.github.com/repos/${UPDATE_REPO}/releases`;
@@ -312,10 +328,15 @@ txt('cfg-fan-target-value',`${tgt.value}C`);syncOverclockWarning()}
 function syncDisplaySleep(){const timer=val('cfg-display-sleep-mode')==='timer',m=$('cfg-display-sleep-minutes');
 $('cfg-display-sleep-minutes-field').classList.toggle('hidden',!timer);m.disabled=!timer;
 if(timer&&Number(val('cfg-display-sleep-minutes'))<1)setVal('cfg-display-sleep-minutes',15)}
+function setLimitRangeMode(unrestricted,clampValues=false){Object.entries(LIMIT_RANGES).forEach(([id,r])=>{
+const el=$(id),min=unrestricted?r[2]:r[0],max=unrestricted?r[3]:r[1];el.min=min;el.max=max;
+if(clampValues){const v=num(el.value);if(Number.isFinite(v))setVal(id,clamp(v,min,max))}});
+$('oc-limits-card').classList.toggle('oc-limits-unrestricted-active',unrestricted);syncLimitSummary()}
 function setLimitAmp(id,deciamps){setVal(id,n((Number(deciamps)||0)/10,1))}
-function limitAmpDa(id){const maxDa=Math.round((Number($(id).max)||40)*10);
-return clamp(Math.round((Number(val(id))||0)*10),0,maxDa)}
+function limitAmpDa(id){const minDa=Math.round((Number($(id).min)||0)*10),maxDa=Math.round((Number($(id).max)||30)*10);
+return clamp(Math.round((Number(val(id))||0)*10),minDa,maxDa)}
 function setLimitFields(c={}){
+$('limit-unrestricted').checked=!!c.safety_limits_unrestricted;setLimitRangeMode($('limit-unrestricted').checked,false);
 setVal('limit-input-voltage-min',c.limit_input_voltage_min_mv??LIMIT_DEFAULTS.inputMin);
 setVal('limit-input-voltage-expected-min',c.limit_input_voltage_expected_min_mv??LIMIT_DEFAULTS.inputExpectedMin);
 setVal('limit-input-voltage-expected-max',c.limit_input_voltage_expected_max_mv??LIMIT_DEFAULTS.inputExpectedMax);
@@ -525,6 +546,7 @@ $('cfg-display-sleep-mode').onchange=syncDisplaySleep;$('cfg-display-sleep-minut
 $('cfg-pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.value};
 $('cfg-pool-diff-auto').onchange=syncPoolDifficulty;
 $('oc-limits-defaults').onclick=setDefaultLimits;
+$('limit-unrestricted').onchange=e=>setLimitRangeMode(e.currentTarget.checked,true);
 ['limit-input-voltage-min','limit-input-voltage-expected-min','limit-input-voltage-expected-max',
 'limit-input-voltage-max','limit-asic-voltage-min','limit-asic-voltage-max',
 'limit-asic-temp-expected','limit-asic-temp-max','limit-tps546-temp-expected',
@@ -552,6 +574,7 @@ asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,
 fan_override_enabled:fanMode!=='auto',fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),
 fan_auto_off_allowed:fanMode==='auto'&&$('cfg-fan-auto-off').checked,
 fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,fan_target_temp_c:Number(val('cfg-fan-target')),
+safety_limits_unrestricted:$('limit-unrestricted').checked,
 limit_input_voltage_min_mv:Number(val('limit-input-voltage-min')),
 limit_input_voltage_expected_min_mv:Number(val('limit-input-voltage-expected-min')),
 limit_input_voltage_expected_max_mv:Number(val('limit-input-voltage-expected-max')),
@@ -586,7 +609,7 @@ const btn=$('cfg-wifi-test');wifiSettingsTesting=true;wifiSettingsTestOk=false;s
 try{const body={wifi_ssid:ssid},p=cfgWifiPasswordForTest();if(p!=null)body.wifi_password=p;
 let r=await fetch('/api/wifi-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 let j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
-for(let i=0;j.running&&i<25;i++){await sleep(800);r=await fetch(`/api/wifi-test?id=${j.id}`,{cache:'no-store'});
+for(let i=0;j.running&&i<50;i++){await sleep(800);r=await fetch(`/api/wifi-test?id=${j.id}`,{cache:'no-store'});
 j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status)}
 if(j.running)throw new Error('connection timed out');if(!j.ok)throw new Error(j.error||'connection failed');
 wifiSettingsTestOk=true;wifiSettingsTestKey=cfgWifiKey();setStatus('wifi-test-status',`Wi-Fi test passed${j.ip?` (${j.ip})`:''}.`,'ok')}

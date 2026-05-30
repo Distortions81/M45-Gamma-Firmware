@@ -1,6 +1,6 @@
 # M45 Gamma Firmware [ALPHA]
 
-![M45 Bitaxe Speed Alpha web dashboard](docs/screenshots/dashboard.png)
+![M45 Bitaxe web dashboard](docs/screenshots/dashboard.png)
 
 M45 is experimental firmware for Bitaxe Gamma 602 miners. It boots at stock
 ASIC settings, exposes a local web dashboard, and lets you opt in to fan,
@@ -11,6 +11,22 @@ to flash a prepared build from Chrome or Edge using USB serial.
 
 Use it at your own risk. Overclocking or bad cooling can permanently damage
 the ASIC, regulator, fan, wiring, or power supply, and can create a fire risk.
+
+## Updates And OTA
+
+Use the [Web Flasher](https://distortions81.github.io/M45-Gamma-Firmware/) for
+the first install or when you need to recover a device over USB serial.
+
+OTA accepts either:
+
+- `M45-Firmware.bin`, the app image produced by `scripts/docker-build.sh`.
+- `esp-miner-factory-602-*.bin`, the merged factory image used by the web
+  flasher.
+
+GitHub Actions builds a factory image when a GitHub Release is published,
+attaches only that `.bin` to the release, and publishes the web flasher through
+GitHub Pages. The Pages site mirrors matching release images so older releases
+can be selected from the flasher.
 
 ## Supported Hardware
 
@@ -56,16 +72,6 @@ a release list, and one merged factory image named like
 model: it writes the factory image as one file, skips the NVS settings range by
 default, and only writes that range when you select erase settings.
 
-After flashing a current factory image, the dashboard Update page can install
-later builds over the air. OTA accepts either `build/docker/M45-Firmware.bin`
-or the same `esp-miner-factory-602-*.bin` factory image used by the web flasher.
-Older single-app installs need one web-flasher update before OTA is available.
-
-GitHub Actions builds a factory image when a GitHub Release is published,
-attaches only that `.bin` to the release, and publishes the web flasher through
-GitHub Pages. The Pages site mirrors matching release images so older releases
-can be selected from the flasher.
-
 ## Flash
 
 On Linux, the Docker wrapper can pass a serial device into the container:
@@ -107,6 +113,26 @@ HTTP QR code. Open that address from a phone or computer on the same network.
 - Primary and backup Stratum pools with automatic return to the primary pool.
 - Wallet payout detection from coinbase data when the pool exposes enough
   information.
+- Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes for tools
+  that expect the Bitaxe API shape. See
+  [`docs/json-endpoints.md`](docs/json-endpoints.md).
+
+## M45 Features Over ESP-Miner
+
+M45-specific additions compared with the stock ESP-Miner-style workflow:
+
+- OLED first-boot Wi-Fi setup QR code and post-setup dashboard QR code.
+- Browser controls for Wi-Fi, primary and backup pools, fan mode, ASIC
+  clock/voltage, temperature compensation, display sleep, screensaver and ASIC power.
+- Configurable safety limits for VIN, ASIC voltage, ASIC temperature, TPS546
+  temperature, and TPS546 current, with an explicit unrestricted mode for
+  advanced testing.
+- Runtime TPS546 PMBus limit updates when safety limits change, including
+  values outside the normal ranges when unrestricted mode is enabled.
+- Coinbase payout detection, block-found alerting, best-diff reset, and
+  automatic fallback and return behavior for backup Stratum pools.
+- Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes documented in
+  [`docs/json-endpoints.md`](docs/json-endpoints.md).
 
 ## Safety Behavior
 
@@ -121,12 +147,12 @@ condition is detected. Default shutdown limits are:
 - TPS546 output current reaches `30 A`.
 - TPS546 or temperature monitor reads fail while hardware is active.
 
-The TPS546D24A/TPS546D24S current limit can be raised to `40 A` from the
-dashboard safety settings if your board, cooling, and power wiring can support
-it.
-
 These limits are last-resort protections, not a substitute for proper cooling,
 power delivery, and monitoring.
+
+The dashboard can explicitly unlock unrestricted safety-limit ranges for
+advanced testing. That option only removes firmware setting caps; it does not
+make unsafe values safe.
 
 ## Build Without Docker
 
