@@ -20,7 +20,7 @@ menu "M45 Firmware"
 
     config M45_BITAXE_STRATUM_HOST
         string "Stratum host"
-        default "public-pool.io"
+        default "m45core.com"
 
     config M45_BITAXE_STRATUM_PORT
         int "Stratum port"

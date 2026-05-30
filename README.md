@@ -41,25 +41,8 @@ artifacts are written to `build/docker/`, including:
 - `build/docker/partition_table/partition-table.bin`
 - `build/docker/flasher_args.json`
 
-You can bake default Wi-Fi and pool settings into the firmware:
-
-```sh
-scripts/docker-build.sh \
-  --wifi-ssid "My WiFi" \
-  --wifi-pass "secret" \
-  --pool-host public-pool.io \
-  --pool-port 3333 \
-  --pool-user "bc1q...worker" \
-  --pool-pass x \
-  --build
-```
-
-You can also skip those options and configure Wi-Fi and mining from the first
-boot setup page.
-
-Build-time Wi-Fi and pool values are stored in the ignored `sdkconfig` file and
-embedded in the firmware image. Do not share a firmware image that contains
-private credentials.
+Docker builds use repository defaults and do not embed local Wi-Fi or pool
+settings. Configure Wi-Fi and mining from the first boot setup page.
 
 To produce the static web flasher package locally:
 

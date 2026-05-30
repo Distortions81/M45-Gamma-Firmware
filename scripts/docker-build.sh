@@ -29,7 +29,6 @@ Docker builds use build/docker by default. Pass --build-dir to override it.
 
 Examples:
   scripts/docker-build.sh
-  scripts/docker-build.sh --pool-user "bc1q...worker" --build
   scripts/docker-build.sh --flash /dev/ttyUSB0
 EOF
 }
@@ -98,6 +97,20 @@ while [[ $# -gt 0 ]]; do
             FORWARD_ARGS+=("$1")
             shift
             ;;
+        --wifi-ssid|--wifi-pass|--wifi-password|--pool-host|--pool-port|--pool-user|\
+        --pool-pass|--pool-password|--diff|--difficulty|--hostname|--freq|\
+        --frequency|--voltage|--oled-width|--oled-height|--oled-addr)
+            die "Docker builds use repository defaults; configure Wi-Fi and pool from the device UI"
+            ;;
+        --wifi-ssid=*|--wifi-pass=*|--wifi-password=*|--pool-host=*|--pool-port=*|\
+        --pool-user=*|--pool-pass=*|--pool-password=*|--diff=*|--difficulty=*|\
+        --hostname=*|--freq=*|--frequency=*|--voltage=*|--oled-width=*|\
+        --oled-height=*|--oled-addr=*)
+            die "Docker builds use repository defaults; configure Wi-Fi and pool from the device UI"
+            ;;
+        --auto-diff|--difficulty-auto|--manual-diff|--no-auto-diff|--difficulty-manual)
+            die "Docker builds use repository defaults; configure Wi-Fi and pool from the device UI"
+            ;;
         -h|--help)
             usage
             exit 0
@@ -132,6 +145,7 @@ fi
 RUN_ARGS=(
     --rm
     --env HOME=/tmp/m45-home
+    --env M45_SDKCONFIG=/tmp/m45-sdkconfig
     --volume "$REPO_DIR:$REPO_DIR"
     --workdir "$REPO_DIR"
     --user "$(id -u):$(id -g)"

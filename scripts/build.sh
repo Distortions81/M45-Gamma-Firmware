@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
-SDKCONFIG="$REPO_DIR/sdkconfig"
+SDKCONFIG="${M45_SDKCONFIG:-$REPO_DIR/sdkconfig}"
 BUILD_DIR="${M45_BUILD_DIR:-build}"
 IDF_EXPORT="${IDF_EXPORT_SCRIPT:-}"
 BUILD=0
@@ -45,12 +45,13 @@ Actions:
   --flash PORT
   --monitor
   --idf-export PATH
+  --sdkconfig PATH
 
 Example:
   scripts/build.sh \
     --wifi-ssid "My WiFi" \
     --wifi-pass "secret" \
-    --pool-host public-pool.io \
+    --pool-host m45core.com \
     --pool-port 3333 \
     --pool-user "bc1q...worker" \
     --pool-pass x \
@@ -244,6 +245,16 @@ while [[ $# -gt 0 ]]; do
             [[ -n "$BUILD_DIR" ]] || die "--build-dir requires a value"
             shift
             ;;
+        --sdkconfig)
+            need_value "$1" "${2-}"
+            SDKCONFIG="$2"
+            shift 2
+            ;;
+        --sdkconfig=*)
+            SDKCONFIG="${1#*=}"
+            [[ -n "$SDKCONFIG" ]] || die "--sdkconfig requires a value"
+            shift
+            ;;
         --build)
             BUILD=1
             shift
@@ -278,6 +289,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$REPO_DIR"
+mkdir -p "$(dirname "$SDKCONFIG")"
 
 if ! command -v idf.py >/dev/null 2>&1; then
     if [[ -n "$IDF_EXPORT" ]]; then
@@ -304,7 +316,7 @@ add_update CONFIG_PARTITION_TABLE_CUSTOM_FILENAME string "partitions_ota.csv"
 add_update CONFIG_PARTITION_TABLE_FILENAME string "partitions_ota.csv"
 
 run_idf() {
-    idf.py -B "$BUILD_DIR" "$@"
+    idf.py -B "$BUILD_DIR" -DSDKCONFIG="$SDKCONFIG" "$@"
 }
 
 if [[ ! -f "$SDKCONFIG" ]]; then

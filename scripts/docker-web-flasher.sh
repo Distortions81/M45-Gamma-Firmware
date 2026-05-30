@@ -128,6 +128,7 @@ fi
 RUN_ARGS=(
     --rm
     --env HOME=/tmp/m45-home
+    --env M45_SDKCONFIG=/tmp/m45-sdkconfig
     --volume "$REPO_DIR:$REPO_DIR"
     --workdir "$REPO_DIR"
     --user "$(id -u):$(id -g)"

@@ -459,7 +459,7 @@ static bool ota_factory_app_range(const uint8_t *table, size_t *image_offset,
             break;
         }
         if (entry[0] != 0xaa || entry[1] != 0x50) {
-            continue;
+            return false;
         }
         if (entry[2] != ESP_PARTITION_TYPE_APP) {
             continue;
@@ -2412,6 +2412,7 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     int chunks = 0;
     esp_ota_handle_t ota_handle = 0;
     bool ota_started = false;
+    bool factory_table_checked = false;
 
     while (remaining > 0) {
         const int recv_len = httpd_req_recv(req, (char *)buf,
@@ -2437,7 +2438,7 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
             image_size = (size_t)req->content_len;
         }
 
-        if (image_offset == SIZE_MAX && chunk_end > OTA_FACTORY_TABLE_OFFSET &&
+        if (!factory_table_checked && chunk_end > OTA_FACTORY_TABLE_OFFSET &&
             table_bytes < OTA_FACTORY_TABLE_SIZE) {
             size_t copy_start =
                 chunk_start > OTA_FACTORY_TABLE_OFFSET ? chunk_start : OTA_FACTORY_TABLE_OFFSET;
@@ -2452,13 +2453,29 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
                     table_bytes += copy_end - copy_start;
                 }
             }
-            if (table_bytes >= OTA_FACTORY_TABLE_SIZE &&
-                !ota_factory_app_range(partition_table, &image_offset, &image_size)) {
-                if (ota_started) {
-                    esp_ota_abort(ota_handle);
+            if (table_bytes >= OTA_FACTORY_TABLE_SIZE) {
+                factory_table_checked = true;
+                size_t factory_image_offset = SIZE_MAX;
+                size_t factory_image_size = 0;
+                if (ota_factory_app_range(partition_table, &factory_image_offset,
+                                          &factory_image_size)) {
+                    if (factory_image_offset > 0) {
+                        if (ota_started) {
+                            esp_ota_abort(ota_handle);
+                            ota_handle = 0;
+                            ota_started = false;
+                            written = 0;
+                        }
+                        image_offset = factory_image_offset;
+                        image_size = factory_image_size;
+                        ESP_LOGI(TAG, "OTA factory image app at 0x%x size 0x%x",
+                                 (unsigned)image_offset, (unsigned)image_size);
+                    }
+                } else if (image_offset == SIZE_MAX) {
+                    free(buf);
+                    return send_json_error(req, "400 Bad Request",
+                                           "unsupported firmware image");
                 }
-                free(buf);
-                return send_json_error(req, "400 Bad Request", "unsupported firmware image");
             }
         }
 
@@ -2510,9 +2527,18 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     if (!ota_started || written == 0) {
         return send_json_error(req, "400 Bad Request", "empty app image");
     }
-    if (esp_ota_end(ota_handle) != ESP_OK ||
-        esp_ota_set_boot_partition(ota_partition) != ESP_OK) {
-        return send_json_error(req, "500 Internal Server Error", "OTA validation failed");
+    esp_err_t err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        char message[96];
+        snprintf(message, sizeof(message), "OTA validation failed: %s", esp_err_to_name(err));
+        return send_json_error(req, "500 Internal Server Error", message);
+    }
+    err = esp_ota_set_boot_partition(ota_partition);
+    if (err != ESP_OK) {
+        char message[96];
+        snprintf(message, sizeof(message), "OTA boot selection failed: %s",
+                 esp_err_to_name(err));
+        return send_json_error(req, "500 Internal Server Error", message);
     }
     if (xTaskCreate(reboot_task, "ota_reboot", 2048, NULL,
                     tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
