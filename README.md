@@ -60,6 +60,16 @@ artifacts are written to `build/docker/`, including:
 Docker builds use repository defaults and do not embed local Wi-Fi or pool
 settings. Configure Wi-Fi and mining from the first boot setup page.
 
+To produce local OTA upload files:
+
+```sh
+scripts/docker-ota.sh
+```
+
+The OTA files are written to `dist/ota/` and include both accepted update
+formats, `M45-Firmware.bin` and `esp-miner-factory-602-*.bin`, plus SHA-256
+checksums.
+
 To produce the static web flasher package locally:
 
 ```sh
