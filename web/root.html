@@ -313,7 +313,8 @@ function syncDisplaySleep(){const timer=val('cfg-display-sleep-mode')==='timer',
 $('cfg-display-sleep-minutes-field').classList.toggle('hidden',!timer);m.disabled=!timer;
 if(timer&&Number(val('cfg-display-sleep-minutes'))<1)setVal('cfg-display-sleep-minutes',15)}
 function setLimitAmp(id,deciamps){setVal(id,n((Number(deciamps)||0)/10,1))}
-function limitAmpDa(id){return clamp(Math.round((Number(val(id))||0)*10),0,300)}
+function limitAmpDa(id){const maxDa=Math.round((Number($(id).max)||40)*10);
+return clamp(Math.round((Number(val(id))||0)*10),0,maxDa)}
 function setLimitFields(c={}){
 setVal('limit-input-voltage-min',c.limit_input_voltage_min_mv??LIMIT_DEFAULTS.inputMin);
 setVal('limit-input-voltage-expected-min',c.limit_input_voltage_expected_min_mv??LIMIT_DEFAULTS.inputExpectedMin);
