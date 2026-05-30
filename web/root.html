@@ -369,7 +369,7 @@ const on=$('cfg-overclock-enabled').checked;cb.disabled=!on;
 if(!cb.checked){note.textContent='Off';return}
 const extra=s&&Number.isFinite(num(s.voltage_temp_compensation_mv))?num(s.voltage_temp_compensation_mv):NaN;
 const temp=s&&Number.isFinite(num(s.asic_temp_c))&&num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN;
-note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`+${n(extra,0)} mV now at ${n(temp,1)} C`:'25-60 C: +5.5 mV/C; off outside 25-70 C'}
+note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`${extra>0?'+':''}${n(extra,0)} mV now at ${n(temp,1)} C`:'25-70 C: +/-5.5 mV/C from 60 C; off outside'}
 function syncOverclockEnabled(){const on=$('cfg-overclock-enabled').checked;
 ['oc-preset','oc-voltage-offset','oc-temp-compensation','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on);
 syncTempCompensationNote();syncOverclockWarning()}

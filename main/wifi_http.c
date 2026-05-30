@@ -1280,7 +1280,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         fan_auto ? m45_config_effective_fan_target_temp_c(config) : M45_FAN_TARGET_DEFAULT_C;
     const float asic_temp_c = g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg;
     const uint16_t voltage_base_mv = m45_config_effective_asic_voltage_mv(config);
-    const uint16_t voltage_compensation_mv =
+    const int16_t voltage_compensation_mv =
         m45_config_asic_voltage_temp_compensation_mv(config, asic_temp_c);
     const uint16_t voltage_target_mv =
         m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
@@ -1377,7 +1377,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"voltage_mv\":%u,"
                  "\"voltage_base_mv\":%u,"
                  "\"voltage_temp_compensation_enabled\":%s,"
-                 "\"voltage_temp_compensation_mv\":%u,"
+                 "\"voltage_temp_compensation_mv\":%d,"
                  "\"overclock_enabled\":%s,"
                  "\"asic_temp_c\":%.1f,"
                  "\"fan_percent\":%.1f,"

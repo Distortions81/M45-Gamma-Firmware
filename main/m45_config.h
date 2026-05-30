@@ -109,8 +109,8 @@ uint16_t m45_config_effective_pool_difficulty(const m45_config_t *config,
                                               uint8_t asic_count);
 uint16_t m45_config_effective_asic_frequency_mhz(const m45_config_t *config);
 uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config);
-uint16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
-                                                      float asic_temp_c);
+int16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
+                                                     float asic_temp_c);
 uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *config,
                                                        float asic_temp_c);
 uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config);

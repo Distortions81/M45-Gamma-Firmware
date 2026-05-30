@@ -753,39 +753,54 @@ uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config)
                                      : CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
 }
 
-uint16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
-                                                      float asic_temp_c)
+int16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
+                                                     float asic_temp_c)
 {
     const m45_config_t *active = config != NULL ? config : &g_config;
     if (!active->overclock_enabled || !active->asic_voltage_temp_compensation_enabled ||
         !isfinite(asic_temp_c) || asic_temp_c < M45_ASIC_TEMP_COMP_MIN_C ||
-        asic_temp_c > M45_ASIC_TEMP_COMP_MAX_C ||
-        asic_temp_c >= M45_ASIC_TEMP_COMP_REFERENCE_C) {
+        asic_temp_c > M45_ASIC_TEMP_COMP_MAX_C) {
         return 0;
     }
 
     const float extra_mv =
         (M45_ASIC_TEMP_COMP_REFERENCE_C - asic_temp_c) * M45_ASIC_TEMP_COMP_MV_PER_C;
-    const float stepped_mv =
-        lroundf(extra_mv / M45_ASIC_TEMP_COMP_STEP_MV) * M45_ASIC_TEMP_COMP_STEP_MV;
+    const int32_t stepped_mv =
+        lroundf(extra_mv / M45_ASIC_TEMP_COMP_STEP_MV) * (int32_t)M45_ASIC_TEMP_COMP_STEP_MV;
     const uint16_t base_mv = m45_config_effective_asic_voltage_mv(active);
-    if (base_mv >= M45_ASIC_VOLTAGE_MAX_MV) {
-        return 0;
+    const int32_t min_target_mv =
+        active->safety_asic_voltage_min_mv > M45_ASIC_VOLTAGE_MIN_MV
+            ? active->safety_asic_voltage_min_mv
+            : M45_ASIC_VOLTAGE_MIN_MV;
+    const int32_t max_target_mv =
+        active->safety_asic_voltage_max_mv <= M45_ASIC_VOLTAGE_MAX_MV
+            ? (int32_t)active->safety_asic_voltage_max_mv - 1
+            : M45_ASIC_VOLTAGE_MAX_MV;
+
+    if (stepped_mv > 0) {
+        const int32_t available_mv = max_target_mv - (int32_t)base_mv;
+        if (available_mv <= 0) {
+            return 0;
+        }
+        return (int16_t)(stepped_mv > available_mv ? available_mv : stepped_mv);
     }
-    const uint32_t available_mv = M45_ASIC_VOLTAGE_MAX_MV - base_mv;
-    if (stepped_mv > (float)available_mv) {
-        return (uint16_t)available_mv;
+    if (stepped_mv < 0) {
+        const int32_t available_mv = min_target_mv - (int32_t)base_mv;
+        if (available_mv >= 0) {
+            return 0;
+        }
+        return (int16_t)(stepped_mv < available_mv ? available_mv : stepped_mv);
     }
-    return stepped_mv > UINT16_MAX ? UINT16_MAX : (uint16_t)stepped_mv;
+    return 0;
 }
 
 uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *config,
                                                        float asic_temp_c)
 {
     const uint16_t base_mv = m45_config_effective_asic_voltage_mv(config);
-    const uint16_t compensation_mv =
+    const int16_t compensation_mv =
         m45_config_asic_voltage_temp_compensation_mv(config, asic_temp_c);
-    const uint32_t target_mv = (uint32_t)base_mv + compensation_mv;
+    const int32_t target_mv = (int32_t)base_mv + compensation_mv;
     if (target_mv > M45_ASIC_VOLTAGE_MAX_MV) {
         return M45_ASIC_VOLTAGE_MAX_MV;
     }

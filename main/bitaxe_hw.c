@@ -637,11 +637,11 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
     const bool have_startup_temp = read_asic_temp_for_voltage(state, &asic_temp_c);
     const uint16_t voltage_mv =
         m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
-    const uint16_t compensation_mv =
+    const int16_t compensation_mv =
         m45_config_asic_voltage_temp_compensation_mv(config, asic_temp_c);
     const float volts = voltage_mv / 1000.0f;
-    if (compensation_mv > 0) {
-        ESP_LOGI(TAG, "ASIC temp %.1f C adds %u mV voltage compensation", asic_temp_c,
+    if (compensation_mv != 0) {
+        ESP_LOGI(TAG, "ASIC temp %.1f C applies %+d mV voltage compensation", asic_temp_c,
                  compensation_mv);
     } else if (config->overclock_enabled && config->asic_voltage_temp_compensation_enabled &&
                !have_startup_temp) {

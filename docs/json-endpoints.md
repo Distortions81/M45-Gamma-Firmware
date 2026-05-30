@@ -41,7 +41,7 @@ Response fields:
 | `frequency_mhz`, `hashrate_ghs`, `hashrate_nominal_ghs` | number | Current clock and hashrate. |
 | `domain_hashrate_ghs`, `domain_hashrates_ghs` | number/array | Domain hashrate totals. |
 | `asic_error_rate_percent`, `expected_hashrate_ghs` | number | Performance estimates. |
-| `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. |
+| `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. `voltage_temp_compensation_mv` is signed relative to the base voltage. |
 | `overclock_enabled` | boolean | Saved overclock enable state. |
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
