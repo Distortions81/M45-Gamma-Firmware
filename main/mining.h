@@ -12,8 +12,6 @@
 typedef struct {
     char *job_id;
     char *prev_block_hash;
-    char *coinbase_1;
-    char *coinbase_2;
     uint8_t prev_block_hash_bin[HASH_SIZE];
     uint8_t *coinbase_1_bin;
     size_t coinbase_1_len;
@@ -35,6 +33,9 @@ typedef struct {
     uint32_t ntime;
     uint32_t target;
     uint32_t starting_nonce;
+    uint8_t header_prefix[76];
+    char ntime_hex[9];
+    double block_diff;
 
     uint8_t num_midstates;
     uint8_t midstate[32];

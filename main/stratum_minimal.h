@@ -52,6 +52,10 @@ typedef struct {
     double best_diff;
     double pool_diff;
     uint32_t response_time_ms;
+    uint64_t share_submit_us;
+    uint64_t share_submit_max_us;
+    uint64_t share_write_us;
+    uint64_t share_write_max_us;
     char pool_host[M45_POOL_HOST_MAX + 1];
     uint16_t pool_port;
     bool using_backup_pool;

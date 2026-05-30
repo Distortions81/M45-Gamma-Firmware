@@ -47,6 +47,7 @@ Response fields:
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power and fault state. |
 | `pool`, `pool_port`, `pool_using_backup`, `stratum_connected`, `stratum_connected_seconds`, `stratum_response_ms` | mixed | Pool connection state. |
+| `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us` | number | Native M45 share-submit timing in microseconds. |
 | `work_received`, `shares_accepted`, `shares_rejected`, `valid_nonces`, `nonce_errors` | number | Mining counters. |
 | `best_diff`, `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Difficulty state. |
 | `payout_status`, `payout_percent_x100` | string/number | Coinbase payout detection. |

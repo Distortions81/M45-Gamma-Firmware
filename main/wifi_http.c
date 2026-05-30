@@ -46,9 +46,9 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 9700
+#define STATUS_JSON_BUFFER_SIZE 9900
 #else
-#define STATUS_JSON_BUFFER_SIZE 8400
+#define STATUS_JSON_BUFFER_SIZE 8600
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 3800
 #define M45_DEVICE_NAME "M45-Bitaxe"
@@ -1401,6 +1401,10 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"stratum_connected\":%s,"
                  "\"stratum_connected_seconds\":%lu,"
                  "\"stratum_response_ms\":%lu,"
+                 "\"stratum_share_submit_us\":%" PRIu64 ","
+                 "\"stratum_share_submit_max_us\":%" PRIu64 ","
+                 "\"stratum_share_write_us\":%" PRIu64 ","
+                 "\"stratum_share_write_max_us\":%" PRIu64 ","
                  "\"work_received\":%lu,"
                  "\"shares_accepted\":%lu,"
                  "\"shares_rejected\":%lu,"
@@ -1471,6 +1475,8 @@ static esp_err_t status_handler(httpd_req_t *req)
                  stats.using_backup_pool ? "true" : "false",
                  stats.connected ? "true" : "false",
                  (unsigned long)stats.connected_seconds, (unsigned long)stats.response_time_ms,
+                 stats.share_submit_us, stats.share_submit_max_us,
+                 stats.share_write_us, stats.share_write_max_us,
                  (unsigned long)stats.work_received,
                  (unsigned long)stats.accepted, (unsigned long)stats.rejected,
                  (unsigned long)stats.valid_nonces, (unsigned long)stats.nonce_errors,

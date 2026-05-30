@@ -84,3 +84,10 @@ option(M45_ASIC_LOSS_METRICS "Build ASIC feed/RX loss instrumentation into statu
 if(M45_ASIC_LOSS_METRICS)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE M45_ASIC_LOSS_METRICS=1)
 endif()
+
+option(M45_STRATUM_FAST_PATHS "Use default-on fast Stratum JSON and hex hot paths" ON)
+if(M45_STRATUM_FAST_PATHS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE M45_STRATUM_FAST_PATHS=1)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE M45_STRATUM_FAST_PATHS=0)
+endif()

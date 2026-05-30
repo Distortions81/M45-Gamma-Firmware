@@ -3,11 +3,14 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 
 #include "bitaxe_hw.h"
 #include "bm1370.h"
@@ -25,6 +28,10 @@
 #include "mining.h"
 #include "utils.h"
 #include "wifi_http.h"
+
+#ifndef M45_STRATUM_FAST_PATHS
+#define M45_STRATUM_FAST_PATHS 1
+#endif
 
 #define WORK_QUEUE_DEPTH 4
 #define MAX_EXTRANONCE2_LEN 32
@@ -115,6 +122,10 @@ static atomic_uint g_rejected;
 static atomic_uint g_valid_nonces;
 static atomic_uint g_nonce_errors;
 static atomic_uint g_response_time_ms;
+static atomic_ullong g_share_submit_us;
+static atomic_ullong g_share_submit_max_us;
+static atomic_ullong g_share_write_us;
+static atomic_ullong g_share_write_max_us;
 static atomic_uint g_payout_status;
 static atomic_uint g_payout_percent_x100;
 static atomic_ullong g_connected_since_us;
@@ -196,6 +207,7 @@ typedef struct {
 static bool stratum_runtime_ready(void);
 static uint32_t reset_work_state(bool queue_marker);
 static void set_payout_status(uint8_t status, uint16_t percent_x100);
+static void stratum_enable_tcp_nodelay(esp_transport_handle_t transport);
 
 static double nominal_hashrate_hs(void)
 {
@@ -976,6 +988,22 @@ static void metric_record_rx_wait(uint64_t duration_us, bool timeout_like)
 #define metric_record_rx_wait(duration_us, timeout_like) ((void)0)
 #endif
 
+static void atomic_max_u64(atomic_ullong *target, uint64_t value)
+{
+    unsigned long long current = atomic_load(target);
+    while (value > current &&
+           !atomic_compare_exchange_weak(target, &current, (unsigned long long)value)) {
+    }
+}
+
+static void record_share_submit_timing(uint64_t submit_us, uint64_t write_us)
+{
+    atomic_store(&g_share_submit_us, (unsigned long long)submit_us);
+    atomic_store(&g_share_write_us, (unsigned long long)write_us);
+    atomic_max_u64(&g_share_submit_max_us, submit_us);
+    atomic_max_u64(&g_share_write_max_us, write_us);
+}
+
 static int next_uid(void)
 {
     taskENTER_CRITICAL(&g_uid_mux);
@@ -1211,6 +1239,7 @@ static void stratum_primary_probe_task(void *arg)
         stratum_connect_host_for_endpoint(&probe, connect_host, sizeof(connect_host));
         if (esp_transport_connect(transport, connect_host, probe.port,
                                   TRANSPORT_TIMEOUT_MS) >= 0) {
+            stratum_enable_tcp_nodelay(transport);
             reachable = true;
             esp_transport_close(transport);
         }
@@ -1267,6 +1296,20 @@ static void stratum_maybe_probe_primary_pool(void)
                     &g_primary_probe_args, 4, NULL) != pdPASS) {
         atomic_store(&g_primary_probe_in_progress, false);
         ESP_LOGW(TAG, "failed to start primary pool probe");
+    }
+}
+
+static void stratum_enable_tcp_nodelay(esp_transport_handle_t transport)
+{
+    const int sock = esp_transport_get_socket(transport);
+    if (sock < 0) {
+        ESP_LOGW(TAG, "TCP_NODELAY skipped; no socket");
+        return;
+    }
+
+    const int enabled = 1;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) != 0) {
+        ESP_LOGW(TAG, "TCP_NODELAY failed errno=%d", errno);
     }
 }
 
@@ -1332,12 +1375,55 @@ static bool stratum_append_text(char *dest, size_t dest_size, size_t *offset,
     return true;
 }
 
+static bool stratum_append_raw(char *dest, size_t dest_size, size_t *offset,
+                               const char *text, size_t len)
+{
+    if (dest_size == 0 || offset == NULL || *offset >= dest_size || text == NULL) {
+        return false;
+    }
+    if (len >= dest_size - *offset) {
+        return false;
+    }
+    memcpy(dest + *offset, text, len);
+    *offset += len;
+    dest[*offset] = '\0';
+    return true;
+}
+
 static bool stratum_append_int(char *dest, size_t dest_size, size_t *offset, int value)
 {
     char text[16];
     snprintf(text, sizeof(text), "%d", value);
     return stratum_append_text(dest, dest_size, offset, text);
 }
+
+static bool stratum_append_json_string(char *dest, size_t dest_size, size_t *offset,
+                                       const char *text);
+
+#if M45_STRATUM_FAST_PATHS
+static bool stratum_append_json_string_fast(char *dest, size_t dest_size, size_t *offset,
+                                            const char *text)
+{
+    if (text == NULL) {
+        text = "";
+    }
+
+    const char *cursor = text;
+    while (*cursor != '\0') {
+        const unsigned char ch = (unsigned char)*cursor++;
+        if (ch < 0x20 || ch == '"' || ch == '\\') {
+            return stratum_append_json_string(dest, dest_size, offset, text);
+        }
+    }
+
+    const size_t len = strlen(text);
+    return stratum_append_raw(dest, dest_size, offset, "\"", 1) &&
+           stratum_append_raw(dest, dest_size, offset, text, len) &&
+           stratum_append_raw(dest, dest_size, offset, "\"", 1);
+}
+#else
+#define stratum_append_json_string_fast stratum_append_json_string
+#endif
 
 static bool stratum_append_json_string(char *dest, size_t dest_size, size_t *offset,
                                        const char *text)
@@ -1430,11 +1516,11 @@ static int stratum_send_authorize(esp_transport_handle_t transport)
         !stratum_append_int(msg, sizeof(msg), &offset, STRATUM_ID_AUTHORIZE) ||
         !stratum_append_text(msg, sizeof(msg), &offset,
                              ",\"method\":\"mining.authorize\",\"params\":[") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset,
-                                    g_state->SYSTEM_MODULE.pool_user) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset,
+                                         g_state->SYSTEM_MODULE.pool_user) ||
         !stratum_append_text(msg, sizeof(msg), &offset, ",") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset,
-                                    g_state->SYSTEM_MODULE.pool_pass) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset,
+                                         g_state->SYSTEM_MODULE.pool_pass) ||
         !stratum_append_text(msg, sizeof(msg), &offset, "]}\n")) {
         ESP_LOGE(TAG, "stratum authorize format overflow");
         return -1;
@@ -1468,10 +1554,13 @@ static esp_err_t rx_buffer_reserve(size_t needed)
     return ESP_OK;
 }
 
-static char *receive_jsonrpc_line(esp_transport_handle_t transport)
+static char *receive_jsonrpc_line(esp_transport_handle_t transport, size_t *consumed_len)
 {
     if (rx_buffer_reserve(STRATUM_BUFFER_SIZE) != ESP_OK) {
         return NULL;
+    }
+    if (consumed_len != NULL) {
+        *consumed_len = 0;
     }
 
     uint64_t last_activity_us = (uint64_t)esp_timer_get_time();
@@ -1514,18 +1603,33 @@ static char *receive_jsonrpc_line(esp_transport_handle_t transport)
 
     char *newline = memchr(g_rx_buffer, '\n', g_rx_buffer_len);
     size_t line_len = (size_t)(newline - g_rx_buffer);
+    const size_t consumed = line_len + 1U;
     if (line_len > 0 && g_rx_buffer[line_len - 1] == '\r') {
         --line_len;
     }
 
-    char *line = strndup(g_rx_buffer, line_len);
-    const size_t consumed = (size_t)(newline - g_rx_buffer) + 1;
+    g_rx_buffer[line_len] = '\0';
+    if (consumed_len != NULL) {
+        *consumed_len = consumed;
+    }
+    return g_rx_buffer;
+}
+
+static void consume_jsonrpc_line(size_t consumed)
+{
+    if (g_rx_buffer == NULL || consumed == 0) {
+        return;
+    }
+    if (consumed > g_rx_buffer_len) {
+        g_rx_buffer_len = 0;
+        g_rx_buffer[0] = '\0';
+        return;
+    }
+
     const size_t remaining = g_rx_buffer_len - consumed;
     memmove(g_rx_buffer, g_rx_buffer + consumed, remaining);
     g_rx_buffer_len = remaining;
     g_rx_buffer[g_rx_buffer_len] = '\0';
-
-    return line;
 }
 
 static bool payout_read_bytes(coinbase_reader_t *reader, size_t len, const uint8_t **out)
@@ -2025,42 +2129,64 @@ static bool array_string(cJSON *array, int index, const char **out)
     return true;
 }
 
-static char *dup_array_string(cJSON *array, int index)
+static int hex_value_checked(char ch)
 {
-    const char *value = NULL;
-    if (!array_string(array, index, &value)) {
-        return NULL;
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
     }
-    return strdup(value);
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
 }
 
-static bool hex_char_valid(char ch)
+static bool decode_hex_bytes(const char *hex, size_t hex_len, uint8_t *out,
+                             size_t out_len)
 {
-    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
-           (ch >= 'A' && ch <= 'F');
-}
-
-static bool hex_string_valid(const char *hex)
-{
-    if (hex == NULL) {
+    if (hex == NULL || (out_len > 0 && out == NULL) || hex_len != out_len * 2U) {
         return false;
     }
-    for (const char *cursor = hex; *cursor != '\0'; ++cursor) {
-        if (!hex_char_valid(*cursor)) {
+
+    for (size_t i = 0; i < out_len; ++i) {
+        const int hi = hex_value_checked(hex[i * 2U]);
+        const int lo = hex_value_checked(hex[(i * 2U) + 1U]);
+        if (hi < 0 || lo < 0) {
             return false;
         }
+        out[i] = (uint8_t)((hi << 4) | lo);
     }
     return true;
 }
 
-static bool decode_hex_alloc_limited(const char *hex, size_t max_bytes, uint8_t **out,
-                                     size_t *out_len)
+static bool parse_hex_u32_text(const char *hex, size_t hex_len, uint32_t *out)
+{
+    if (hex == NULL || out == NULL || hex_len == 0 || hex_len > 8) {
+        return false;
+    }
+
+    uint32_t value = 0;
+    for (size_t i = 0; i < hex_len; ++i) {
+        const int digit = hex_value_checked(hex[i]);
+        if (digit < 0) {
+            return false;
+        }
+        value = (value << 4) | (uint32_t)digit;
+    }
+    *out = value;
+    return true;
+}
+
+static bool decode_hex_alloc_limited_span(const char *hex, size_t hex_len,
+                                          size_t max_bytes, uint8_t **out,
+                                          size_t *out_len)
 {
     if (hex == NULL || out == NULL || out_len == NULL) {
         return false;
     }
-    const size_t hex_len = strlen(hex);
-    if ((hex_len % 2U) != 0 || !hex_string_valid(hex)) {
+    if ((hex_len % 2U) != 0) {
         return false;
     }
 
@@ -2075,7 +2201,7 @@ static bool decode_hex_alloc_limited(const char *hex, size_t max_bytes, uint8_t 
         if (bin == NULL) {
             return false;
         }
-        if (hex2bin(hex, bin, bin_len) != bin_len) {
+        if (!decode_hex_bytes(hex, hex_len, bin, bin_len)) {
             free(bin);
             return false;
         }
@@ -2084,6 +2210,12 @@ static bool decode_hex_alloc_limited(const char *hex, size_t max_bytes, uint8_t 
     *out = bin;
     *out_len = bin_len;
     return true;
+}
+
+static bool decode_hex_alloc_limited(const char *hex, size_t max_bytes, uint8_t **out,
+                                     size_t *out_len)
+{
+    return decode_hex_alloc_limited_span(hex, strlen(hex), max_bytes, out, out_len);
 }
 
 static mining_notify *parse_mining_notify(cJSON *params)
@@ -2105,27 +2237,34 @@ static mining_notify *parse_mining_notify(cJSON *params)
         return NULL;
     }
 
+    const char *job_id = NULL;
+    const char *prev_block_hash = NULL;
+    const char *coinbase_1 = NULL;
+    const char *coinbase_2 = NULL;
+    if (!array_string(params, 0, &job_id) ||
+        !array_string(params, 1, &prev_block_hash) ||
+        !array_string(params, 2, &coinbase_1) ||
+        !array_string(params, 3, &coinbase_2)) {
+        return NULL;
+    }
+
     mining_notify *work = calloc(1, sizeof(*work));
     if (work == NULL) {
         return NULL;
     }
 
-    work->job_id = dup_array_string(params, 0);
-    work->prev_block_hash = dup_array_string(params, 1);
-    work->coinbase_1 = dup_array_string(params, 2);
-    work->coinbase_2 = dup_array_string(params, 3);
-    if (work->job_id == NULL || work->prev_block_hash == NULL || work->coinbase_1 == NULL ||
-        work->coinbase_2 == NULL) {
+    work->job_id = strdup(job_id);
+    work->prev_block_hash = strdup(prev_block_hash);
+    if (work->job_id == NULL || work->prev_block_hash == NULL) {
         free_mining_notify(work);
         return NULL;
     }
-    if (strlen(work->prev_block_hash) != HASH_SIZE * 2 ||
-        !hex_string_valid(work->prev_block_hash) ||
-        hex2bin(work->prev_block_hash, work->prev_block_hash_bin,
-                sizeof(work->prev_block_hash_bin)) != HASH_SIZE ||
-        !decode_hex_alloc_limited(work->coinbase_1, STRATUM_MAX_COINBASE_BYTES,
+    if (!decode_hex_bytes(prev_block_hash, strlen(prev_block_hash),
+                          work->prev_block_hash_bin,
+                          sizeof(work->prev_block_hash_bin)) ||
+        !decode_hex_alloc_limited(coinbase_1, STRATUM_MAX_COINBASE_BYTES,
                                   &work->coinbase_1_bin, &work->coinbase_1_len) ||
-        !decode_hex_alloc_limited(work->coinbase_2, STRATUM_MAX_COINBASE_BYTES,
+        !decode_hex_alloc_limited(coinbase_2, STRATUM_MAX_COINBASE_BYTES,
                                   &work->coinbase_2_bin, &work->coinbase_2_len) ||
         work->coinbase_1_len + work->coinbase_2_len >
             STRATUM_MAX_COINBASE_BYTES - (MAX_EXTRANONCE2_LEN * 2U)) {
@@ -2150,10 +2289,8 @@ static mining_notify *parse_mining_notify(cJSON *params)
             free_mining_notify(work);
             return NULL;
         }
-        if (strlen(branch->valuestring) != HASH_SIZE * 2 ||
-            !hex_string_valid(branch->valuestring) ||
-            hex2bin(branch->valuestring, work->merkle_branches + (i * HASH_SIZE),
-                    HASH_SIZE) != HASH_SIZE) {
+        if (!decode_hex_bytes(branch->valuestring, strlen(branch->valuestring),
+                              work->merkle_branches + (i * HASH_SIZE), HASH_SIZE)) {
             ESP_LOGE(TAG, "invalid merkle branch hex");
             free_mining_notify(work);
             return NULL;
@@ -2169,11 +2306,13 @@ static mining_notify *parse_mining_notify(cJSON *params)
         return NULL;
     }
 
-    work->version = strtoul(version, NULL, 16);
-    work->target = strtoul(nbits, NULL, 16);
-    work->ntime = strtoul(ntime, NULL, 16);
+    if (!parse_hex_u32_text(version, strlen(version), &work->version) ||
+        !parse_hex_u32_text(nbits, strlen(nbits), &work->target) ||
+        !parse_hex_u32_text(ntime, strlen(ntime), &work->ntime)) {
+        free_mining_notify(work);
+        return NULL;
+    }
     work->clean_jobs = cJSON_IsTrue(cJSON_GetArrayItem(params, cJSON_GetArraySize(params) - 1));
-    stratum_update_payout_from_notify(work);
     return work;
 }
 
@@ -2382,6 +2521,416 @@ static void handle_set_extranonce(cJSON *params)
     }
 }
 
+static void handle_mining_notify_work(mining_notify *work)
+{
+    if (work == NULL) {
+        return;
+    }
+
+    const bool new_block = stratum_note_current_block(work->prev_block_hash);
+    if (new_block) {
+        reset_work_state(true);
+    }
+    if (new_block || atomic_load(&g_payout_status) == STRATUM_PAYOUT_STATUS_UNCHECKED) {
+        stratum_update_payout_from_notify(work);
+    }
+    enqueue_work(work);
+}
+
+#if M45_STRATUM_FAST_PATHS
+typedef struct {
+    const char *ptr;
+    size_t len;
+} json_span_t;
+
+static void fast_json_skip_ws(const char **cursor)
+{
+    while (**cursor == ' ' || **cursor == '\t' || **cursor == '\r' ||
+           **cursor == '\n') {
+        ++(*cursor);
+    }
+}
+
+static bool fast_json_consume_char(const char **cursor, char expected)
+{
+    fast_json_skip_ws(cursor);
+    if (**cursor != expected) {
+        return false;
+    }
+    ++(*cursor);
+    return true;
+}
+
+static bool fast_json_parse_string_span(const char **cursor, json_span_t *out)
+{
+    fast_json_skip_ws(cursor);
+    if (**cursor != '"') {
+        return false;
+    }
+    const char *start = ++(*cursor);
+    while (**cursor != '\0') {
+        const unsigned char ch = (unsigned char)**cursor;
+        if (ch == '"') {
+            if (out != NULL) {
+                out->ptr = start;
+                out->len = (size_t)(*cursor - start);
+            }
+            ++(*cursor);
+            return true;
+        }
+        if (ch == '\\' || ch < 0x20) {
+            return false;
+        }
+        ++(*cursor);
+    }
+    return false;
+}
+
+static bool fast_json_parse_bool(const char **cursor, bool *out)
+{
+    fast_json_skip_ws(cursor);
+    if (strncmp(*cursor, "true", 4) == 0) {
+        *cursor += 4;
+        if (out != NULL) {
+            *out = true;
+        }
+        return true;
+    }
+    if (strncmp(*cursor, "false", 5) == 0) {
+        *cursor += 5;
+        if (out != NULL) {
+            *out = false;
+        }
+        return true;
+    }
+    return false;
+}
+
+static const char *fast_json_field_value(const char *line, const char *quoted_name)
+{
+    const char *field = strstr(line, quoted_name);
+    if (field == NULL) {
+        return NULL;
+    }
+
+    const char *cursor = field + strlen(quoted_name);
+    fast_json_skip_ws(&cursor);
+    if (*cursor != ':') {
+        return NULL;
+    }
+    ++cursor;
+    fast_json_skip_ws(&cursor);
+    return cursor;
+}
+
+static bool fast_json_method_is(const char *line, const char *method)
+{
+    const char *cursor = fast_json_field_value(line, "\"method\"");
+    json_span_t span = {0};
+    return cursor != NULL && fast_json_parse_string_span(&cursor, &span) &&
+           span.len == strlen(method) && memcmp(span.ptr, method, span.len) == 0;
+}
+
+static bool fast_json_parse_id(const char *line, int *out)
+{
+    const char *cursor = fast_json_field_value(line, "\"id\"");
+    if (cursor == NULL) {
+        return false;
+    }
+
+    char *end = NULL;
+    const long value = strtol(cursor, &end, 10);
+    if (end == cursor || value < INT_MIN || value > INT_MAX) {
+        return false;
+    }
+    if (out != NULL) {
+        *out = (int)value;
+    }
+    return true;
+}
+
+static char *fast_json_dup_span(json_span_t span)
+{
+    char *copy = malloc(span.len + 1U);
+    if (copy == NULL) {
+        return NULL;
+    }
+    memcpy(copy, span.ptr, span.len);
+    copy[span.len] = '\0';
+    return copy;
+}
+
+static bool fast_span_contains(json_span_t span, const char *needle)
+{
+    const size_t needle_len = strlen(needle);
+    if (needle_len == 0 || needle_len > span.len) {
+        return false;
+    }
+    for (size_t i = 0; i + needle_len <= span.len; ++i) {
+        if (memcmp(span.ptr + i, needle, needle_len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool fast_parse_response_success(const char *line, bool *success)
+{
+    const char *error = fast_json_field_value(line, "\"error\"");
+    if (error != NULL && strncmp(error, "null", 4) != 0) {
+        if (success != NULL) {
+            *success = false;
+        }
+        return true;
+    }
+
+    const char *result = fast_json_field_value(line, "\"result\"");
+    if (result == NULL) {
+        return false;
+    }
+    if (strncmp(result, "true", 4) == 0) {
+        if (success != NULL) {
+            *success = true;
+        }
+        return true;
+    }
+    if (strncmp(result, "false", 5) == 0 || strncmp(result, "null", 4) == 0) {
+        if (success != NULL) {
+            *success = false;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool fast_reject_reason(const char *line, json_span_t *reason)
+{
+    const char *cursor = fast_json_field_value(line, "\"reject-reason\"");
+    if (cursor != NULL && fast_json_parse_string_span(&cursor, reason)) {
+        return true;
+    }
+
+    cursor = fast_json_field_value(line, "\"error\"");
+    if (cursor == NULL || !fast_json_consume_char(&cursor, '[')) {
+        return false;
+    }
+
+    while (*cursor != '\0' && *cursor != ',') {
+        ++cursor;
+    }
+    if (*cursor != ',' || !fast_json_consume_char(&cursor, ',')) {
+        return false;
+    }
+    return fast_json_parse_string_span(&cursor, reason);
+}
+
+static void fast_log_rejected_share(const char *line)
+{
+    json_span_t reason = {
+        .ptr = "unknown",
+        .len = 7,
+    };
+    (void)fast_reject_reason(line, &reason);
+
+    const int len = reason.len > 160U ? 160 : (int)reason.len;
+    if (fast_span_contains(reason, "low difficulty share")) {
+        STRATUM_LOGI("share rejected: %.*s", len, reason.ptr);
+    } else {
+        ESP_LOGW(TAG, "share rejected: %.*s", len, reason.ptr);
+    }
+}
+
+static bool fast_handle_share_response(const char *line)
+{
+    if (fast_json_field_value(line, "\"method\"") != NULL) {
+        return false;
+    }
+
+    int message_id = -1;
+    bool success = false;
+    if (!fast_json_parse_id(line, &message_id) ||
+        message_id <= STRATUM_ID_EXTRANONCE_SUBSCRIBE ||
+        !fast_parse_response_success(line, &success) ||
+        !take_share_request(message_id)) {
+        return false;
+    }
+
+    uint32_t response_ms = 0;
+    if (take_response_request_ms(message_id, &response_ms)) {
+        atomic_store(&g_response_time_ms, response_ms);
+    }
+    if (success) {
+        atomic_fetch_add(&g_accepted, 1);
+        g_state->SYSTEM_MODULE.shares_accepted++;
+        STRATUM_LOGI("share accepted");
+    } else {
+        atomic_fetch_add(&g_rejected, 1);
+        g_state->SYSTEM_MODULE.shares_rejected++;
+        fast_log_rejected_share(line);
+    }
+    return true;
+}
+
+static mining_notify *parse_mining_notify_fast(const char *line)
+{
+    const char *cursor = fast_json_field_value(line, "\"params\"");
+    if (cursor == NULL || !fast_json_consume_char(&cursor, '[')) {
+        return NULL;
+    }
+
+    json_span_t job_id = {0};
+    json_span_t prev_block_hash = {0};
+    json_span_t coinbase_1 = {0};
+    json_span_t coinbase_2 = {0};
+    json_span_t branches[MAX_MERKLE_BRANCHES] = {0};
+    json_span_t version = {0};
+    json_span_t nbits = {0};
+    json_span_t ntime = {0};
+    size_t branch_count = 0;
+    bool clean_jobs = false;
+
+    if (!fast_json_parse_string_span(&cursor, &job_id) ||
+        !fast_json_consume_char(&cursor, ',') ||
+        !fast_json_parse_string_span(&cursor, &prev_block_hash) ||
+        !fast_json_consume_char(&cursor, ',') ||
+        !fast_json_parse_string_span(&cursor, &coinbase_1) ||
+        !fast_json_consume_char(&cursor, ',') ||
+        !fast_json_parse_string_span(&cursor, &coinbase_2) ||
+        !fast_json_consume_char(&cursor, ',') ||
+        !fast_json_consume_char(&cursor, '[')) {
+        return NULL;
+    }
+
+    fast_json_skip_ws(&cursor);
+    if (*cursor == ']') {
+        ++cursor;
+    } else {
+        while (true) {
+            if (branch_count >= MAX_MERKLE_BRANCHES ||
+                !fast_json_parse_string_span(&cursor, &branches[branch_count])) {
+                return NULL;
+            }
+            ++branch_count;
+            fast_json_skip_ws(&cursor);
+            if (*cursor == ',') {
+                ++cursor;
+                continue;
+            }
+            if (*cursor == ']') {
+                ++cursor;
+                break;
+            }
+            return NULL;
+        }
+    }
+
+    if (!fast_json_consume_char(&cursor, ',') ||
+        !fast_json_parse_string_span(&cursor, &version) ||
+        !fast_json_consume_char(&cursor, ',') ||
+        !fast_json_parse_string_span(&cursor, &nbits) ||
+        !fast_json_consume_char(&cursor, ',') ||
+        !fast_json_parse_string_span(&cursor, &ntime) ||
+        !fast_json_consume_char(&cursor, ',') ||
+        !fast_json_parse_bool(&cursor, &clean_jobs)) {
+        return NULL;
+    }
+
+    mining_notify *work = calloc(1, sizeof(*work));
+    if (work == NULL) {
+        return NULL;
+    }
+    work->job_id = fast_json_dup_span(job_id);
+    work->prev_block_hash = fast_json_dup_span(prev_block_hash);
+    if (work->job_id == NULL || work->prev_block_hash == NULL ||
+        !decode_hex_bytes(prev_block_hash.ptr, prev_block_hash.len,
+                          work->prev_block_hash_bin,
+                          sizeof(work->prev_block_hash_bin)) ||
+        !decode_hex_alloc_limited_span(coinbase_1.ptr, coinbase_1.len,
+                                       STRATUM_MAX_COINBASE_BYTES,
+                                       &work->coinbase_1_bin, &work->coinbase_1_len) ||
+        !decode_hex_alloc_limited_span(coinbase_2.ptr, coinbase_2.len,
+                                       STRATUM_MAX_COINBASE_BYTES,
+                                       &work->coinbase_2_bin, &work->coinbase_2_len) ||
+        work->coinbase_1_len + work->coinbase_2_len >
+            STRATUM_MAX_COINBASE_BYTES - (MAX_EXTRANONCE2_LEN * 2U) ||
+        !parse_hex_u32_text(version.ptr, version.len, &work->version) ||
+        !parse_hex_u32_text(nbits.ptr, nbits.len, &work->target) ||
+        !parse_hex_u32_text(ntime.ptr, ntime.len, &work->ntime)) {
+        free_mining_notify(work);
+        return NULL;
+    }
+
+    work->n_merkle_branches = branch_count;
+    if (branch_count > 0) {
+        work->merkle_branches = calloc(branch_count, HASH_SIZE);
+        if (work->merkle_branches == NULL) {
+            free_mining_notify(work);
+            return NULL;
+        }
+        for (size_t i = 0; i < branch_count; ++i) {
+            if (!decode_hex_bytes(branches[i].ptr, branches[i].len,
+                                  work->merkle_branches + (i * HASH_SIZE),
+                                  HASH_SIZE)) {
+                free_mining_notify(work);
+                return NULL;
+            }
+        }
+    }
+
+    work->clean_jobs = clean_jobs;
+    return work;
+}
+
+static bool fast_handle_mining_notify(const char *line)
+{
+    if (!fast_json_method_is(line, "mining.notify")) {
+        return false;
+    }
+
+    mining_notify *work = parse_mining_notify_fast(line);
+    if (work == NULL) {
+        return false;
+    }
+    handle_mining_notify_work(work);
+    return true;
+}
+
+static bool fast_handle_set_difficulty(const char *line)
+{
+    if (!fast_json_method_is(line, "mining.set_difficulty")) {
+        return false;
+    }
+
+    const char *cursor = fast_json_field_value(line, "\"params\"");
+    if (cursor == NULL || !fast_json_consume_char(&cursor, '[')) {
+        return false;
+    }
+
+    char *end = NULL;
+    const double pool_difficulty = strtod(cursor, &end);
+    if (end == cursor) {
+        return false;
+    }
+
+    const bool raised = set_pool_difficulty(pool_difficulty);
+    if (raised) {
+        reset_work_state(true);
+        ESP_LOGI(TAG, "cleared queued work for raised difficulty %.2f",
+                 current_pool_difficulty());
+    }
+    update_asic_job_difficulty(pool_difficulty);
+    STRATUM_LOGI("pool difficulty %.2f", current_pool_difficulty());
+    return true;
+}
+
+static bool fast_handle_stratum_line(const char *line)
+{
+    return fast_handle_share_response(line) ||
+           fast_handle_mining_notify(line) ||
+           fast_handle_set_difficulty(line);
+}
+#endif
+
 static void handle_stratum_method(cJSON *json, const char *method, int message_id,
                                   esp_transport_handle_t transport)
 {
@@ -2390,10 +2939,7 @@ static void handle_stratum_method(cJSON *json, const char *method, int message_i
     if (strcmp(method, "mining.notify") == 0) {
         mining_notify *work = parse_mining_notify(params);
         if (work != NULL) {
-            if (stratum_note_current_block(work->prev_block_hash)) {
-                reset_work_state(true);
-            }
-            enqueue_work(work);
+            handle_mining_notify_work(work);
         }
     } else if (strcmp(method, "mining.set_difficulty") == 0) {
         cJSON *difficulty = cJSON_GetArrayItem(params, 0);
@@ -2434,6 +2980,12 @@ static void handle_stratum_line(const char *line, esp_transport_handle_t transpo
 {
     STRATUM_LOGI("rx: %s", line);
 
+#if M45_STRATUM_FAST_PATHS
+    if (fast_handle_stratum_line(line)) {
+        return;
+    }
+#endif
+
     cJSON *json = cJSON_Parse(line);
     if (json == NULL) {
         ESP_LOGW(TAG, "invalid JSON from pool");
@@ -2458,9 +3010,9 @@ static void handle_stratum_line(const char *line, esp_transport_handle_t transpo
 
 static esp_err_t send_setup_messages(esp_transport_handle_t transport)
 {
-    if (stratum_writef(transport,
-                       "{\"id\":%d,\"method\":\"mining.configure\",\"params\":[[\"version-rolling\"],{\"version-rolling.mask\":\"ffffffff\"}]}\n",
-                       STRATUM_ID_CONFIGURE) < 0) {
+    if (stratum_write_message(
+            transport,
+            "{\"id\":1,\"method\":\"mining.configure\",\"params\":[[\"version-rolling\"],{\"version-rolling.mask\":\"ffffffff\"}]}\n") < 0) {
         return ESP_FAIL;
     }
     mark_response_request(STRATUM_ID_CONFIGURE);
@@ -2475,8 +3027,8 @@ static esp_err_t send_setup_messages(esp_transport_handle_t transport)
                             STRATUM_ID_SUBSCRIBE) ||
         !stratum_append_text(subscribe_msg, sizeof(subscribe_msg), &subscribe_offset,
                              ",\"method\":\"mining.subscribe\",\"params\":[") ||
-        !stratum_append_json_string(subscribe_msg, sizeof(subscribe_msg),
-                                    &subscribe_offset, miner_info) ||
+        !stratum_append_json_string_fast(subscribe_msg, sizeof(subscribe_msg),
+                                         &subscribe_offset, miner_info) ||
         !stratum_append_text(subscribe_msg, sizeof(subscribe_msg), &subscribe_offset,
                              "]}\n")) {
         ESP_LOGE(TAG, "stratum subscribe format overflow");
@@ -2489,9 +3041,16 @@ static esp_err_t send_setup_messages(esp_transport_handle_t transport)
     const uint16_t suggested_difficulty = configured_suggested_difficulty();
     set_pool_difficulty((double)suggested_difficulty);
     STRATUM_LOGI("suggest difficulty %u", suggested_difficulty);
-    if (stratum_writef(transport,
-                       "{\"id\":%d,\"method\":\"mining.suggest_difficulty\",\"params\":[%d]}\n",
-                       STRATUM_ID_SUGGEST_DIFFICULTY, (int)suggested_difficulty) < 0) {
+    char difficulty_msg[96];
+    size_t difficulty_offset = 0;
+    difficulty_msg[0] = '\0';
+    if (!stratum_append_text(difficulty_msg, sizeof(difficulty_msg), &difficulty_offset,
+                             "{\"id\":3,\"method\":\"mining.suggest_difficulty\",\"params\":[") ||
+        !stratum_append_int(difficulty_msg, sizeof(difficulty_msg), &difficulty_offset,
+                            (int)suggested_difficulty) ||
+        !stratum_append_text(difficulty_msg, sizeof(difficulty_msg), &difficulty_offset,
+                             "]}\n") ||
+        stratum_write_message(transport, difficulty_msg) < 0) {
         return ESP_FAIL;
     }
     mark_response_request(STRATUM_ID_SUGGEST_DIFFICULTY);
@@ -2499,9 +3058,9 @@ static esp_err_t send_setup_messages(esp_transport_handle_t transport)
         return ESP_FAIL;
     }
     mark_response_request(STRATUM_ID_AUTHORIZE);
-    if (stratum_writef(transport,
-                       "{\"id\":%d,\"method\":\"mining.extranonce.subscribe\",\"params\":[]}\n",
-                       STRATUM_ID_EXTRANONCE_SUBSCRIBE) < 0) {
+    if (stratum_write_message(
+            transport,
+            "{\"id\":5,\"method\":\"mining.extranonce.subscribe\",\"params\":[]}\n") < 0) {
         return ESP_FAIL;
     }
     mark_response_request(STRATUM_ID_EXTRANONCE_SUBSCRIBE);
@@ -2540,6 +3099,9 @@ static void stratum_rx_task(void *arg)
         reset_work_state(true);
         g_state->extranonce_2_len = 0;
         const int ret = esp_transport_connect(transport, connect_host, endpoint.port, 10000);
+        if (ret >= 0) {
+            stratum_enable_tcp_nodelay(transport);
+        }
         if (ret < 0 || send_setup_messages(transport) != ESP_OK) {
             ESP_LOGW(TAG, "stratum connect/setup failed");
             esp_transport_destroy(transport);
@@ -2569,14 +3131,15 @@ static void stratum_rx_task(void *arg)
                 break;
             }
 
-            char *line = receive_jsonrpc_line(transport);
+            size_t consumed_len = 0;
+            char *line = receive_jsonrpc_line(transport, &consumed_len);
             if (line == NULL) {
                 rotate_endpoint = true;
                 break;
             }
 
             handle_stratum_line(line, transport);
-            free(line);
+            consume_jsonrpc_line(consumed_len);
         }
 
         set_transport(NULL);
@@ -2807,45 +3370,49 @@ static void job_task(void *arg)
 }
 
 static int submit_share(esp_transport_handle_t transport, int request_id, const bm_job *job,
-                        uint32_t nonce, uint32_t version_bits)
+                        uint32_t nonce, uint32_t version_bits, uint64_t *write_us)
 {
     char msg[STRATUM_BUFFER_SIZE];
-    char ntime_hex[9];
     char nonce_hex[9];
     char version_bits_hex[9];
     size_t offset = 0;
 
-    snprintf(ntime_hex, sizeof(ntime_hex), "%08" PRIx32, job->ntime);
-    snprintf(nonce_hex, sizeof(nonce_hex), "%08" PRIx32, nonce);
-    snprintf(version_bits_hex, sizeof(version_bits_hex), "%08" PRIx32, version_bits);
+    uint32_to_hex8(nonce, nonce_hex);
+    uint32_to_hex8(version_bits, version_bits_hex);
     msg[0] = '\0';
 
     if (!stratum_append_text(msg, sizeof(msg), &offset, "{\"id\":") ||
         !stratum_append_int(msg, sizeof(msg), &offset, request_id) ||
         !stratum_append_text(msg, sizeof(msg), &offset,
                              ",\"method\":\"mining.submit\",\"params\":[") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset,
-                                    g_state->SYSTEM_MODULE.pool_user) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset,
+                                         g_state->SYSTEM_MODULE.pool_user) ||
         !stratum_append_text(msg, sizeof(msg), &offset, ",") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset, job->jobid) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset, job->jobid) ||
         !stratum_append_text(msg, sizeof(msg), &offset, ",") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset, job->extranonce2) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset, job->extranonce2) ||
         !stratum_append_text(msg, sizeof(msg), &offset, ",") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset, ntime_hex) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset, job->ntime_hex) ||
         !stratum_append_text(msg, sizeof(msg), &offset, ",") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset, nonce_hex) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset, nonce_hex) ||
         !stratum_append_text(msg, sizeof(msg), &offset, ",") ||
-        !stratum_append_json_string(msg, sizeof(msg), &offset, version_bits_hex) ||
+        !stratum_append_json_string_fast(msg, sizeof(msg), &offset, version_bits_hex) ||
         !stratum_append_text(msg, sizeof(msg), &offset, "]}\n")) {
         ESP_LOGE(TAG, "stratum submit format overflow");
         return -1;
     }
 
-    return stratum_write_message(transport, msg);
+    const uint64_t started_us = (uint64_t)esp_timer_get_time();
+    const int ret = stratum_write_message(transport, msg);
+    const uint64_t finished_us = (uint64_t)esp_timer_get_time();
+    if (write_us != NULL) {
+        *write_us = finished_us > started_us ? finished_us - started_us : 0;
+    }
+    return ret;
 }
 
 static int submit_share_current_transport(int request_id, const bm_job *job, uint32_t nonce,
-                                          uint32_t version_bits)
+                                          uint32_t version_bits, uint64_t *write_us)
 {
     if (g_transport_lock == NULL) {
         return STRATUM_SUBMIT_NO_TRANSPORT;
@@ -2855,7 +3422,7 @@ static int submit_share_current_transport(int request_id, const bm_job *job, uin
     esp_transport_handle_t transport = g_transport;
     int ret = STRATUM_SUBMIT_NO_TRANSPORT;
     if (transport != NULL) {
-        ret = submit_share(transport, request_id, job, nonce, version_bits);
+        ret = submit_share(transport, request_id, job, nonce, version_bits, write_us);
     }
     xSemaphoreGive(g_transport_lock);
     return ret;
@@ -2898,6 +3465,9 @@ static void result_task(void *arg)
 #ifdef M45_ASIC_LOSS_METRICS
         metric_inc(&g_metric_rx_nonce_results);
 #endif
+        const uint64_t nonce_result_us =
+            result->timestamp_us != 0 ? result->timestamp_us
+                                      : (uint64_t)esp_timer_get_time();
 
         const uint8_t job_id = result->job_id;
         bm_job job_snapshot = {0};
@@ -2945,7 +3515,7 @@ static void result_task(void *arg)
 
         atomic_fetch_add(&g_valid_nonces, 1);
         record_best_diff(diff);
-        const double block_diff = block_target_difficulty(job_snapshot.target);
+        const double block_diff = job_snapshot.block_diff;
         if (block_diff > 0.0 && diff >= block_diff) {
             record_block_alert(diff);
             ESP_LOGW(TAG, "BLOCK FOUND candidate diff=%.2f target=%.2f job=%s", diff,
@@ -2966,13 +3536,18 @@ static void result_task(void *arg)
 
         const uint32_t version_bits = result->rolled_version ^ job_snapshot.version;
         const int request_id = next_uid();
+        uint64_t write_us = 0;
         const int ret = submit_share_current_transport(request_id, &job_snapshot, result->nonce,
-                                                       version_bits);
+                                                       version_bits, &write_us);
         if (ret == STRATUM_SUBMIT_NO_TRANSPORT) {
             ESP_LOGW(TAG, "dropping share; no stratum transport");
         } else if (ret < 0) {
             ESP_LOGW(TAG, "share write failed errno=%d", errno);
         } else {
+            const uint64_t finished_us = (uint64_t)esp_timer_get_time();
+            const uint64_t submit_us =
+                finished_us > nonce_result_us ? finished_us - nonce_result_us : write_us;
+            record_share_submit_timing(submit_us, write_us);
             mark_share_request(request_id);
             mark_response_request(request_id);
             atomic_fetch_add(&g_submitted, 1);
@@ -2991,6 +3566,10 @@ esp_err_t stratum_minimal_start(GlobalState *state)
     atomic_store(&g_last_job_sent_us, 0);
     atomic_store(&g_work_paused, false);
     atomic_store(&g_response_time_ms, 0);
+    atomic_store(&g_share_submit_us, 0);
+    atomic_store(&g_share_submit_max_us, 0);
+    atomic_store(&g_share_write_us, 0);
+    atomic_store(&g_share_write_max_us, 0);
     set_payout_status(STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
     reset_hashrate_window();
     set_active_primary_pool_endpoint();
@@ -3010,7 +3589,7 @@ esp_err_t stratum_minimal_start(GlobalState *state)
         return monitor_err;
     }
 
-    if (xTaskCreate(stratum_rx_task, "stratum_rx", 8192, NULL, 5, NULL) != pdPASS ||
+    if (xTaskCreate(stratum_rx_task, "stratum_rx", 8192, NULL, 10, NULL) != pdPASS ||
         xTaskCreate(job_task, "asic_jobs", 8192, NULL, 18, NULL) != pdPASS ||
         xTaskCreate(result_task, "asic_result", 8192, NULL, 16, NULL) != pdPASS ||
         xTaskCreate(asic_hashrate_monitor_task, "asic_hashrate", 4096, NULL, 6, NULL) !=
@@ -3063,6 +3642,10 @@ void stratum_minimal_get_stats(stratum_minimal_stats_t *out)
     out->best_diff = current_best_diff();
     out->pool_diff = current_pool_difficulty();
     out->response_time_ms = atomic_load(&g_response_time_ms);
+    out->share_submit_us = atomic_load(&g_share_submit_us);
+    out->share_submit_max_us = atomic_load(&g_share_submit_max_us);
+    out->share_write_us = atomic_load(&g_share_write_us);
+    out->share_write_max_us = atomic_load(&g_share_write_max_us);
     copy_pool_host(out->pool_host, sizeof(out->pool_host), endpoint.host);
     out->pool_port = endpoint.port;
     out->using_backup_pool = endpoint.using_backup;
