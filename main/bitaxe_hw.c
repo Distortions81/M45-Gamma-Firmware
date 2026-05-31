@@ -59,6 +59,7 @@
 #define AUTO_CLOCK_MAX_STEPS_UP 1
 #define AUTO_CLOCK_MAX_STEPS_DOWN 3
 #define AUTO_CLOCK_MAX_STEPS_DOWN_HOT 4
+#define AUTO_CLOCK_STARTUP_MINING_STABLE_MS 30000
 #define DOMAIN_REBOOT_CHECK_INTERVAL_MS 15000
 #define DOMAIN_REBOOT_STARTUP_GRACE_MS 60000
 #define DOMAIN_REBOOT_RECOVERY_MS 60000
@@ -77,7 +78,9 @@ static portMUX_TYPE g_asic_transition_lock_init_mux = portMUX_INITIALIZER_UNLOCK
 static uint16_t g_commanded_voltage_mv = 0;
 static TickType_t g_asic_temp_grace_until;
 static TickType_t g_asic_temp_no_reading_log_next;
+static TickType_t g_auto_clock_mining_ready_since;
 static uint32_t g_mining_gate_job_sent_baseline;
+static uint32_t g_mining_gate_valid_nonce_baseline;
 static portMUX_TYPE g_power_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_auto_clock_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static bitaxe_gamma602_power_snapshot_t g_power_snapshot = {0};
@@ -266,27 +269,34 @@ static void give_asic_transition_lock(void)
 
 static void reset_mining_telemetry_gate(void)
 {
+    g_auto_clock_mining_ready_since = 0;
+    g_auto_clock_next_tick = 0;
+    g_auto_clock_up_dwell_ticks = 0;
+    g_auto_clock_down_dwell_ticks = 0;
     g_mining_gate_job_sent_baseline = stratum_minimal_job_sent_count();
+    g_mining_gate_valid_nonce_baseline = stratum_minimal_valid_nonce_count();
 }
 
-static bool mining_telemetry_ready(stratum_minimal_stats_t *stats_out,
-                                   const char **reason_out)
+static bool mining_startup_gate_ready(const char **reason_out)
 {
-    stratum_minimal_stats_t stats;
-    stratum_minimal_get_stats(&stats);
-    if (stats_out != NULL) {
-        *stats_out = stats;
-    }
-
+    const bool started = stratum_minimal_started();
+    const bool connected = stratum_minimal_connected();
     const uint32_t jobs_sent = stratum_minimal_job_sent_count();
     const bool has_post_boot_work =
         (uint32_t)(jobs_sent - g_mining_gate_job_sent_baseline) > 0;
+    const uint32_t valid_nonces = stratum_minimal_valid_nonce_count();
+    const bool has_post_boot_nonce =
+        (uint32_t)(valid_nonces - g_mining_gate_valid_nonce_baseline) > 0;
     const char *reason = "";
 
-    if (!stats.connected) {
+    if (!started) {
+        reason = "waiting for stratum start";
+    } else if (!connected) {
         reason = "waiting for stratum";
     } else if (!has_post_boot_work) {
         reason = "waiting for ASIC work";
+    } else if (!has_post_boot_nonce) {
+        reason = "waiting for ASIC results";
     } else {
         if (reason_out != NULL) {
             *reason_out = "";
@@ -298,6 +308,62 @@ static bool mining_telemetry_ready(stratum_minimal_stats_t *stats_out,
         *reason_out = reason;
     }
     return false;
+}
+
+static bool auto_clock_startup_gate_ready(const char **reason_out)
+{
+    const char *reason = NULL;
+    if (!mining_startup_gate_ready(&reason)) {
+        g_auto_clock_mining_ready_since = 0;
+        if (reason_out != NULL) {
+            *reason_out = reason;
+        }
+        return false;
+    }
+
+    const TickType_t now = xTaskGetTickCount();
+    const TickType_t stable_ticks =
+        pdMS_TO_TICKS(AUTO_CLOCK_STARTUP_MINING_STABLE_MS);
+    if (g_auto_clock_mining_ready_since == 0) {
+        g_auto_clock_mining_ready_since = now;
+    }
+    if ((TickType_t)(now - g_auto_clock_mining_ready_since) < stable_ticks) {
+        static char stable_reason[64];
+        const uint32_t waited_ms =
+            pdTICKS_TO_MS(now - g_auto_clock_mining_ready_since);
+        snprintf(stable_reason, sizeof(stable_reason),
+                 "waiting for stable mining %lu/%u sec",
+                 (unsigned long)(waited_ms / 1000),
+                 (unsigned)(AUTO_CLOCK_STARTUP_MINING_STABLE_MS / 1000));
+        if (reason_out != NULL) {
+            *reason_out = stable_reason;
+        }
+        return false;
+    }
+
+    if (reason_out != NULL) {
+        *reason_out = "";
+    }
+    return true;
+}
+
+static bool mining_telemetry_ready(stratum_minimal_stats_t *stats_out,
+                                   const char **reason_out)
+{
+    if (!mining_startup_gate_ready(reason_out)) {
+        return false;
+    }
+
+    stratum_minimal_stats_t stats;
+    stratum_minimal_get_stats(&stats);
+    if (stats_out != NULL) {
+        *stats_out = stats;
+    }
+
+    if (reason_out != NULL) {
+        *reason_out = "";
+    }
+    return true;
 }
 
 static void clear_domain_reboot_low_since(void)
@@ -871,7 +937,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
     }
 
     const char *mining_wait_reason = NULL;
-    if (!mining_telemetry_ready(NULL, &mining_wait_reason)) {
+    if (!auto_clock_startup_gate_ready(&mining_wait_reason)) {
         g_auto_clock_up_dwell_ticks = 0;
         g_auto_clock_down_dwell_ticks = 0;
         update_auto_clock_status(true, false, current_frequency_mhz, current_voltage_mv,
@@ -1473,14 +1539,36 @@ static void power_monitor_task(void *arg)
             if (update_asic_temperature(state, &asic_temp_c) != ESP_OK) {
                 continue;
             }
-            if (apply_temperature_voltage_compensation(state, asic_temp_c) != ESP_OK) {
+
+            const char *mining_wait_reason = NULL;
+            const bool mining_started =
+                mining_startup_gate_ready(&mining_wait_reason);
+            if (mining_started &&
+                apply_temperature_voltage_compensation(state, asic_temp_c) != ESP_OK) {
                 ESP_LOGW(TAG, "temperature voltage compensation update failed");
                 continue;
             }
             const float control_temp_c = bitaxe_fan_control_temp_c(asic_temp_c);
-            if (apply_auto_clock_control(state, asic_temp_c, control_temp_c,
-                                         &averaged_snapshot) != ESP_OK) {
-                ESP_LOGW(TAG, "auto clock control update failed");
+            if (mining_started) {
+                if (apply_auto_clock_control(state, asic_temp_c, control_temp_c,
+                                             &averaged_snapshot) != ESP_OK) {
+                    ESP_LOGW(TAG, "auto clock control update failed");
+                }
+            } else {
+                const m45_config_t *config = m45_config_get();
+                if (config != NULL) {
+                    const bool auto_clock_enabled = config->auto_clock_enabled;
+                    update_auto_clock_status(
+                        auto_clock_enabled, false,
+                        current_auto_clock_frequency_mhz(state, config),
+                        current_auto_clock_voltage_mv(config, asic_temp_c),
+                        0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, false, false, false,
+                        false, false,
+                        auto_clock_enabled
+                            ? (mining_wait_reason != NULL ? mining_wait_reason
+                                                          : "waiting for mining")
+                            : "");
+                }
             }
             bitaxe_fan_update_auto(state, asic_temp_c, control_temp_c,
                                    (float)averaged_snapshot.read_temp1);

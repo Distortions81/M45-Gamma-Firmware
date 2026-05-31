@@ -1230,9 +1230,24 @@ bool stratum_minimal_work_paused(void)
     return atomic_load(&g_work_paused);
 }
 
+bool stratum_minimal_started(void)
+{
+    return stratum_runtime_ready();
+}
+
+bool stratum_minimal_connected(void)
+{
+    return atomic_load(&g_connected);
+}
+
 uint32_t stratum_minimal_job_sent_count(void)
 {
     return atomic_load(&g_job_sent);
+}
+
+uint32_t stratum_minimal_valid_nonce_count(void)
+{
+    return atomic_load(&g_valid_nonces);
 }
 
 static stratum_endpoint_t g_primary_probe_args;
