@@ -162,6 +162,8 @@ condition is detected. Default shutdown limits are:
 
 These limits are last-resort protections, not a substitute for proper cooling,
 power delivery, and monitoring.
+ASIC temperature read failures are tolerated only while the lost-domain
+auto-reboot watchdog is already waiting to power-cycle the ASIC.
 
 The dashboard can explicitly unlock unrestricted safety-limit ranges for
 advanced testing. That option only removes firmware setting caps; it does not

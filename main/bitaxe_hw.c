@@ -27,11 +27,11 @@
 #define TPS546_STATUS_FAULT_MASK                                                                  \
     (TPS546_STATUS_OFF | TPS546_STATUS_VOUT_OV | TPS546_STATUS_IOUT_OC | TPS546_STATUS_VIN_UV |   \
      TPS546_STATUS_TEMP | TPS546_STATUS_PGOOD)
-#define TPS546_VOUT_TOLERANCE_VOLTS 0.075f
+#define TPS546_VOUT_TOLERANCE_VOLTS 0.020f
 #define TPS546_MONITOR_INTERVAL_MS 250
 #define ASIC_FAN_MONITOR_INTERVAL_MS 250
 #define TPS546_POWER_WINDOW_SAMPLES 16
-#define TPS546_OUTPUT_SETTLE_INITIAL_MS 10
+#define TPS546_OUTPUT_SETTLE_INITIAL_MS 20
 #define TPS546_OUTPUT_SETTLE_POLL_MS 10
 #define TPS546_OUTPUT_SETTLE_TIMEOUT_MS 150
 #define ASIC_FREQUENCY_SETTLE_MS 50
@@ -202,6 +202,23 @@ static void reset_domain_reboot_watchdog(void)
 {
     reset_domain_reboot_recovery();
     g_domain_reboot_cooldown_until = 0;
+}
+
+static bool domain_reboot_recovery_pending(void)
+{
+    const m45_config_t *config = m45_config_get();
+    if (config == NULL || !config->auto_domain_reboot_enabled) {
+        return false;
+    }
+
+    for (uint8_t asic = 0; asic < STRATUM_HASHRATE_MAX_ASICS; ++asic) {
+        for (uint8_t domain = 0; domain < STRATUM_HASH_DOMAIN_COUNT; ++domain) {
+            if (g_domain_reboot_low_since[asic][domain] != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 static void update_auto_clock_status(bool enabled, bool active, uint16_t target_frequency_mhz,
@@ -564,6 +581,12 @@ static esp_err_t update_asic_temperature(GlobalState *state, float *temp_c)
 {
     esp_err_t err = bitaxe_fan_read_asic_temp_c(temp_c);
     if (err != ESP_OK) {
+        if (domain_reboot_recovery_pending()) {
+            ESP_LOGW(TAG,
+                     "ignoring ASIC temperature read failure while lost-domain auto-reboot is pending: %s",
+                     esp_err_to_name(err));
+            return err;
+        }
         if (xTaskGetTickCount() < g_asic_temp_grace_until) {
             ESP_LOGW(TAG, "ignoring startup ASIC temperature read failure: %s",
                      esp_err_to_name(err));
@@ -575,6 +598,11 @@ static esp_err_t update_asic_temperature(GlobalState *state, float *temp_c)
 
     *temp_c += (float)state->DEVICE_CONFIG.temp_offset;
     if (!isfinite(*temp_c)) {
+        if (domain_reboot_recovery_pending()) {
+            ESP_LOGW(TAG,
+                     "ignoring invalid ASIC temperature while lost-domain auto-reboot is pending");
+            return ESP_ERR_INVALID_STATE;
+        }
         if (xTaskGetTickCount() < g_asic_temp_grace_until) {
             ESP_LOGW(TAG, "ignoring startup ASIC temperature invalid");
             return ESP_ERR_INVALID_STATE;
@@ -946,8 +974,12 @@ static bool update_domain_reboot_recovery(const stratum_minimal_stats_t *stats,
     return should_reboot;
 }
 
-static esp_err_t apply_domain_reboot_watchdog(GlobalState *state)
+static esp_err_t apply_domain_reboot_watchdog(GlobalState *state, bool *rebooted)
 {
+    if (rebooted != NULL) {
+        *rebooted = false;
+    }
+
     const m45_config_t *config = m45_config_get();
     const TickType_t now = xTaskGetTickCount();
     if (config == NULL || !config->auto_domain_reboot_enabled || state == NULL ||
@@ -1000,6 +1032,9 @@ static esp_err_t apply_domain_reboot_watchdog(GlobalState *state)
     g_domain_reboot_cooldown_until =
         now + pdMS_TO_TICKS(DOMAIN_REBOOT_COOLDOWN_MS);
     g_domain_reboot_next_tick = g_domain_reboot_cooldown_until;
+    if (rebooted != NULL) {
+        *rebooted = true;
+    }
 
     stratum_minimal_pause_work();
     esp_err_t err = bitaxe_gamma602_set_asic_power(state, false, true);
@@ -1137,6 +1172,15 @@ static void power_monitor_task(void *arg)
         update_power_state(state, &averaged_snapshot);
 
         if (state->ASIC_initalized) {
+            bool domain_rebooted = false;
+            if (apply_domain_reboot_watchdog(state, &domain_rebooted) != ESP_OK) {
+                ESP_LOGW(TAG, "domain reboot watchdog update failed");
+            }
+            if (domain_rebooted || state->SYSTEM_MODULE.hardware_fault ||
+                !state->ASIC_initalized || !g_regulator_enabled) {
+                continue;
+            }
+
             float asic_temp_c = 0.0f;
             if (update_asic_temperature(state, &asic_temp_c) != ESP_OK) {
                 continue;
@@ -1152,9 +1196,6 @@ static void power_monitor_task(void *arg)
             }
             bitaxe_fan_update_auto(state, asic_temp_c, control_temp_c,
                                    (float)averaged_snapshot.read_temp1);
-            if (apply_domain_reboot_watchdog(state) != ESP_OK) {
-                ESP_LOGW(TAG, "domain reboot watchdog update failed");
-            }
         }
 
         if (!state->SYSTEM_MODULE.hardware_fault) {
