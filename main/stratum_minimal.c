@@ -125,6 +125,7 @@ static atomic_uint g_accepted;
 static atomic_uint g_rejected;
 static atomic_uint g_valid_nonces;
 static atomic_uint g_nonce_errors;
+static atomic_uint g_job_sent;
 static atomic_uint g_response_time_ms;
 static atomic_ullong g_share_submit_us;
 static atomic_ullong g_share_submit_max_us;
@@ -1227,6 +1228,11 @@ void stratum_minimal_resume_work(void)
 bool stratum_minimal_work_paused(void)
 {
     return atomic_load(&g_work_paused);
+}
+
+uint32_t stratum_minimal_job_sent_count(void)
+{
+    return atomic_load(&g_job_sent);
 }
 
 static stratum_endpoint_t g_primary_probe_args;
@@ -3247,6 +3253,7 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
         return;
     }
 
+    atomic_fetch_add(&g_job_sent, 1);
     atomic_store(&g_last_job_sent_us, (uint64_t)esp_timer_get_time());
     record_assigned_work(interval_ms);
 }
@@ -3568,6 +3575,7 @@ esp_err_t stratum_minimal_start(GlobalState *state)
     atomic_store(&g_last_primary_probe_us, 0);
     atomic_store(&g_last_dns_prefetch_us, 0);
     atomic_store(&g_last_job_sent_us, 0);
+    atomic_store(&g_job_sent, 0);
     atomic_store(&g_work_paused, false);
     atomic_store(&g_response_time_ms, 0);
     atomic_store(&g_share_submit_us, 0);

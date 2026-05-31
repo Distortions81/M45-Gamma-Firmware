@@ -84,6 +84,7 @@ void stratum_minimal_reconnect(void);
 void stratum_minimal_pause_work(void);
 void stratum_minimal_resume_work(void);
 bool stratum_minimal_work_paused(void);
+uint32_t stratum_minimal_job_sent_count(void);
 esp_err_t stratum_minimal_reset_best_diff(void);
 void stratum_minimal_dismiss_block_alert(void);
 void stratum_minimal_get_stats(stratum_minimal_stats_t *out);

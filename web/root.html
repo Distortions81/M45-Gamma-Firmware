@@ -498,7 +498,7 @@ txt('fan-rpm',`${fmt(s.fan_rpm)} RPM`);
 setMetric('hashrate',s.hashrate_ghs,0,{min:0,max:2500,goodMin:0,goodMax:2500,text:''});
 const hp=clamp(num(s.asic_error_rate_percent),0,100),hf=$('hashrate-bar').querySelector('.fill'),hl=$('hashrate-loss'),hw=parseFloat(hf.style.width)||0;
 const loss=Number.isFinite(hp)?hw*(hp/100):0;hl.style.left=Math.max(0,hw-loss)+'%';hl.style.width=Math.min(hw,loss)+'%';
-hl.title=Number.isFinite(hp)?`${n(hp,2)}% corrupted hash loss`:'';
+hl.title=Number.isFinite(hp)?`${n(hp,2)}% ASIC error loss`:'';
 txt('hashrate-note','');$('hashrate-note').classList.add('hidden');
 if(s.booting){$('hashrate-state').className='pill warn';$('hashrate-state').textContent='BOOT'}
 }
@@ -923,7 +923,7 @@ txt('shares-min',sharesPerMinute(s));
 const rt=num(s.stratum_response_ms);txt('stratum-response',rt>0?`${n(rt,0)} ms`:'--');
 const pi=payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
 setPayoutPanel(s);
-txt('nonce-errors',fmt(s.nonce_errors));const ns=nonceErrorStats(s);txt('nonce-error-rate',ns.pct);txt('hash-lost',ns.lost);
+const ns=nonceErrorStats(s);txt('nonce-error-rate',ns.pct);txt('hash-lost',ns.lost);
 txt('expected-hashrate',expectedHashValue(s));
 const efficiency=num(s.asic_efficiency_j_per_th),jth=Number.isFinite(efficiency)&&efficiency>0?efficiency:joulesPerTh(s.asic_power_watts,s.hashrate_ghs);
 txt('asic-efficiency',Number.isFinite(jth)?`${n(jth,1)} J/TH`:'--');

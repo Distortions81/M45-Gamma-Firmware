@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "asic_frequency_transition.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "i2c_bitaxe.h"
 #include "m45_config.h"
@@ -58,6 +59,8 @@
 #define AUTO_CLOCK_MAX_STEPS_UP 1
 #define AUTO_CLOCK_MAX_STEPS_DOWN 3
 #define AUTO_CLOCK_MAX_STEPS_DOWN_HOT 4
+#define MINING_TELEMETRY_MIN_STRATUM_CONNECTED_SECONDS 5
+#define MINING_TELEMETRY_READY_STABLE_MS 20000
 #define DOMAIN_REBOOT_CHECK_INTERVAL_MS 15000
 #define DOMAIN_REBOOT_STARTUP_GRACE_MS 60000
 #define DOMAIN_REBOOT_RECOVERY_MS 60000
@@ -71,9 +74,13 @@ static bool g_i2c_ready = false;
 static bool g_power_monitor_started = false;
 static bool g_regulator_enabled = false;
 static bool g_tps546_ready = false;
+static SemaphoreHandle_t g_asic_transition_lock;
+static portMUX_TYPE g_asic_transition_lock_init_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint16_t g_commanded_voltage_mv = 0;
 static TickType_t g_asic_temp_grace_until;
 static TickType_t g_asic_temp_no_reading_log_next;
+static TickType_t g_mining_telemetry_ready_since;
+static uint32_t g_mining_gate_job_sent_baseline;
 static portMUX_TYPE g_power_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_auto_clock_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static bitaxe_gamma602_power_snapshot_t g_power_snapshot = {0};
@@ -98,6 +105,13 @@ static float g_power_iout_sum;
 static float g_power_temp_sum;
 static uint8_t g_power_window_count;
 static uint8_t g_power_window_next;
+
+static esp_err_t bitaxe_gamma602_start_hardware_unlocked(GlobalState *state);
+static esp_err_t bitaxe_gamma602_set_frequency_mhz_unlocked(GlobalState *state,
+                                                            uint16_t frequency_mhz);
+static esp_err_t bitaxe_gamma602_set_voltage_mv_for_config_unlocked(GlobalState *state,
+                                                                    uint16_t voltage_mv,
+                                                                    const m45_config_t *config);
 
 static void set_hw_status(const char *status)
 {
@@ -211,6 +225,105 @@ static void reset_power_average_window(void)
 static bool tick_before(TickType_t now, TickType_t target)
 {
     return target != 0 && (int32_t)(now - target) < 0;
+}
+
+static esp_err_t ensure_asic_transition_lock(void)
+{
+    if (g_asic_transition_lock != NULL) {
+        return ESP_OK;
+    }
+
+    SemaphoreHandle_t lock = xSemaphoreCreateMutex();
+    if (lock == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    taskENTER_CRITICAL(&g_asic_transition_lock_init_mux);
+    if (g_asic_transition_lock == NULL) {
+        g_asic_transition_lock = lock;
+        lock = NULL;
+    }
+    taskEXIT_CRITICAL(&g_asic_transition_lock_init_mux);
+
+    if (lock != NULL) {
+        vSemaphoreDelete(lock);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t take_asic_transition_lock(TickType_t timeout_ticks)
+{
+    ESP_RETURN_ON_ERROR(ensure_asic_transition_lock(), TAG,
+                        "ASIC transition lock init failed");
+    return xSemaphoreTake(g_asic_transition_lock, timeout_ticks) == pdTRUE
+               ? ESP_OK
+               : ESP_ERR_TIMEOUT;
+}
+
+static void give_asic_transition_lock(void)
+{
+    if (g_asic_transition_lock != NULL) {
+        xSemaphoreGive(g_asic_transition_lock);
+    }
+}
+
+static void reset_mining_telemetry_gate(void)
+{
+    g_mining_telemetry_ready_since = 0;
+    g_mining_gate_job_sent_baseline = stratum_minimal_job_sent_count();
+}
+
+static bool mining_telemetry_ready(stratum_minimal_stats_t *stats_out,
+                                   const char **reason_out)
+{
+    stratum_minimal_stats_t stats;
+    stratum_minimal_get_stats(&stats);
+    if (stats_out != NULL) {
+        *stats_out = stats;
+    }
+
+    const uint32_t jobs_sent = stratum_minimal_job_sent_count();
+    const bool has_post_transition_work =
+        (uint32_t)(jobs_sent - g_mining_gate_job_sent_baseline) > 0;
+    const bool has_hashrate =
+        (isfinite(stats.measured_hashrate_ghs) && stats.measured_hashrate_ghs > 0.0) ||
+        (isfinite(stats.domain_hashrate_ghs) && stats.domain_hashrate_ghs > 0.0);
+    const char *reason = "";
+
+    if (!stats.connected) {
+        reason = "waiting for stratum";
+    } else if (stats.connected_seconds <
+               MINING_TELEMETRY_MIN_STRATUM_CONNECTED_SECONDS) {
+        reason = "waiting for stratum warmup";
+    } else if (!has_post_transition_work) {
+        reason = "waiting for ASIC work";
+    } else if (!has_hashrate) {
+        reason = "waiting for hashrate telemetry";
+    } else {
+        const TickType_t now = xTaskGetTickCount();
+        const TickType_t stable_ticks =
+            pdMS_TO_TICKS(MINING_TELEMETRY_READY_STABLE_MS);
+        if (g_mining_telemetry_ready_since == 0) {
+            g_mining_telemetry_ready_since = now;
+            reason = "waiting for stable mining telemetry";
+        } else if ((TickType_t)(now - g_mining_telemetry_ready_since) <
+                   stable_ticks) {
+            reason = "waiting for stable mining telemetry";
+        } else {
+            if (reason_out != NULL) {
+                *reason_out = "";
+            }
+            return true;
+        }
+    }
+
+    if (strcmp(reason, "waiting for stable mining telemetry") != 0) {
+        g_mining_telemetry_ready_since = 0;
+    }
+    if (reason_out != NULL) {
+        *reason_out = reason;
+    }
+    return false;
 }
 
 static void clear_domain_reboot_low_since(void)
@@ -431,6 +544,11 @@ static esp_err_t auto_clock_apply_preset(GlobalState *state, const m45_config_t 
                                          uint16_t next_base_voltage_mv,
                                          uint16_t next_target_voltage_mv)
 {
+    esp_err_t lock_err = take_asic_transition_lock(0);
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+
     m45_config_t next_config = *current_config;
     next_config.auto_clock_enabled = true;
     next_config.overclock_enabled = true;
@@ -449,29 +567,31 @@ static esp_err_t auto_clock_apply_preset(GlobalState *state, const m45_config_t 
 
     if (next_frequency_mhz <= current_frequency_mhz) {
         stratum_minimal_pause_work();
-        err = bitaxe_gamma602_set_frequency_mhz(state, next_frequency_mhz);
+        err = bitaxe_gamma602_set_frequency_mhz_unlocked(state, next_frequency_mhz);
         stratum_minimal_resume_work();
         if (err == ESP_OK) {
-            err = bitaxe_gamma602_set_voltage_mv_for_config(state, next_target_voltage_mv,
-                                                            &next_config);
+            err = bitaxe_gamma602_set_voltage_mv_for_config_unlocked(
+                state, next_target_voltage_mv, &next_config);
         }
     } else {
-        err = bitaxe_gamma602_set_voltage_mv_for_config(state, next_target_voltage_mv,
-                                                        &next_config);
+        err = bitaxe_gamma602_set_voltage_mv_for_config_unlocked(
+            state, next_target_voltage_mv, &next_config);
         if (err == ESP_OK) {
             stratum_minimal_pause_work();
-            err = bitaxe_gamma602_set_frequency_mhz(state, next_frequency_mhz);
+            err = bitaxe_gamma602_set_frequency_mhz_unlocked(state, next_frequency_mhz);
             stratum_minimal_resume_work();
         }
     }
 
     if (err != ESP_OK) {
+        give_asic_transition_lock();
         return err;
     }
 
     state->pool_difficulty = m45_config_effective_pool_difficulty(
         &next_config, state->DEVICE_CONFIG.family.asic.small_core_count,
         state->DEVICE_CONFIG.family.asic_count);
+    give_asic_transition_lock();
     return ESP_OK;
 }
 
@@ -771,6 +891,18 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         return ESP_OK;
     }
 
+    const char *mining_wait_reason = NULL;
+    if (!mining_telemetry_ready(NULL, &mining_wait_reason)) {
+        g_auto_clock_up_dwell_ticks = 0;
+        g_auto_clock_down_dwell_ticks = 0;
+        update_auto_clock_status(true, false, current_frequency_mhz, current_voltage_mv,
+                                 0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, false, false,
+                                 false, false, false,
+                                 mining_wait_reason != NULL ? mining_wait_reason
+                                                             : "waiting for mining telemetry");
+        return ESP_OK;
+    }
+
     const TickType_t now = xTaskGetTickCount();
     if (g_auto_clock_next_tick != 0 &&
         (int32_t)(now - g_auto_clock_next_tick) < 0) {
@@ -1041,6 +1173,10 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
     esp_err_t err = auto_clock_apply_preset(state, config, next_frequency_mhz,
                                             next_base_mv, next_voltage_mv);
     if (err != ESP_OK) {
+        if (err == ESP_ERR_TIMEOUT) {
+            ESP_LOGD(TAG, "auto clock skipped; ASIC transition in progress");
+            return ESP_OK;
+        }
         ESP_LOGW(TAG, "auto clock apply failed: %s", esp_err_to_name(err));
     } else {
         g_auto_clock_up_dwell_ticks = 0;
@@ -1166,9 +1302,16 @@ static esp_err_t apply_domain_reboot_watchdog(GlobalState *state, bool *rebooted
     g_domain_reboot_next_tick = now + pdMS_TO_TICKS(DOMAIN_REBOOT_CHECK_INTERVAL_MS);
 
     stratum_minimal_stats_t stats;
-    stratum_minimal_get_stats(&stats);
-    if (!stats.connected || stats.work_received == 0 || stats.domain_asic_count == 0 ||
-        stats.domain_count == 0) {
+    const char *mining_wait_reason = NULL;
+    if (!mining_telemetry_ready(&stats, &mining_wait_reason)) {
+        ESP_LOGD(TAG, "domain-loss watchdog waiting: %s",
+                 mining_wait_reason != NULL ? mining_wait_reason
+                                             : "mining telemetry not ready");
+        clear_domain_reboot_low_since();
+        return ESP_OK;
+    }
+
+    if (stats.domain_asic_count == 0 || stats.domain_count == 0) {
         clear_domain_reboot_low_since();
         return ESP_OK;
     }
@@ -1417,6 +1560,12 @@ void bitaxe_gamma602_init_state(GlobalState *state)
     state->send_uid = 10;
     state->stratum_mux = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
     pthread_mutex_init(&state->valid_jobs_lock, NULL);
+    const esp_err_t lock_err = ensure_asic_transition_lock();
+    if (lock_err != ESP_OK) {
+        ESP_LOGE(TAG, "failed to create ASIC transition lock: %s",
+                 esp_err_to_name(lock_err));
+    }
+    reset_mining_telemetry_gate();
 
     state->ASIC_TASK_MODULE.active_jobs = calloc(ASIC_JOB_SLOTS, sizeof(bm_job *));
     state->valid_jobs = calloc(ASIC_JOB_SLOTS, sizeof(uint8_t));
@@ -1451,7 +1600,7 @@ esp_err_t bitaxe_gamma602_start_fan(GlobalState *state)
     return bitaxe_fan_init(state);
 }
 
-esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
+static esp_err_t bitaxe_gamma602_start_hardware_unlocked(GlobalState *state)
 {
     if (state->ASIC_TASK_MODULE.active_jobs == NULL || state->valid_jobs == NULL) {
         set_hw_status("job table missing");
@@ -1539,6 +1688,16 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
     return ESP_OK;
 }
 
+esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
+{
+    ESP_RETURN_ON_ERROR(take_asic_transition_lock(portMAX_DELAY), TAG,
+                        "ASIC transition lock failed");
+    reset_mining_telemetry_gate();
+    const esp_err_t err = bitaxe_gamma602_start_hardware_unlocked(state);
+    give_asic_transition_lock();
+    return err;
+}
+
 bool bitaxe_gamma602_asic_power_enabled(void)
 {
     return g_regulator_enabled;
@@ -1550,26 +1709,35 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
         return ESP_ERR_INVALID_ARG;
     }
 
+    ESP_RETURN_ON_ERROR(take_asic_transition_lock(portMAX_DELAY), TAG,
+                        "ASIC transition lock failed");
+    reset_mining_telemetry_gate();
+    esp_err_t err = ESP_OK;
+
     if (enabled) {
         if (state->SYSTEM_MODULE.hardware_fault) {
-            return ESP_ERR_INVALID_STATE;
+            err = ESP_ERR_INVALID_STATE;
+            goto out;
         }
         if (state->ASIC_initalized && g_regulator_enabled) {
-            return ESP_OK;
+            goto out;
         }
         if (manage_fan) {
-            ESP_RETURN_ON_ERROR(bitaxe_fan_start_for_asic(state), TAG,
-                                "ASIC fan start failed");
+            err = bitaxe_fan_start_for_asic(state);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "ASIC fan start failed: %s", esp_err_to_name(err));
+                goto out;
+            }
         }
         reset_domain_reboot_recovery();
         g_asic_temp_grace_until =
             xTaskGetTickCount() + pdMS_TO_TICKS(ASIC_TEMP_STARTUP_GRACE_MS);
         bitaxe_gamma602_clear_jobs(state);
-        const esp_err_t err = bitaxe_gamma602_start_hardware(state);
+        err = bitaxe_gamma602_start_hardware_unlocked(state);
         if (err != ESP_OK && !state->SYSTEM_MODULE.hardware_fault) {
             set_hw_status("asic off");
         }
-        return err;
+        goto out;
     }
 
     ESP_LOGI(TAG, "manual ASIC power off requested");
@@ -1588,7 +1756,7 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
     state->POWER_MANAGEMENT_MODULE.current = 0.0f;
     state->POWER_MANAGEMENT_MODULE.chip_temp_avg = 0.0f;
 
-    esp_err_t err = asic_reset_level(0);
+    err = asic_reset_level(0);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to hold ASIC reset low during manual power off: %s",
                  esp_err_to_name(err));
@@ -1612,16 +1780,20 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
         }
     }
 
+out:
+    give_asic_transition_lock();
     return err;
 }
 
-esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequency_mhz)
+static esp_err_t bitaxe_gamma602_set_frequency_mhz_unlocked(GlobalState *state,
+                                                            uint16_t frequency_mhz)
 {
     if (state == NULL || frequency_mhz < M45_ASIC_FREQUENCY_MIN_MHZ ||
         frequency_mhz > M45_ASIC_FREQUENCY_MAX_MHZ) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    reset_mining_telemetry_gate();
     state->POWER_MANAGEMENT_MODULE.frequency_value = (float)frequency_mhz;
     if (!state->ASIC_initalized) {
         return ESP_OK;
@@ -1642,8 +1814,17 @@ esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequen
     return ESP_OK;
 }
 
-esp_err_t bitaxe_gamma602_set_voltage_mv_for_config(GlobalState *state, uint16_t voltage_mv,
-                                                    const m45_config_t *config)
+esp_err_t bitaxe_gamma602_set_frequency_mhz(GlobalState *state, uint16_t frequency_mhz)
+{
+    ESP_RETURN_ON_ERROR(take_asic_transition_lock(portMAX_DELAY), TAG,
+                        "ASIC transition lock failed");
+    const esp_err_t err = bitaxe_gamma602_set_frequency_mhz_unlocked(state, frequency_mhz);
+    give_asic_transition_lock();
+    return err;
+}
+
+static esp_err_t bitaxe_gamma602_set_voltage_mv_for_config_unlocked(
+    GlobalState *state, uint16_t voltage_mv, const m45_config_t *config)
 {
     const m45_config_t *active = config != NULL ? config : m45_config_get();
     if (state == NULL || voltage_mv < 500 || voltage_mv > 1370 ||
@@ -1652,6 +1833,7 @@ esp_err_t bitaxe_gamma602_set_voltage_mv_for_config(GlobalState *state, uint16_t
         return ESP_ERR_INVALID_ARG;
     }
 
+    reset_mining_telemetry_gate();
     const float volts = voltage_mv / 1000.0f;
     state->POWER_MANAGEMENT_MODULE.core_voltage = volts;
     if (!g_tps546_ready || !g_regulator_enabled) {
@@ -1669,6 +1851,17 @@ esp_err_t bitaxe_gamma602_set_voltage_mv_for_config(GlobalState *state, uint16_t
         set_hw_status("ready");
     }
     return ret;
+}
+
+esp_err_t bitaxe_gamma602_set_voltage_mv_for_config(GlobalState *state, uint16_t voltage_mv,
+                                                    const m45_config_t *config)
+{
+    ESP_RETURN_ON_ERROR(take_asic_transition_lock(portMAX_DELAY), TAG,
+                        "ASIC transition lock failed");
+    const esp_err_t err =
+        bitaxe_gamma602_set_voltage_mv_for_config_unlocked(state, voltage_mv, config);
+    give_asic_transition_lock();
+    return err;
 }
 
 esp_err_t bitaxe_gamma602_set_voltage_mv(GlobalState *state, uint16_t voltage_mv)
