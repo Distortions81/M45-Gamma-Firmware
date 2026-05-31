@@ -42,8 +42,8 @@ Response fields:
 | `domain_hashrate_ghs`, `domain_hashrates_ghs` | number/array | Domain hashrate totals. |
 | `asic_error_rate_percent`, `expected_hashrate_ghs` | number | Performance estimates. |
 | `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. `voltage_temp_compensation_mv` is signed relative to the base voltage. |
-| `overclock_enabled`, `auto_clock_enabled`, `auto_clock_active`, `auto_domain_reboot_enabled` | boolean | Overclock, auto-clock, and lost-domain watchdog state. |
-| `auto_clock_target_temp_c`, `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_thermal_resistance_c_per_w`, `auto_clock_input_voltage_limited`, `auto_clock_output_current_limited`, `auto_clock_vr_temp_limited` | mixed | Auto-clock target, controller telemetry, and clock-limiting state. |
+| `overclock_enabled`, `auto_clock_enabled`, `auto_clock_active`, `auto_domain_reboot_enabled`, `safety_limits_unrestricted` | boolean | Overclock, auto-clock, lost-domain watchdog, and unrestricted safety-limit state. |
+| `auto_clock_target_temp_c`, `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_next_up_frequency_mhz`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_next_up_power_w`, `auto_clock_thermal_resistance_c_per_w`, `auto_clock_output_current_ceiling_a`, `auto_clock_next_up_output_current_a`, `auto_clock_input_voltage_limited`, `auto_clock_output_current_limited`, `auto_clock_vr_temp_limited`, `auto_clock_power_limited`, `auto_clock_temperature_limited`, `auto_clock_hold_reason` | mixed | Auto-clock target, controller telemetry, and clock-limiting state. |
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power and fault state. |

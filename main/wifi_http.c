@@ -46,9 +46,9 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 10500
+#define STATUS_JSON_BUFFER_SIZE 11100
 #else
-#define STATUS_JSON_BUFFER_SIZE 9200
+#define STATUS_JSON_BUFFER_SIZE 9800
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 4000
 #define M45_DEVICE_NAME "M45-Bitaxe"
@@ -1290,6 +1290,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     char wifi_ssid[80];
     char pool_host[160];
     char hardware_fault_msg[96];
+    char auto_clock_hold_reason[128];
     char tps546_model[24];
     char domain_hashrates_json[512];
 #ifdef M45_ASIC_LOSS_METRICS
@@ -1301,6 +1302,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     json_escape(hardware_fault_msg, sizeof(hardware_fault_msg),
                 g_state->SYSTEM_MODULE.hardware_fault ? g_state->SYSTEM_MODULE.hardware_fault_msg
                                                        : "");
+    json_escape(auto_clock_hold_reason, sizeof(auto_clock_hold_reason),
+                auto_clock.hold_reason);
     json_escape(tps546_model, sizeof(tps546_model), bitaxe_gamma602_tps_model());
     format_domain_hashrates_json(&stats, expected_chip_count,
                                   domain_hashrates_json,
@@ -1383,16 +1386,24 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"overclock_enabled\":%s,"
                  "\"auto_clock_enabled\":%s,"
                  "\"auto_domain_reboot_enabled\":%s,"
+                 "\"safety_limits_unrestricted\":%s,"
                  "\"auto_clock_target_temp_c\":%u,"
                  "\"auto_clock_active\":%s,"
                  "\"auto_clock_input_voltage_limited\":%s,"
                  "\"auto_clock_output_current_limited\":%s,"
                  "\"auto_clock_vr_temp_limited\":%s,"
+                 "\"auto_clock_power_limited\":%s,"
+                 "\"auto_clock_temperature_limited\":%s,"
+                 "\"auto_clock_hold_reason\":\"%s\","
                  "\"auto_clock_target_frequency_mhz\":%u,"
                  "\"auto_clock_target_voltage_mv\":%u,"
+                 "\"auto_clock_next_up_frequency_mhz\":%u,"
                  "\"auto_clock_power_now_w\":%.2f,"
                  "\"auto_clock_power_target_w\":%.2f,"
+                 "\"auto_clock_next_up_power_w\":%.2f,"
                  "\"auto_clock_thermal_resistance_c_per_w\":%.2f,"
+                 "\"auto_clock_output_current_ceiling_a\":%.2f,"
+                 "\"auto_clock_next_up_output_current_a\":%.2f,"
                  "\"asic_temp_c\":%.1f,"
                  "\"fan_percent\":%.1f,"
                  "\"fan_rpm\":%u,"
@@ -1477,14 +1488,22 @@ static esp_err_t status_handler(httpd_req_t *req)
                  config->overclock_enabled ? "true" : "false",
                  config->auto_clock_enabled ? "true" : "false",
                  config->auto_domain_reboot_enabled ? "true" : "false",
+                 config->safety_limits_unrestricted ? "true" : "false",
                  m45_config_effective_auto_clock_target_temp_c(config),
                  auto_clock.active ? "true" : "false",
                  auto_clock.input_voltage_limited ? "true" : "false",
                  auto_clock.output_current_limited ? "true" : "false",
                  auto_clock.vr_temp_limited ? "true" : "false",
+                 auto_clock.power_limited ? "true" : "false",
+                 auto_clock.temperature_limited ? "true" : "false",
+                 auto_clock_hold_reason,
                  auto_clock.target_frequency_mhz, auto_clock.target_voltage_mv,
+                 auto_clock.next_up_frequency_mhz,
                  auto_clock.power_now_w, auto_clock.power_target_w,
+                 auto_clock.next_up_power_w,
                  auto_clock.thermal_resistance_c_per_w,
+                 auto_clock.output_current_ceiling_a,
+                 auto_clock.next_up_output_current_a,
                  asic_temp_c,
                  g_state->POWER_MANAGEMENT_MODULE.fan_perc,
                  g_state->POWER_MANAGEMENT_MODULE.fan_rpm,

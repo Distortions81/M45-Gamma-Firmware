@@ -357,14 +357,15 @@ const on=$('cfg-overclock-enabled').checked,mode=val('cfg-fan-mode'),fanOff=mode
 cb.disabled=!on;cb.title=!on?'Enable overclocking first':'Auto Clock Speed';
 const target=$('oc-auto-clock-target'),targetValue=$('oc-auto-clock-target-value'),targetTemp=Number(val('oc-auto-clock-target'))||62;
 if(target)target.disabled=!on;if(targetValue)targetValue.textContent=`${targetTemp}C`;
-const configured=cb.checked&&!cb.disabled,active=s&&s.auto_clock_active===true,vinLimited=s&&s.auto_clock_input_voltage_limited===true,ampLimited=s&&s.auto_clock_output_current_limited===true,vrLimited=s&&s.auto_clock_vr_temp_limited===true,limited=vinLimited||ampLimited||vrLimited,pill=$('oc-auto-clock-state');
-pill.className=`pill ${limited?'warn':active?'ok':configured?'warn':''}`.trim();pill.textContent=limited?(vinLimited&&!ampLimited&&!vrLimited?'VIN LIMIT':ampLimited&&!vinLimited&&!vrLimited?'AMP LIMIT':vrLimited&&!vinLimited&&!ampLimited?'VR LIMIT':'LIMITS'):active?'ACTIVE':configured?'ARMED':'OFF';
+const configured=cb.checked&&!cb.disabled,active=s&&s.auto_clock_active===true,vinLimited=s&&s.auto_clock_input_voltage_limited===true,ampLimited=s&&s.auto_clock_output_current_limited===true,vrLimited=s&&s.auto_clock_vr_temp_limited===true,powerLimited=s&&s.auto_clock_power_limited===true,tempLimited=s&&s.auto_clock_temperature_limited===true,limited=vinLimited||ampLimited||vrLimited||powerLimited||tempLimited,pill=$('oc-auto-clock-state');
+pill.className=`pill ${limited?'warn':active?'ok':configured?'warn':''}`.trim();pill.textContent=limited?(vinLimited&&!ampLimited&&!vrLimited&&!powerLimited&&!tempLimited?'VIN LIMIT':ampLimited&&!vinLimited&&!vrLimited&&!powerLimited&&!tempLimited?'AMP LIMIT':vrLimited&&!vinLimited&&!ampLimited&&!powerLimited&&!tempLimited?'VR LIMIT':powerLimited&&!vinLimited&&!ampLimited&&!vrLimited&&!tempLimited?'POWER':tempLimited&&!vinLimited&&!ampLimited&&!vrLimited&&!powerLimited?'TEMP':'LIMITS'):active?'ACTIVE':configured?'ARMED':'OFF';
 let note='Manual preset control';if(!on)note='Overclocking off';else if(configured&&fanOff)note=`No fan, target ${targetTemp}C`;else if(configured)note=`Fixed fan ${val('cfg-fan-percent')||'--'}%, target ${targetTemp}C`;
 txt('oc-auto-clock-note',note);
-const tf=num(s&&s.auto_clock_target_frequency_mhz),tv=num(s&&s.auto_clock_target_voltage_mv),pn=num(s&&s.auto_clock_power_now_w),pt=num(s&&s.auto_clock_power_target_w),tr=num(s&&s.auto_clock_thermal_resistance_c_per_w),vin=num(s&&s.tps546_read_vin),iout=num(s&&s.tps546_read_iout),vrTemp=num(s&&s.tps546_temp_c);
+const tf=num(s&&s.auto_clock_target_frequency_mhz),tv=num(s&&s.auto_clock_target_voltage_mv),pn=num(s&&s.auto_clock_power_now_w),pt=num(s&&s.auto_clock_power_target_w),tr=num(s&&s.auto_clock_thermal_resistance_c_per_w),reason=s&&s.auto_clock_hold_reason||'';
 const live=$('oc-auto-clock-live'),liveText=active&&Number.isFinite(tf)&&Number.isFinite(tv)?`Target ${n(tf,0)} MHz / ${n(tv,0)} mV | power ${n(pn,1)} / ${n(pt,1)} W | R ${n(tr,1)} C/W`:'Preset step limit: +1 / -3 levels per tick';
-const limitNotes=[];if(vinLimited)limitNotes.push(`input voltage ${n(vin,2)} V`);if(ampLimited)limitNotes.push(`amperage ${n(iout,1)} A`);if(vrLimited)limitNotes.push(`VR temp ${n(vrTemp,0)} C`);
-live.classList.toggle('oc-auto-clock-limit',limited);live.textContent=limited?`${limitNotes.join(', ')} limiting clock speed | ${liveText}`:liveText;
+let holdText='';if(ampLimited)holdText='Holding: IOUT limit';else if(vinLimited)holdText='Holding: VIN low';else if(vrLimited)holdText='Holding: VR temperature';else if(powerLimited)holdText='Holding: power headroom';else if(tempLimited)holdText='Holding: temperature';
+live.title=reason;
+live.classList.toggle('oc-auto-clock-limit',limited||!!holdText);live.textContent=holdText?`${holdText} | ${liveText}`:liveText;
 syncClockModePanels()}
 function syncDomainRebootSetting(){const cb=$('oc-domain-reboot-enabled');if(!cb)return;
 txt('oc-domain-reboot-note',cb.checked?'Waits 1 min below 75% expected':'Off')}
@@ -850,7 +851,7 @@ try{const body=configBody();
 const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
 let msg='Saved';if(j.wifi_reconnect)msg+=', reconnecting Wi-Fi';else if(j.pool_reconnect)msg+=', reconnecting pool';
-setStatus(statusId,msg,'ok',true);refresh()}catch(err){setStatus(statusId,`save failed: ${err.message||err}`,'err')}}
+setStatus(statusId,msg,'ok',true);loadSettings();refresh()}catch(err){setStatus(statusId,`save failed: ${err.message||err}`,'err')}}
 $('settings-form').onsubmit=e=>{e.preventDefault();saveConfig('settings-status')};
 $('overclock-form').onsubmit=e=>{e.preventDefault();saveConfig('overclock-status')};
 $('oc-asic-power').onclick=()=>{const powered=$('oc-asic-power').dataset.enabled==='1';setAsicPower(!powered)};

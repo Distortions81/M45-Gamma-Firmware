@@ -44,12 +44,19 @@ typedef struct {
     bool active;
     uint16_t target_frequency_mhz;
     uint16_t target_voltage_mv;
+    uint16_t next_up_frequency_mhz;
     float power_now_w;
     float power_target_w;
+    float next_up_power_w;
     float thermal_resistance_c_per_w;
+    float output_current_ceiling_a;
+    float next_up_output_current_a;
     bool input_voltage_limited;
     bool output_current_limited;
     bool vr_temp_limited;
+    bool power_limited;
+    bool temperature_limited;
+    char hold_reason[96];
 } bitaxe_gamma602_auto_clock_status_t;
 
 void bitaxe_gamma602_init_state(GlobalState *state);
