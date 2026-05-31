@@ -90,6 +90,14 @@ align-content:center;gap:2px;background:#111518;color:var(--text);overflow:hidde
 .summary-section .mini-list{grid-template-columns:82px minmax(0,1fr)}
 .mini-list dt{font-size:10px;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .mini-list dd{min-width:0;line-height:1.25}.mini-list .icon-btn{width:20px;height:20px;font-size:12px}
+.mini-info{position:relative;display:inline-flex;vertical-align:middle}.mini-info-button{border:0;background:transparent;
+color:var(--muted);font:inherit;font-size:10px;line-height:1;padding:0 0 0 2px;cursor:help}
+.mini-info-button:hover,.mini-info-button:focus{color:var(--blue);outline:none}
+.mini-info-text{position:absolute;left:0;top:18px;z-index:5;width:min(300px,calc(100vw - 48px));padding:9px;
+border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);font-size:12px;
+line-height:1.35;text-transform:none;letter-spacing:0;white-space:normal;opacity:0;visibility:hidden;
+pointer-events:none;transition:opacity .12s ease,visibility .12s ease}
+.mini-info:hover .mini-info-text,.mini-info:focus-within .mini-info-text{opacity:1;visibility:visible}
 .system-pool{white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.25;min-width:0}
 .system-pool:empty{display:none}
 .signal-state{font-weight:720}.status-line{display:inline-flex;align-items:center;gap:6px}
