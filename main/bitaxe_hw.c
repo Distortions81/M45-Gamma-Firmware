@@ -1208,7 +1208,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
                      vr_temp_c, vr_temp_ceiling_c);
         } else if (power_limited && next_up_power_w > 0.0f) {
             snprintf(hold_reason, sizeof(hold_reason),
-                     "thermal power target %.1f W; next %u MHz estimates %.1f W",
+                     "cooling target %.1f W; next %u MHz estimates %.1f W",
                      p_target, next_up_frequency_mhz, next_up_power_w);
         } else if (have_next_up_candidate) {
             snprintf(hold_reason, sizeof(hold_reason),
