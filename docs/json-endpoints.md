@@ -41,12 +41,14 @@ Response fields:
 | `frequency_mhz`, `hashrate_ghs`, `hashrate_nominal_ghs` | number | Current clock and hashrate. |
 | `domain_hashrate_ghs`, `domain_hashrates_ghs` | number/array | Domain hashrate totals. |
 | `asic_error_rate_percent`, `expected_hashrate_ghs` | number | Performance estimates. |
-| `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. |
-| `overclock_enabled` | boolean | Saved overclock enable state. |
+| `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. `voltage_temp_compensation_mv` is signed relative to the base voltage. |
+| `overclock_enabled`, `auto_clock_enabled`, `auto_clock_active`, `auto_domain_reboot_enabled`, `safety_limits_unrestricted` | boolean | Overclock, auto-clock, lost-domain watchdog, and unrestricted safety-limit state. |
+| `auto_clock_target_temp_c`, `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_next_up_frequency_mhz`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_next_up_power_w`, `auto_clock_thermal_resistance_c_per_w`, `auto_clock_output_current_ceiling_a`, `auto_clock_next_up_output_current_a`, `auto_clock_input_voltage_limited`, `auto_clock_output_current_limited`, `auto_clock_vr_temp_limited`, `auto_clock_power_limited`, `auto_clock_temperature_limited`, `auto_clock_hold_reason` | mixed | Auto-clock target, controller telemetry, and clock-limiting state. The `power_*_w` fields are ASIC heat load and estimated cooling target watts derived from temperature headroom, not a configured watt limit. |
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
-| `asic_power_watts`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power and fault state. |
+| `asic_power_watts`, `asic_efficiency_j_per_th`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power, efficiency, and fault state. `asic_efficiency_j_per_th` is computed from ASIC watts and measured hashrate. |
 | `pool`, `pool_port`, `pool_using_backup`, `stratum_connected`, `stratum_connected_seconds`, `stratum_response_ms` | mixed | Pool connection state. |
+| `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us`, `stratum_line_handle_us`, `stratum_line_handle_max_us`, `stratum_job_queue_wait_us`, `stratum_job_queue_wait_max_us`, `stratum_job_dispatch_us`, `stratum_job_dispatch_max_us` | number | Native M45 Stratum timing in microseconds. Share submit tracks nonce-result-to-submit timing and socket write time. Line handle tracks JSON handling time after a Stratum line is received. Job queue wait tracks pool work waiting for the ASIC job task, and job dispatch tracks received pool work to first ASIC send. |
 | `work_received`, `shares_accepted`, `shares_rejected`, `valid_nonces`, `nonce_errors` | number | Mining counters. |
 | `best_diff`, `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Difficulty state. |
 | `payout_status`, `payout_percent_x100` | string/number | Coinbase payout detection. |
@@ -58,8 +60,8 @@ Response fields:
 
 ```json
 {
-  "input_voltage_min_v": 4.5,
-  "input_voltage_expected_min_v": 4.8,
+  "input_voltage_min_v": 4.8,
+  "input_voltage_expected_min_v": 4.95,
   "input_voltage_expected_max_v": 5.4,
   "input_voltage_max_v": 5.5,
   "asic_voltage_min_v": 0.7,
@@ -67,14 +69,14 @@ Response fields:
   "asic_voltage_expected_max_v": 1.225,
   "asic_voltage_max_v": 1.4,
   "asic_voltage_target_v": 1.15,
-  "asic_temp_expected_max_c": 60.0,
+  "asic_temp_expected_max_c": 65.0,
   "asic_temp_max_c": 69.0,
-  "tps546_temp_expected_max_c": 85.0,
-  "tps546_temp_max_c": 98.0,
-  "iout_warn_a": 25.0,
-  "iout_fault_a": 30.0,
-  "power_warn_w": 28.75,
-  "power_fault_w": 34.5,
+  "tps546_temp_expected_max_c": 90.0,
+  "tps546_temp_max_c": 110.0,
+  "iout_warn_a": 29.0,
+  "iout_fault_a": 33.0,
+  "power_warn_w": 33.35,
+  "power_fault_w": 37.95,
   "fan_expected_percent": 100
 }
 ```
@@ -190,8 +192,8 @@ Response fields:
 | `pool_port`, `backup_pool_port` | number | 1-65535. |
 | `wifi_password_set`, `pool_password_set` | boolean | Password values are not returned. |
 | `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Pool difficulty settings. |
-| `overclock_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. |
-| `asic_frequency_mhz`, `asic_voltage_mv`, `overclock_voltage_offset_mv` | number | ASIC tuning values. |
+| `overclock_enabled`, `auto_clock_enabled`, `auto_domain_reboot_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock is experimental and requires overclocking plus either fixed fan speed or no fan mode, and a high-current stable 5 V power supply with wiring/connectors rated for the configured current limits. Auto clock is capped at 1200 MHz and also blocks preset increases when cooling temperature headroom is too low, VIN is at or below 5.01 V, or the board is near configured TPS546 output-current and VR-temperature safety limits. Auto domain reboot is off by default; when enabled, the ASIC is power-cycled if a domain remains below 75% of expected per-domain hashrate for at least 60 seconds, and pending lost-domain recovery can tolerate missing ASIC temperature reads until the reboot runs. |
+| `asic_frequency_mhz`, `asic_voltage_mv`, `overclock_voltage_offset_mv`, `auto_clock_target_temp_c` | number | ASIC tuning values. |
 | `fan_override_enabled`, `fan_override_percent`, `fan_auto_off_allowed`, `fan_target_override_enabled`, `fan_target_temp_c` | mixed | Fan settings. |
 | `display_screensaver_enabled`, `display_sleep_minutes`, `display_sleep_max_minutes` | mixed | OLED sleep settings. |
 | `safety_limits_unrestricted` | boolean | Allows out-of-normal safety limit settings when true. |
@@ -239,6 +241,9 @@ password values:
   "pool_difficulty_auto": true,
   "pool_difficulty": 1000,
   "overclock_enabled": false,
+  "auto_clock_enabled": false,
+  "auto_domain_reboot_enabled": false,
+  "auto_clock_target_temp_c": 62,
   "asic_frequency_mhz": 525,
   "asic_voltage_mv": 1150,
   "overclock_voltage_offset_mv": 0,
@@ -251,18 +256,18 @@ password values:
   "display_screensaver_enabled": true,
   "display_sleep_minutes": 0,
   "safety_limits_unrestricted": false,
-  "limit_input_voltage_min_mv": 4500,
-  "limit_input_voltage_expected_min_mv": 4800,
+  "limit_input_voltage_min_mv": 4800,
+  "limit_input_voltage_expected_min_mv": 4950,
   "limit_input_voltage_expected_max_mv": 5400,
   "limit_input_voltage_max_mv": 5500,
   "limit_asic_voltage_min_mv": 700,
   "limit_asic_voltage_max_mv": 1400,
-  "limit_asic_temp_expected_max_c": 60,
+  "limit_asic_temp_expected_max_c": 65,
   "limit_asic_temp_max_c": 69,
-  "limit_tps546_temp_expected_max_c": 85,
-  "limit_tps546_temp_max_c": 98,
-  "limit_iout_warn_deciamps": 250,
-  "limit_iout_fault_deciamps": 300
+  "limit_tps546_temp_expected_max_c": 90,
+  "limit_tps546_temp_max_c": 110,
+  "limit_iout_warn_deciamps": 290,
+  "limit_iout_fault_deciamps": 330
 }
 ```
 
@@ -297,6 +302,8 @@ Request body fields are optional:
 ```json
 {
   "overclock_enabled": true,
+  "auto_clock_enabled": false,
+  "auto_clock_target_temp_c": 62,
   "frequency_mhz": 625,
   "asic_frequency_mhz": 625,
   "voltage_mv": 1200,

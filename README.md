@@ -60,6 +60,16 @@ artifacts are written to `build/docker/`, including:
 Docker builds use repository defaults and do not embed local Wi-Fi or pool
 settings. Configure Wi-Fi and mining from the first boot setup page.
 
+To produce local OTA upload files:
+
+```sh
+scripts/docker-ota.sh
+```
+
+The OTA files are written to `dist/ota/` and include both accepted update
+formats, `M45-Firmware.bin` and `esp-miner-factory-602-*.bin`, plus SHA-256
+checksums.
+
 To produce the static web flasher package locally:
 
 ```sh
@@ -129,6 +139,9 @@ M45-specific additions compared with the stock ESP-Miner-style workflow:
   advanced testing.
 - Runtime TPS546 PMBus limit updates when safety limits change, including
   values outside the normal ranges when unrestricted mode is enabled.
+- Auto-clock preset selection holds or steps down instead of increasing when
+  VIN is at or below `5.01 V`, TPS546 current or VR temperature is close to
+  configured safety limits, and caps automatic increases at `1200 MHz`.
 - Coinbase payout detection, block-found alerting, best-diff reset, and
   automatic fallback and return behavior for backup Stratum pools.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes documented in
@@ -142,13 +155,16 @@ condition is detected. Default shutdown limits are:
 - ASIC temperature reaches `69 C`.
 - Enabled ASIC VOUT falls below `0.700 V`.
 - ASIC VOUT reaches `1.400 V`.
-- TPS546 temperature reaches `98 C`.
+- TPS546 temperature reaches `110 C`.
+- Input VIN falls below `4.8 V`.
 - Input VIN reaches `5.5 V`.
-- TPS546 output current reaches `30 A`.
+- TPS546 output current reaches `33 A`.
 - TPS546 or temperature monitor reads fail while hardware is active.
 
 These limits are last-resort protections, not a substitute for proper cooling,
 power delivery, and monitoring.
+ASIC temperature read failures are tolerated only while the lost-domain
+auto-reboot watchdog is already waiting to power-cycle the ASIC.
 
 The dashboard can explicitly unlock unrestricted safety-limit ranges for
 advanced testing. That option only removes firmware setting caps; it does not

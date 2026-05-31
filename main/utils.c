@@ -44,6 +44,15 @@ size_t hex2bin(const char *hex, uint8_t *bin, size_t bin_len)
     return len;
 }
 
+void uint32_to_hex8(uint32_t value, char dest[9])
+{
+    for (int i = 7; i >= 0; --i) {
+        dest[i] = HEX_TABLE[value & 0x0fU];
+        value >>= 4;
+    }
+    dest[8] = '\0';
+}
+
 void double_sha256_bin(const uint8_t *data, size_t data_len, uint8_t dest[32])
 {
     uint8_t first_hash[32];

@@ -16,22 +16,25 @@
 #define M45_FAN_TARGET_DEFAULT_C 62
 #define M45_FAN_TARGET_MIN_C 35
 #define M45_FAN_TARGET_MAX_C 66
+#define M45_AUTO_CLOCK_TARGET_DEFAULT_C M45_FAN_TARGET_DEFAULT_C
+#define M45_AUTO_CLOCK_TARGET_MIN_C M45_FAN_TARGET_MIN_C
+#define M45_AUTO_CLOCK_TARGET_MAX_C M45_FAN_TARGET_MAX_C
 #define M45_DISPLAY_SLEEP_DEFAULT_MINUTES 0
 #define M45_DISPLAY_SLEEP_MAX_MINUTES UINT16_MAX
 #define M45_ASIC_FREQUENCY_MIN_MHZ 1
 #define M45_ASIC_FREQUENCY_MAX_MHZ 1500
-#define M45_SAFETY_INPUT_VOLTAGE_MIN_DEFAULT_MV 4500
-#define M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MIN_DEFAULT_MV 4800
+#define M45_SAFETY_INPUT_VOLTAGE_MIN_DEFAULT_MV 4800
+#define M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MIN_DEFAULT_MV 4950
 #define M45_SAFETY_INPUT_VOLTAGE_EXPECTED_MAX_DEFAULT_MV 5400
 #define M45_SAFETY_INPUT_VOLTAGE_MAX_DEFAULT_MV 5500
 #define M45_SAFETY_ASIC_VOLTAGE_MIN_DEFAULT_MV 700
 #define M45_SAFETY_ASIC_VOLTAGE_MAX_DEFAULT_MV 1400
-#define M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_DEFAULT_C 60
+#define M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_DEFAULT_C 65
 #define M45_SAFETY_ASIC_TEMP_MAX_DEFAULT_C 69
-#define M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_DEFAULT_C 85
-#define M45_SAFETY_TPS546_TEMP_MAX_DEFAULT_C 98
-#define M45_SAFETY_IOUT_WARN_DEFAULT_DA 250
-#define M45_SAFETY_IOUT_FAULT_DEFAULT_DA 300
+#define M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_DEFAULT_C 90
+#define M45_SAFETY_TPS546_TEMP_MAX_DEFAULT_C 110
+#define M45_SAFETY_IOUT_WARN_DEFAULT_DA 290
+#define M45_SAFETY_IOUT_FAULT_DEFAULT_DA 330
 #define M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV 4500
 #define M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV 5200
 #define M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV 5000
@@ -45,10 +48,10 @@
 #define M45_SAFETY_ASIC_TEMP_MAX_MAX_C 69
 #define M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C 40
 #define M45_SAFETY_TPS546_TEMP_MAX_MIN_C 60
-#define M45_SAFETY_TPS546_TEMP_MAX_MAX_C 98
+#define M45_SAFETY_TPS546_TEMP_MAX_MAX_C 110
 #define M45_SAFETY_IOUT_WARN_MIN_DA 50
 #define M45_SAFETY_IOUT_FAULT_MIN_DA 60
-#define M45_SAFETY_IOUT_FAULT_MAX_DA 300
+#define M45_SAFETY_IOUT_FAULT_MAX_DA 330
 
 typedef struct {
     char wifi_ssid[M45_WIFI_SSID_MAX + 1];
@@ -65,6 +68,9 @@ typedef struct {
     uint16_t pool_difficulty;
     bool pool_difficulty_auto;
     bool overclock_enabled;
+    bool auto_clock_enabled;
+    bool auto_domain_reboot_enabled;
+    uint16_t auto_clock_target_temp_c;
     uint16_t asic_frequency_mhz;
     uint16_t asic_voltage_mv;
     int16_t overclock_voltage_offset_mv;
@@ -101,6 +107,7 @@ esp_err_t m45_config_set_pool_ip_cache(bool backup_pool, const char *expected_ho
 esp_err_t m45_config_set_best_diff(double best_diff);
 esp_err_t m45_config_reset_best_diff(void);
 const m45_config_t *m45_config_get(void);
+void m45_config_apply_auto_clock_policy(m45_config_t *config);
 uint16_t m45_config_auto_pool_difficulty(uint16_t frequency_mhz,
                                          uint16_t small_core_count,
                                          uint8_t asic_count);
@@ -109,8 +116,9 @@ uint16_t m45_config_effective_pool_difficulty(const m45_config_t *config,
                                               uint8_t asic_count);
 uint16_t m45_config_effective_asic_frequency_mhz(const m45_config_t *config);
 uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config);
-uint16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
-                                                      float asic_temp_c);
+int16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
+                                                     float asic_temp_c);
 uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *config,
                                                        float asic_temp_c);
 uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config);
+uint16_t m45_config_effective_auto_clock_target_temp_c(const m45_config_t *config);

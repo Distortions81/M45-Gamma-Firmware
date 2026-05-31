@@ -36,8 +36,6 @@ void free_mining_notify(mining_notify *params)
     }
     free(params->job_id);
     free(params->prev_block_hash);
-    free(params->coinbase_1);
-    free(params->coinbase_2);
     free(params->coinbase_1_bin);
     free(params->coinbase_2_bin);
     free(params->merkle_branches);
@@ -266,6 +264,20 @@ void calculate_merkle_root_hash(const uint8_t coinbase_tx_hash[32],
     memcpy(dest, pair, 32);
 }
 
+static double compact_target_difficulty(uint32_t compact_target)
+{
+    static const double truediffone =
+        26959535291011309493156476344723991336010898738574164086137773096960.0;
+    const uint32_t exponent = compact_target >> 24;
+    const uint32_t mantissa = compact_target & 0x007fffff;
+    if (exponent == 0 || mantissa == 0) {
+        return 0.0;
+    }
+
+    const double target = ldexp((double)mantissa, 8 * ((int)exponent - 3));
+    return target > 0.0 ? truediffone / target : 0.0;
+}
+
 void construct_bm_job(const mining_notify *params, const uint8_t merkle_root[32],
                       uint32_t version_mask, double difficulty, bm_job *new_job)
 {
@@ -274,12 +286,20 @@ void construct_bm_job(const mining_notify *params, const uint8_t merkle_root[32]
     new_job->ntime = params->ntime;
     new_job->starting_nonce = 0;
     new_job->pool_diff = difficulty;
+    new_job->block_diff = compact_target_difficulty(new_job->target);
+    uint32_to_hex8(new_job->ntime, new_job->ntime_hex);
     reverse_32bit_words(merkle_root, new_job->merkle_root);
 
     uint8_t prev_block_hash[32];
     memcpy(prev_block_hash, params->prev_block_hash_bin, sizeof(prev_block_hash));
     reverse_endianness_per_word(prev_block_hash);
     reverse_32bit_words(prev_block_hash, new_job->prev_block_hash);
+
+    memcpy(new_job->header_prefix, &new_job->version, 4);
+    reverse_32bit_words(new_job->prev_block_hash, new_job->header_prefix + 4);
+    reverse_32bit_words(new_job->merkle_root, new_job->header_prefix + 36);
+    memcpy(new_job->header_prefix + 68, &new_job->ntime, 4);
+    memcpy(new_job->header_prefix + 72, &new_job->target, 4);
 
     uint8_t midstate_data[64];
     memcpy(midstate_data, &new_job->version, 4);
@@ -318,11 +338,8 @@ double test_nonce_value(const bm_job *job, uint32_t nonce, uint32_t rolled_versi
         26959535291011309493156476344723991336010898738574164086137773096960.0;
 
     uint8_t header[80];
+    memcpy(header, job->header_prefix, sizeof(job->header_prefix));
     memcpy(header, &rolled_version, 4);
-    reverse_32bit_words(job->prev_block_hash, header + 4);
-    reverse_32bit_words(job->merkle_root, header + 36);
-    memcpy(header + 68, &job->ntime, 4);
-    memcpy(header + 72, &job->target, 4);
     memcpy(header + 76, &nonce, 4);
 
     uint8_t hash_result[32];
@@ -333,16 +350,7 @@ double test_nonce_value(const bm_job *job, uint32_t nonce, uint32_t rolled_versi
 
 double block_target_difficulty(uint32_t compact_target)
 {
-    static const double truediffone =
-        26959535291011309493156476344723991336010898738574164086137773096960.0;
-    const uint32_t exponent = compact_target >> 24;
-    const uint32_t mantissa = compact_target & 0x007fffff;
-    if (exponent == 0 || mantissa == 0) {
-        return 0.0;
-    }
-
-    const double target = ldexp((double)mantissa, 8 * ((int)exponent - 3));
-    return target > 0.0 ? truediffone / target : 0.0;
+    return compact_target_difficulty(compact_target);
 }
 
 void extranonce_2_generate(uint64_t extranonce_2, uint32_t length,

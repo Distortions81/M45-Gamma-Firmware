@@ -46,13 +46,13 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 9700
+#define STATUS_JSON_BUFFER_SIZE 11200
 #else
-#define STATUS_JSON_BUFFER_SIZE 8400
+#define STATUS_JSON_BUFFER_SIZE 9900
 #endif
-#define SETTINGS_JSON_BUFFER_SIZE 3800
-#define M45_DEVICE_NAME "M45-Bitaxe"
-#define HTTP_URI_HANDLER_SLOTS 56
+#define SETTINGS_JSON_BUFFER_SIZE 4000
+#define M45_DEVICE_NAME "M45-Firmware"
+#define HTTP_URI_HANDLER_SLOTS 58
 #define HTTP_HANDLER_WARN_MS 100
 #define LOG_CAPTURE_TIMEOUT_MS 5000
 #define OTA_UPLOAD_BUFFER_SIZE 4096
@@ -127,6 +127,15 @@ typedef struct {
 
 static void reboot_task(void *arg);
 static void factory_reset_reboot_task(void *arg);
+
+static esp_err_t set_wifi_low_latency_mode(void)
+{
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to disable Wi-Fi power save: %s", esp_err_to_name(err));
+    }
+    return err;
+}
 
 static uint64_t http_now_us(void)
 {
@@ -759,6 +768,7 @@ static void wifi_reconnect_task(void *arg)
     }
     if (g_setup_ap_active) {
         esp_wifi_set_mode(WIFI_MODE_APSTA);
+        (void)set_wifi_low_latency_mode();
     }
     esp_err_t err = set_sta_config(config->wifi_ssid, config->wifi_password);
     if (err != ESP_OK) {
@@ -950,8 +960,10 @@ static size_t filter_normal_logs(char *body, size_t body_len)
         }
 
         const size_t line_len = read_pos - line_start;
-        if (log_line_is_verbose(body + line_start, line_len) ||
-            line_contains_text(body + line_start, line_len, "share accepted")) {
+        const char *line = body + line_start;
+        const bool share_rejected = line_contains_text(line, line_len, "share rejected");
+        if ((log_line_is_verbose(line, line_len) && !share_rejected) ||
+            line_contains_text(line, line_len, "share accepted")) {
             continue;
         }
         if (write_pos != line_start) {
@@ -1052,22 +1064,93 @@ static bool safety_settings_changed(const m45_config_t *old_config,
                new_config->safety_iout_fault_deciamps;
 }
 
+static uint16_t volts_to_millivolts(float volts)
+{
+    if (volts <= 0.0f || volts > 65.535f) {
+        return 0;
+    }
+    return (uint16_t)(volts * 1000.0f + 0.5f);
+}
+
+static uint16_t current_asic_voltage_mv(const m45_config_t *fallback_config,
+                                        float asic_temp_c)
+{
+    bitaxe_gamma602_power_snapshot_t power;
+    if (bitaxe_gamma602_power_snapshot(&power)) {
+        const uint16_t commanded_mv = volts_to_millivolts(power.vout_command);
+        if (commanded_mv > 0) {
+            return commanded_mv;
+        }
+        const uint16_t measured_mv = volts_to_millivolts(power.read_vout);
+        if (measured_mv > 0) {
+            return measured_mv;
+        }
+    }
+
+    if (g_state != NULL) {
+        const uint16_t state_mv =
+            volts_to_millivolts(g_state->POWER_MANAGEMENT_MODULE.core_voltage);
+        if (state_mv > 0) {
+            return state_mv;
+        }
+    }
+
+    return m45_config_effective_asic_voltage_mv_for_temp(fallback_config, asic_temp_c);
+}
+
+static uint16_t current_asic_frequency_mhz(const m45_config_t *fallback_config)
+{
+    if (g_state != NULL) {
+        const float actual_mhz = g_state->POWER_MANAGEMENT_MODULE.actual_frequency;
+        if (actual_mhz > 0.0f && actual_mhz <= (float)M45_ASIC_FREQUENCY_MAX_MHZ) {
+            return (uint16_t)(actual_mhz + 0.5f);
+        }
+    }
+
+    return m45_config_effective_asic_frequency_mhz(fallback_config);
+}
+
+static esp_err_t apply_frequency_setting(uint16_t frequency_mhz)
+{
+    const uint64_t started_us = http_now_us();
+    stratum_minimal_pause_work();
+    esp_err_t err = bitaxe_gamma602_set_frequency_mhz(g_state, frequency_mhz);
+    stratum_minimal_resume_work();
+    log_http_handler_delay("ASIC frequency apply", started_us);
+    return err;
+}
+
 static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
                                          const m45_config_t *new_config)
 {
     const float asic_temp_c = g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg
                                               : 0.0f;
-    const uint16_t old_voltage_mv =
-        m45_config_effective_asic_voltage_mv_for_temp(old_config, asic_temp_c);
+    const uint16_t old_voltage_mv = current_asic_voltage_mv(old_config, asic_temp_c);
+    const uint16_t old_frequency_mhz = current_asic_frequency_mhz(old_config);
+    /*
+     * Auto Clock saves stock manual targets as boot defaults, but it owns the
+     * live ASIC tune. Preserve the current live tune on ordinary settings saves.
+     */
+    const bool auto_clock_owns_runtime_tune =
+        new_config->overclock_enabled && new_config->auto_clock_enabled &&
+        old_voltage_mv >= new_config->safety_asic_voltage_min_mv &&
+        old_voltage_mv < new_config->safety_asic_voltage_max_mv;
     const uint16_t new_voltage_mv =
-        m45_config_effective_asic_voltage_mv_for_temp(new_config, asic_temp_c);
-    const uint16_t old_frequency_mhz = m45_config_effective_asic_frequency_mhz(old_config);
-    const uint16_t new_frequency_mhz = m45_config_effective_asic_frequency_mhz(new_config);
+        auto_clock_owns_runtime_tune
+            ? old_voltage_mv
+            : m45_config_effective_asic_voltage_mv_for_temp(new_config, asic_temp_c);
+    const uint16_t new_frequency_mhz =
+        auto_clock_owns_runtime_tune ? old_frequency_mhz
+                                     : m45_config_effective_asic_frequency_mhz(new_config);
     const bool safety_changed = safety_settings_changed(old_config, new_config);
     const bool voltage_needs_new_limits =
         new_voltage_mv < old_config->safety_asic_voltage_min_mv ||
         new_voltage_mv >= old_config->safety_asic_voltage_max_mv;
     bool safety_limits_applied = false;
+
+    if (old_config->auto_clock_enabled != new_config->auto_clock_enabled) {
+        bitaxe_gamma602_reset_auto_clock_control();
+    }
 
     if (safety_changed && voltage_needs_new_limits) {
         const uint64_t started_us = http_now_us();
@@ -1077,6 +1160,14 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
             return err;
         }
         safety_limits_applied = true;
+    }
+
+    if (old_frequency_mhz != new_frequency_mhz &&
+        new_frequency_mhz <= old_frequency_mhz) {
+        esp_err_t err = apply_frequency_setting(new_frequency_mhz);
+        if (err != ESP_OK) {
+            return err;
+        }
     }
 
     if (old_voltage_mv != new_voltage_mv) {
@@ -1096,12 +1187,9 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
             return err;
         }
     }
-    if (old_frequency_mhz != new_frequency_mhz) {
-        const uint64_t started_us = http_now_us();
-        stratum_minimal_pause_work();
-        esp_err_t err = bitaxe_gamma602_set_frequency_mhz(g_state, new_frequency_mhz);
-        stratum_minimal_resume_work();
-        log_http_handler_delay("ASIC frequency apply", started_us);
+    if (old_frequency_mhz != new_frequency_mhz &&
+        new_frequency_mhz > old_frequency_mhz) {
+        esp_err_t err = apply_frequency_setting(new_frequency_mhz);
         if (err != ESP_OK) {
             return err;
         }
@@ -1217,6 +1305,13 @@ static esp_err_t styles_css_handler(httpd_req_t *req)
                            WEB_STYLES_CSS_GZ_LEN);
 }
 
+static esp_err_t favicon_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "image/svg+xml");
+    set_no_store_headers(req);
+    return httpd_resp_sendstr(req, WEB_FAVICON_SVG);
+}
+
 static esp_err_t captive_portal_redirect_handler(httpd_req_t *req)
 {
     char location[64];
@@ -1247,10 +1342,16 @@ static esp_err_t status_handler(httpd_req_t *req)
     stratum_minimal_stats_t stats;
     bitaxe_gamma602_power_snapshot_t power;
     bitaxe_gamma602_safety_limits_t limits;
+    bitaxe_gamma602_auto_clock_status_t auto_clock;
     stratum_minimal_get_stats(&stats);
     const bool have_power = bitaxe_gamma602_power_snapshot(&power);
     const float asic_power_watts = have_power ? power.read_vout * power.read_iout : 0.0f;
+    const double asic_efficiency_j_per_th =
+        asic_power_watts > 0.0f && stats.measured_hashrate_ghs > 0.0
+            ? ((double)asic_power_watts * 1000.0) / stats.measured_hashrate_ghs
+            : 0.0;
     bitaxe_gamma602_safety_limits(&limits);
+    bitaxe_gamma602_auto_clock_status(&auto_clock);
     wifi_ap_record_t ap_info = {0};
     const int wifi_rssi = g_connected && esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK
                               ? ap_info.rssi
@@ -1280,7 +1381,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         fan_auto ? m45_config_effective_fan_target_temp_c(config) : M45_FAN_TARGET_DEFAULT_C;
     const float asic_temp_c = g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg;
     const uint16_t voltage_base_mv = m45_config_effective_asic_voltage_mv(config);
-    const uint16_t voltage_compensation_mv =
+    const int16_t voltage_compensation_mv =
         m45_config_asic_voltage_temp_compensation_mv(config, asic_temp_c);
     const uint16_t voltage_target_mv =
         m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
@@ -1288,6 +1389,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     char wifi_ssid[80];
     char pool_host[160];
     char hardware_fault_msg[96];
+    char auto_clock_hold_reason[128];
     char tps546_model[24];
     char domain_hashrates_json[512];
 #ifdef M45_ASIC_LOSS_METRICS
@@ -1299,6 +1401,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     json_escape(hardware_fault_msg, sizeof(hardware_fault_msg),
                 g_state->SYSTEM_MODULE.hardware_fault ? g_state->SYSTEM_MODULE.hardware_fault_msg
                                                        : "");
+    json_escape(auto_clock_hold_reason, sizeof(auto_clock_hold_reason),
+                auto_clock.hold_reason);
     json_escape(tps546_model, sizeof(tps546_model), bitaxe_gamma602_tps_model());
     format_domain_hashrates_json(&stats, expected_chip_count,
                                   domain_hashrates_json,
@@ -1377,8 +1481,28 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"voltage_mv\":%u,"
                  "\"voltage_base_mv\":%u,"
                  "\"voltage_temp_compensation_enabled\":%s,"
-                 "\"voltage_temp_compensation_mv\":%u,"
+                 "\"voltage_temp_compensation_mv\":%d,"
                  "\"overclock_enabled\":%s,"
+                 "\"auto_clock_enabled\":%s,"
+                 "\"auto_domain_reboot_enabled\":%s,"
+                 "\"safety_limits_unrestricted\":%s,"
+                 "\"auto_clock_target_temp_c\":%u,"
+                 "\"auto_clock_active\":%s,"
+                 "\"auto_clock_input_voltage_limited\":%s,"
+                 "\"auto_clock_output_current_limited\":%s,"
+                 "\"auto_clock_vr_temp_limited\":%s,"
+                 "\"auto_clock_power_limited\":%s,"
+                 "\"auto_clock_temperature_limited\":%s,"
+                 "\"auto_clock_hold_reason\":\"%s\","
+                 "\"auto_clock_target_frequency_mhz\":%u,"
+                 "\"auto_clock_target_voltage_mv\":%u,"
+                 "\"auto_clock_next_up_frequency_mhz\":%u,"
+                 "\"auto_clock_power_now_w\":%.2f,"
+                 "\"auto_clock_power_target_w\":%.2f,"
+                 "\"auto_clock_next_up_power_w\":%.2f,"
+                 "\"auto_clock_thermal_resistance_c_per_w\":%.2f,"
+                 "\"auto_clock_output_current_ceiling_a\":%.2f,"
+                 "\"auto_clock_next_up_output_current_a\":%.2f,"
                  "\"asic_temp_c\":%.1f,"
                  "\"fan_percent\":%.1f,"
                  "\"fan_rpm\":%u,"
@@ -1392,6 +1516,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"tps546_temp_c\":%d,"
                  "\"tps546_model\":\"%s\","
                  "\"asic_power_watts\":%.2f,"
+                 "\"asic_efficiency_j_per_th\":%.2f,"
                  "\"power_fault\":%u,"
                  "\"hardware_fault\":%s,"
                  "\"hardware_fault_msg\":\"%s\","
@@ -1401,6 +1526,16 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"stratum_connected\":%s,"
                  "\"stratum_connected_seconds\":%lu,"
                  "\"stratum_response_ms\":%lu,"
+                 "\"stratum_share_submit_us\":%" PRIu64 ","
+                 "\"stratum_share_submit_max_us\":%" PRIu64 ","
+                 "\"stratum_share_write_us\":%" PRIu64 ","
+                 "\"stratum_share_write_max_us\":%" PRIu64 ","
+                 "\"stratum_line_handle_us\":%" PRIu64 ","
+                 "\"stratum_line_handle_max_us\":%" PRIu64 ","
+                 "\"stratum_job_queue_wait_us\":%" PRIu64 ","
+                 "\"stratum_job_queue_wait_max_us\":%" PRIu64 ","
+                 "\"stratum_job_dispatch_us\":%" PRIu64 ","
+                 "\"stratum_job_dispatch_max_us\":%" PRIu64 ","
                  "\"work_received\":%lu,"
                  "\"shares_accepted\":%lu,"
                  "\"shares_rejected\":%lu,"
@@ -1457,6 +1592,24 @@ static esp_err_t status_handler(httpd_req_t *req)
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
                  voltage_compensation_mv,
                  config->overclock_enabled ? "true" : "false",
+                 config->auto_clock_enabled ? "true" : "false",
+                 config->auto_domain_reboot_enabled ? "true" : "false",
+                 config->safety_limits_unrestricted ? "true" : "false",
+                 m45_config_effective_auto_clock_target_temp_c(config),
+                 auto_clock.active ? "true" : "false",
+                 auto_clock.input_voltage_limited ? "true" : "false",
+                 auto_clock.output_current_limited ? "true" : "false",
+                 auto_clock.vr_temp_limited ? "true" : "false",
+                 auto_clock.power_limited ? "true" : "false",
+                 auto_clock.temperature_limited ? "true" : "false",
+                 auto_clock_hold_reason,
+                 auto_clock.target_frequency_mhz, auto_clock.target_voltage_mv,
+                 auto_clock.next_up_frequency_mhz,
+                 auto_clock.power_now_w, auto_clock.power_target_w,
+                 auto_clock.next_up_power_w,
+                 auto_clock.thermal_resistance_c_per_w,
+                 auto_clock.output_current_ceiling_a,
+                 auto_clock.next_up_output_current_a,
                  asic_temp_c,
                  g_state->POWER_MANAGEMENT_MODULE.fan_perc,
                  g_state->POWER_MANAGEMENT_MODULE.fan_rpm,
@@ -1465,12 +1618,17 @@ static esp_err_t status_handler(httpd_req_t *req)
                  have_power ? "true" : "false", have_power ? power.read_vout : 0.0f,
                  have_power ? power.read_vin : 0.0f, have_power ? power.read_iout : 0.0f,
                  have_power ? power.read_temp_c : 0, tps546_model, asic_power_watts,
-                 g_state->SYSTEM_MODULE.power_fault,
+                 asic_efficiency_j_per_th, g_state->SYSTEM_MODULE.power_fault,
                  g_state->SYSTEM_MODULE.hardware_fault ? "true" : "false", hardware_fault_msg,
                  pool_host, stats.pool_port > 0 ? stats.pool_port : config->pool_port,
                  stats.using_backup_pool ? "true" : "false",
                  stats.connected ? "true" : "false",
                  (unsigned long)stats.connected_seconds, (unsigned long)stats.response_time_ms,
+                 stats.share_submit_us, stats.share_submit_max_us,
+                 stats.share_write_us, stats.share_write_max_us,
+                 stats.line_handle_us, stats.line_handle_max_us,
+                 stats.job_queue_wait_us, stats.job_queue_wait_max_us,
+                 stats.job_dispatch_us, stats.job_dispatch_max_us,
                  (unsigned long)stats.work_received,
                  (unsigned long)stats.accepted, (unsigned long)stats.rejected,
                  (unsigned long)stats.valid_nonces, (unsigned long)stats.nonce_errors,
@@ -1576,6 +1734,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"pool_difficulty_auto\":%s,"
                  "\"pool_suggested_difficulty\":%u,"
                  "\"overclock_enabled\":%s,"
+                 "\"auto_clock_enabled\":%s,"
+                 "\"auto_domain_reboot_enabled\":%s,"
+                 "\"auto_clock_target_temp_c\":%u,"
                  "\"asic_frequency_mhz\":%u,"
                  "\"asic_voltage_mv\":%u,"
                  "\"overclock_voltage_offset_mv\":%d,"
@@ -1608,6 +1769,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  config->pool_pass[0] != '\0' ? "true" : "false", config->pool_difficulty,
                  config->pool_difficulty_auto ? "true" : "false",
                  suggested_pool_difficulty, config->overclock_enabled ? "true" : "false",
+                 config->auto_clock_enabled ? "true" : "false",
+                 config->auto_domain_reboot_enabled ? "true" : "false",
+                 config->auto_clock_target_temp_c,
                  config->asic_frequency_mhz, config->asic_voltage_mv,
                  config->overclock_voltage_offset_mv,
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
@@ -2102,6 +2266,13 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                                &config.pool_difficulty_auto) &&
         json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535) &&
         json_get_optional_bool(json, "overclock_enabled", &config.overclock_enabled) &&
+        json_get_optional_bool(json, "auto_clock_enabled", &config.auto_clock_enabled) &&
+        json_get_optional_bool(json, "auto_domain_reboot_enabled",
+                               &config.auto_domain_reboot_enabled) &&
+        json_get_optional_u16(json, "auto_clock_target_temp_c",
+                              &config.auto_clock_target_temp_c,
+                              M45_AUTO_CLOCK_TARGET_MIN_C,
+                              M45_AUTO_CLOCK_TARGET_MAX_C) &&
         json_get_u16(json, "asic_frequency_mhz", &config.asic_frequency_mhz,
                      M45_ASIC_FREQUENCY_MIN_MHZ, M45_ASIC_FREQUENCY_MAX_MHZ) &&
         json_get_u16(json, "asic_voltage_mv", &config.asic_voltage_mv, 500, 1370) &&
@@ -2182,12 +2353,15 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_IOUT_FAULT_MAX_DA);
     cJSON_Delete(json);
+    m45_config_apply_auto_clock_policy(&config);
 
     if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
         config.backup_pool_host[0] == '\0' || config.pool_user[0] == '\0' ||
         (config.fan_override_percent != 0 &&
          (config.fan_override_percent < 35 || config.fan_override_percent > 100)) ||
         config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||
+        config.auto_clock_target_temp_c < M45_AUTO_CLOCK_TARGET_MIN_C ||
+        config.auto_clock_target_temp_c > M45_AUTO_CLOCK_TARGET_MAX_C ||
         !safety_settings_valid_for_tune(&config)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid settings\"}");
@@ -2204,9 +2378,19 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     bool pool_reconnect = false;
     runtime_reconnect_flags(&old_config, &config, &wifi_reconnect, &pool_reconnect);
 
-    esp_err_t err = apply_hardware_settings(&old_config, &config);
+    esp_err_t err = m45_config_set_runtime(&config);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char error_body[80];
+        snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
+        return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
+    }
+
+    const m45_config_t applied_config = *m45_config_get();
+    err = apply_hardware_settings(&old_config, &applied_config);
+    if (err != ESP_OK) {
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after apply error: %s",
                      esp_err_to_name(revert_err));
@@ -2221,7 +2405,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     err = m45_config_save(&config);
     log_http_handler_delay("settings NVS save", started_us);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after save error: %s",
                      esp_err_to_name(revert_err));
@@ -2264,7 +2449,7 @@ static bool json_get_tune_u16(cJSON *root, const char *name, const char *alt_nam
 
 static esp_err_t runtime_tune_handler(httpd_req_t *req)
 {
-    if (req->content_len <= 0 || req->content_len > 512) {
+    if (req->content_len <= 0 || req->content_len > 640) {
         httpd_resp_set_status(req, "413 Payload Too Large");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid size\"}");
     }
@@ -2296,6 +2481,11 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     m45_config_t runtime = *m45_config_get();
     const bool ok =
         json_get_optional_bool(json, "overclock_enabled", &runtime.overclock_enabled) &&
+        json_get_optional_bool(json, "auto_clock_enabled", &runtime.auto_clock_enabled) &&
+        json_get_optional_u16(json, "auto_clock_target_temp_c",
+                              &runtime.auto_clock_target_temp_c,
+                              M45_AUTO_CLOCK_TARGET_MIN_C,
+                              M45_AUTO_CLOCK_TARGET_MAX_C) &&
         json_get_tune_u16(json, "frequency_mhz", "asic_frequency_mhz",
                           &runtime.asic_frequency_mhz, M45_ASIC_FREQUENCY_MIN_MHZ,
                           M45_ASIC_FREQUENCY_MAX_MHZ) &&
@@ -2313,6 +2503,7 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
         json_get_optional_u16(json, "fan_target_temp_c", &runtime.fan_target_temp_c,
                               35, 66);
     cJSON_Delete(json);
+    m45_config_apply_auto_clock_policy(&runtime);
 
     if (!ok || (runtime.fan_override_percent != 0 &&
                 (runtime.fan_override_percent < 35 || runtime.fan_override_percent > 100))) {
@@ -2335,12 +2526,13 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     err = apply_runtime_settings(&old_config, m45_config_get(), &wifi_reconnect, &pool_reconnect);
     log_http_handler_delay("runtime tune apply", started_us);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(m45_config_get(), &old_config);
+        const m45_config_t applied_config = *m45_config_get();
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore runtime hardware settings after apply error: %s",
                      esp_err_to_name(revert_err));
         }
-        m45_config_set_runtime(&old_config);
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
         snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
@@ -3554,6 +3746,7 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     m45_config_t config = *m45_config_get();
     const bool ok = espminer_apply_patch_json(json, &config);
     cJSON_Delete(json);
+    m45_config_apply_auto_clock_policy(&config);
 
     if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
         config.pool_user[0] == '\0' ||
@@ -3571,8 +3764,21 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
         settings_string_changed(old_config.hostname, config.hostname);
     const bool pool_reconnect = active_pool_settings_changed(&old_config, &config);
 
-    esp_err_t err = apply_hardware_settings(&old_config, &config);
+    esp_err_t err = m45_config_set_runtime(&config);
     if (err != ESP_OK) {
+        return send_espminer_json_error(req, "500 Internal Server Error",
+                                        esp_err_to_name(err));
+    }
+
+    const m45_config_t applied_config = *m45_config_get();
+    err = apply_hardware_settings(&old_config, &applied_config);
+    if (err != ESP_OK) {
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
+        if (revert_err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to restore hardware settings after ESP-Miner apply error: %s",
+                     esp_err_to_name(revert_err));
+        }
         return send_espminer_json_error(req, "500 Internal Server Error",
                                         esp_err_to_name(err));
     }
@@ -3581,7 +3787,8 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     err = m45_config_save(&config);
     log_http_handler_delay("ESP-Miner settings NVS save", started_us);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after ESP-Miner save error: %s",
                      esp_err_to_name(revert_err));
@@ -3641,6 +3848,8 @@ static esp_err_t start_http_server(void)
         {.uri = "/update", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/logs", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_handler},
+        {.uri = "/favicon.svg", .method = HTTP_GET, .handler = favicon_handler},
+        {.uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler},
         {.uri = "/api/system/info", .method = HTTP_GET,
          .handler = espminer_system_info_handler},
@@ -3771,6 +3980,8 @@ esp_err_t wifi_http_start(GlobalState *state)
         g_setup_ap_active = false;
     }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Wi-Fi start failed");
+    ESP_RETURN_ON_ERROR(set_wifi_low_latency_mode(), TAG,
+                        "Wi-Fi low-latency mode failed");
 
     init_page_token();
     ESP_RETURN_ON_ERROR(start_http_server(), TAG, "HTTP server failed");

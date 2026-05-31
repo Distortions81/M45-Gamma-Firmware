@@ -393,6 +393,7 @@ void BM1370_send_work(void * pvParameters, bm_job * next_bm_job)
 
 task_result * BM1370_process_work(void * pvParameters)
 {
+    (void)pvParameters;
     uint8_t asic_result[BM1370_RESULT_LENGTH] = {0};
 
     memset(&result, 0, sizeof(task_result));
@@ -431,29 +432,9 @@ task_result * BM1370_process_work(void * pvParameters)
     uint8_t small_core_id = raw_job_id & 0x0f; // BM1370 has 16 small cores, so it should be coded on 4 bits
     uint32_t version_bits = ((uint32_t)read_be16(&asic_result[8]) << 13); // shift the 16 bit value left 13
 
-    GlobalState * GLOBAL_STATE = (GlobalState *) pvParameters;
-
-    uint32_t job_version = 0;
-    bool valid_job = false;
-
-    pthread_mutex_lock(&GLOBAL_STATE->valid_jobs_lock);
-    if (GLOBAL_STATE->valid_jobs[job_id] != 0 &&
-        GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id] != NULL) {
-        job_version = GLOBAL_STATE->ASIC_TASK_MODULE.active_jobs[job_id]->version;
-        valid_job = true;
-    }
-    pthread_mutex_unlock(&GLOBAL_STATE->valid_jobs_lock);
-
-    if (!valid_job) {
-        ESP_LOGW(TAG, "Invalid job nonce found, 0x%02X", job_id);
-        return NULL;
-    }
-
-    uint32_t rolled_version = job_version | version_bits;
-
     result.job_id = job_id;
     memcpy(&result.nonce, &asic_result[2], sizeof(result.nonce));
-    result.rolled_version = rolled_version;
+    result.version_bits = version_bits;
     result.asic_nr = asic_nr;
     result.core_id = core_id;
     result.small_core_id = small_core_id;
