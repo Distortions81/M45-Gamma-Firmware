@@ -63,6 +63,10 @@
 #define STRATUM_BECH32_DECODE_MAX 90
 #define STRATUM_MINER_MODEL "M45-Bitaxe"
 #define STRATUM_MINER_VERSION_CHARS 7
+#define STRATUM_RX_TASK_PRIORITY 17
+#define STRATUM_JOB_TASK_PRIORITY 18
+#define STRATUM_RESULT_TASK_PRIORITY 16
+#define STRATUM_HASHRATE_TASK_PRIORITY 6
 
 #define STRATUM_ID_CONFIGURE 1
 #define STRATUM_ID_SUBSCRIBE 2
@@ -3589,11 +3593,14 @@ esp_err_t stratum_minimal_start(GlobalState *state)
         return monitor_err;
     }
 
-    if (xTaskCreate(stratum_rx_task, "stratum_rx", 8192, NULL, 10, NULL) != pdPASS ||
-        xTaskCreate(job_task, "asic_jobs", 8192, NULL, 18, NULL) != pdPASS ||
-        xTaskCreate(result_task, "asic_result", 8192, NULL, 16, NULL) != pdPASS ||
-        xTaskCreate(asic_hashrate_monitor_task, "asic_hashrate", 4096, NULL, 6, NULL) !=
-            pdPASS) {
+    if (xTaskCreate(stratum_rx_task, "stratum_rx", 8192, NULL,
+                    STRATUM_RX_TASK_PRIORITY, NULL) != pdPASS ||
+        xTaskCreate(job_task, "asic_jobs", 8192, NULL,
+                    STRATUM_JOB_TASK_PRIORITY, NULL) != pdPASS ||
+        xTaskCreate(result_task, "asic_result", 8192, NULL,
+                    STRATUM_RESULT_TASK_PRIORITY, NULL) != pdPASS ||
+        xTaskCreate(asic_hashrate_monitor_task, "asic_hashrate", 4096, NULL,
+                    STRATUM_HASHRATE_TASK_PRIORITY, NULL) != pdPASS) {
         return ESP_FAIL;
     }
 

@@ -27,15 +27,17 @@
 #define TPS546_STATUS_FAULT_MASK                                                                  \
     (TPS546_STATUS_OFF | TPS546_STATUS_VOUT_OV | TPS546_STATUS_IOUT_OC | TPS546_STATUS_VIN_UV |   \
      TPS546_STATUS_TEMP | TPS546_STATUS_PGOOD)
-#define TPS546_VOUT_TOLERANCE_VOLTS 0.020f
+#define TPS546_VOUT_TOLERANCE_VOLTS 0.075f
 #define TPS546_MONITOR_INTERVAL_MS 250
 #define ASIC_FAN_MONITOR_INTERVAL_MS 250
 #define TPS546_POWER_WINDOW_SAMPLES 16
 #define TPS546_OUTPUT_SETTLE_INITIAL_MS 20
 #define TPS546_OUTPUT_SETTLE_POLL_MS 10
-#define TPS546_OUTPUT_SETTLE_TIMEOUT_MS 150
+#define TPS546_OUTPUT_SETTLE_TIMEOUT_MS 300
 #define ASIC_FREQUENCY_SETTLE_MS 50
 #define ASIC_TEMP_STARTUP_GRACE_MS 3000
+#define ASIC_TEMP_NO_READING_C 127.0f
+#define ASIC_TEMP_NO_READING_LOG_MS 5000
 #define ASIC_TEMP_VOLTAGE_UPDATE_DEADBAND_MV 5
 #define AUTO_CLOCK_INTERVAL_MS 5000
 #define AUTO_CLOCK_PRESET_MIN_MHZ 50
@@ -71,6 +73,7 @@ static bool g_regulator_enabled = false;
 static bool g_tps546_ready = false;
 static uint16_t g_commanded_voltage_mv = 0;
 static TickType_t g_asic_temp_grace_until;
+static TickType_t g_asic_temp_no_reading_log_next;
 static portMUX_TYPE g_power_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_auto_clock_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static bitaxe_gamma602_power_snapshot_t g_power_snapshot = {0};
@@ -99,6 +102,24 @@ static uint8_t g_power_window_next;
 static void set_hw_status(const char *status)
 {
     strlcpy(g_hw_status, status, sizeof(g_hw_status));
+}
+
+static bool asic_temp_is_no_reading(float temp_c)
+{
+    return isfinite(temp_c) && temp_c > ASIC_TEMP_NO_READING_C;
+}
+
+static void log_asic_temp_no_reading(float temp_c)
+{
+    const TickType_t now = xTaskGetTickCount();
+    if (g_asic_temp_no_reading_log_next != 0 &&
+        (int32_t)(now - g_asic_temp_no_reading_log_next) < 0) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "ignoring ASIC temperature %.1f C as no reading", temp_c);
+    g_asic_temp_no_reading_log_next =
+        now + pdMS_TO_TICKS(ASIC_TEMP_NO_READING_LOG_MS);
 }
 
 static TPS546_CONFIG gamma_tps546_config_from(const m45_config_t *active)
@@ -344,6 +365,29 @@ static bool auto_clock_candidate_voltage(const m45_config_t *config,
     return true;
 }
 
+static uint16_t current_auto_clock_frequency_mhz(GlobalState *state,
+                                                const m45_config_t *config)
+{
+    const float actual_mhz =
+        state != NULL ? state->POWER_MANAGEMENT_MODULE.actual_frequency : 0.0f;
+    if (isfinite(actual_mhz) && actual_mhz > 0.0f && actual_mhz <= 65535.0f) {
+        return (uint16_t)lroundf(actual_mhz);
+    }
+    return m45_config_effective_asic_frequency_mhz(config);
+}
+
+static uint16_t current_auto_clock_voltage_mv(const m45_config_t *config,
+                                             float asic_temp_c)
+{
+    if (g_commanded_voltage_mv > 0) {
+        return g_commanded_voltage_mv;
+    }
+    if (isfinite(asic_temp_c) && asic_temp_c > 0.0f) {
+        return m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
+    }
+    return m45_config_effective_asic_voltage_mv(config);
+}
+
 static float auto_clock_upshift_current_ceiling_a(const m45_config_t *config)
 {
     const float warn_a = config->safety_iout_warn_deciamps / 10.0f;
@@ -388,18 +432,19 @@ static esp_err_t auto_clock_apply_preset(GlobalState *state, const m45_config_t 
                                          uint16_t next_target_voltage_mv)
 {
     m45_config_t next_config = *current_config;
+    next_config.auto_clock_enabled = true;
     next_config.overclock_enabled = true;
     next_config.asic_frequency_mhz = next_frequency_mhz;
     next_config.asic_voltage_mv = next_base_voltage_mv;
-    m45_config_apply_auto_clock_policy(&next_config);
 
     const uint16_t current_frequency_mhz =
-        m45_config_effective_asic_frequency_mhz(current_config);
+        current_auto_clock_frequency_mhz(state, current_config);
+    const uint16_t current_voltage_mv =
+        current_auto_clock_voltage_mv(current_config, 0.0f);
     esp_err_t err = ESP_OK;
 
     ESP_LOGI(TAG, "auto clock preset: %u MHz / %u mV -> %u MHz / %u mV",
-             current_frequency_mhz,
-             m45_config_effective_asic_voltage_mv(current_config),
+             current_frequency_mhz, current_voltage_mv,
              next_frequency_mhz, next_base_voltage_mv);
 
     if (next_frequency_mhz <= current_frequency_mhz) {
@@ -424,22 +469,10 @@ static esp_err_t auto_clock_apply_preset(GlobalState *state, const m45_config_t 
         return err;
     }
 
-    m45_config_t commit_config = *m45_config_get();
-    if (!commit_config.auto_clock_enabled || !commit_config.overclock_enabled) {
-        return ESP_OK;
-    }
-    commit_config.overclock_enabled = true;
-    commit_config.asic_frequency_mhz = next_frequency_mhz;
-    commit_config.asic_voltage_mv = next_base_voltage_mv;
-    m45_config_apply_auto_clock_policy(&commit_config);
-
-    err = m45_config_set_runtime(&commit_config);
-    if (err == ESP_OK) {
-        state->pool_difficulty = m45_config_effective_pool_difficulty(
-            &commit_config, state->DEVICE_CONFIG.family.asic.small_core_count,
-            state->DEVICE_CONFIG.family.asic_count);
-    }
-    return err;
+    state->pool_difficulty = m45_config_effective_pool_difficulty(
+        &next_config, state->DEVICE_CONFIG.family.asic.small_core_count,
+        state->DEVICE_CONFIG.family.asic_count);
+    return ESP_OK;
 }
 
 static void update_power_state(GlobalState *state, const TPS546_StatusSnapshot *snapshot)
@@ -623,7 +656,17 @@ static esp_err_t update_asic_temperature(GlobalState *state, float *temp_c)
         return err;
     }
 
+    if (asic_temp_is_no_reading(*temp_c)) {
+        log_asic_temp_no_reading(*temp_c);
+        return ESP_ERR_INVALID_STATE;
+    }
+
     *temp_c += (float)state->DEVICE_CONFIG.temp_offset;
+    if (asic_temp_is_no_reading(*temp_c)) {
+        log_asic_temp_no_reading(*temp_c);
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (!isfinite(*temp_c)) {
         if (domain_reboot_recovery_pending()) {
             ESP_LOGW(TAG,
@@ -668,8 +711,14 @@ static bool read_asic_temp_for_voltage(GlobalState *state, float *temp_c)
         return false;
     }
 
+    if (asic_temp_is_no_reading(raw_temp_c)) {
+        *temp_c = 0.0f;
+        return false;
+    }
+
     raw_temp_c += (float)state->DEVICE_CONFIG.temp_offset;
-    if (!isfinite(raw_temp_c) || raw_temp_c <= 0.0f) {
+    if (!isfinite(raw_temp_c) || raw_temp_c <= 0.0f ||
+        asic_temp_is_no_reading(raw_temp_c)) {
         *temp_c = 0.0f;
         return false;
     }
@@ -705,15 +754,17 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
     const m45_config_t *config = &active_config;
     const bool active = config->auto_clock_enabled && config->overclock_enabled &&
                         config->fan_override_enabled;
+    const uint16_t current_frequency_mhz =
+        current_auto_clock_frequency_mhz(state, config);
+    const uint16_t current_voltage_mv =
+        current_auto_clock_voltage_mv(config, asic_temp_c);
     if (!config->auto_clock_enabled || !active || state->SYSTEM_MODULE.hardware_fault ||
         !isfinite(asic_temp_c) || asic_temp_c <= 0.0f ||
         !isfinite(control_temp_c) || control_temp_c <= 0.0f || snapshot == NULL) {
         g_auto_clock_up_dwell_ticks = 0;
         g_auto_clock_down_dwell_ticks = 0;
-        update_auto_clock_status(config->auto_clock_enabled, false,
-                                 m45_config_effective_asic_frequency_mhz(config),
-                                 m45_config_effective_asic_voltage_mv_for_temp(config,
-                                                                               asic_temp_c),
+        update_auto_clock_status(config->auto_clock_enabled, false, current_frequency_mhz,
+                                 current_voltage_mv,
                                  0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, false, false,
                                  false, false, false,
                                  config->auto_clock_enabled ? "waiting for valid telemetry" : "");
@@ -729,22 +780,17 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
 
     const float v_now = snapshot->read_vout > 0.0f
                             ? snapshot->read_vout
-                            : (float)m45_config_effective_asic_voltage_mv_for_temp(config,
-                                                                                     asic_temp_c) /
-                                  1000.0f;
+                            : (float)current_voltage_mv / 1000.0f;
     const float i_now = snapshot->read_iout;
     const float p_now = v_now * i_now;
     const float mhz_now = state->POWER_MANAGEMENT_MODULE.actual_frequency > 0.0f
                               ? state->POWER_MANAGEMENT_MODULE.actual_frequency
-                              : (float)m45_config_effective_asic_frequency_mhz(config);
+                              : (float)current_frequency_mhz;
     if (!isfinite(v_now) || !isfinite(i_now) || !isfinite(p_now) || !isfinite(mhz_now) ||
         v_now <= 0.0f || i_now <= 0.0f || p_now <= 0.0f || mhz_now <= 0.0f) {
         g_auto_clock_up_dwell_ticks = 0;
         g_auto_clock_down_dwell_ticks = 0;
-        update_auto_clock_status(true, false,
-                                 m45_config_effective_asic_frequency_mhz(config),
-                                 m45_config_effective_asic_voltage_mv_for_temp(config,
-                                                                               asic_temp_c),
+        update_auto_clock_status(true, false, current_frequency_mhz, current_voltage_mv,
                                  0, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, false, false,
                                  false, false, false, "waiting for power telemetry");
         return ESP_OK;
@@ -756,8 +802,6 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         fmaxf(1.0f, p_now + ((target_temp_c - AUTO_CLOCK_TEMP_SAFETY_MARGIN_C -
                               control_temp_c) /
                              AUTO_CLOCK_THERMAL_R_C_PER_W));
-    const uint16_t current_frequency_mhz =
-        m45_config_effective_asic_frequency_mhz(config);
     const uint8_t current_index = auto_clock_index_for_frequency(current_frequency_mhz);
     const float current_ceiling_a = auto_clock_upshift_current_ceiling_a(config);
     const float vr_temp_c = (float)snapshot->read_temp1;
@@ -852,8 +896,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         g_auto_clock_up_dwell_ticks = 0;
         g_auto_clock_down_dwell_ticks = 0;
         update_auto_clock_status(true, false, current_frequency_mhz,
-                                 m45_config_effective_asic_voltage_mv_for_temp(config,
-                                                                               asic_temp_c),
+                                 current_voltage_mv,
                                  0, p_now, p_target, 0.0f, current_ceiling_a, 0.0f,
                                  false, false, false, false, false,
                                  "no preset fits voltage safety limits");
@@ -940,8 +983,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
     if (!auto_clock_candidate_voltage(config, next_frequency_mhz, asic_temp_c,
                                       &next_base_mv, &next_voltage_mv)) {
         update_auto_clock_status(true, false, current_frequency_mhz,
-                                 m45_config_effective_asic_voltage_mv_for_temp(config,
-                                                                               asic_temp_c),
+                                 current_voltage_mv,
                                  next_up_frequency_mhz, p_now, p_target, next_up_power_w,
                                  current_ceiling_a, next_up_output_current_a, false, false,
                                  false, false, false, "next preset outside voltage limits");
@@ -992,7 +1034,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
                              temperature_limited, hold_reason);
 
     if (next_frequency_mhz == current_frequency_mhz &&
-        next_base_mv == config->asic_voltage_mv) {
+        next_voltage_mv == current_voltage_mv) {
         return ESP_OK;
     }
 

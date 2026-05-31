@@ -46,9 +46,9 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 11100
+#define STATUS_JSON_BUFFER_SIZE 11200
 #else
-#define STATUS_JSON_BUFFER_SIZE 9800
+#define STATUS_JSON_BUFFER_SIZE 9900
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 4000
 #define M45_DEVICE_NAME "M45-Bitaxe"
@@ -127,6 +127,15 @@ typedef struct {
 
 static void reboot_task(void *arg);
 static void factory_reset_reboot_task(void *arg);
+
+static esp_err_t set_wifi_low_latency_mode(void)
+{
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to disable Wi-Fi power save: %s", esp_err_to_name(err));
+    }
+    return err;
+}
 
 static uint64_t http_now_us(void)
 {
@@ -759,6 +768,7 @@ static void wifi_reconnect_task(void *arg)
     }
     if (g_setup_ap_active) {
         esp_wifi_set_mode(WIFI_MODE_APSTA);
+        (void)set_wifi_low_latency_mode();
     }
     esp_err_t err = set_sta_config(config->wifi_ssid, config->wifi_password);
     if (err != ESP_OK) {
@@ -1052,16 +1062,71 @@ static bool safety_settings_changed(const m45_config_t *old_config,
                new_config->safety_iout_fault_deciamps;
 }
 
+static uint16_t volts_to_millivolts(float volts)
+{
+    if (volts <= 0.0f || volts > 65.535f) {
+        return 0;
+    }
+    return (uint16_t)(volts * 1000.0f + 0.5f);
+}
+
+static uint16_t current_asic_voltage_mv(const m45_config_t *fallback_config,
+                                        float asic_temp_c)
+{
+    bitaxe_gamma602_power_snapshot_t power;
+    if (bitaxe_gamma602_power_snapshot(&power)) {
+        const uint16_t commanded_mv = volts_to_millivolts(power.vout_command);
+        if (commanded_mv > 0) {
+            return commanded_mv;
+        }
+        const uint16_t measured_mv = volts_to_millivolts(power.read_vout);
+        if (measured_mv > 0) {
+            return measured_mv;
+        }
+    }
+
+    if (g_state != NULL) {
+        const uint16_t state_mv =
+            volts_to_millivolts(g_state->POWER_MANAGEMENT_MODULE.core_voltage);
+        if (state_mv > 0) {
+            return state_mv;
+        }
+    }
+
+    return m45_config_effective_asic_voltage_mv_for_temp(fallback_config, asic_temp_c);
+}
+
+static uint16_t current_asic_frequency_mhz(const m45_config_t *fallback_config)
+{
+    if (g_state != NULL) {
+        const float actual_mhz = g_state->POWER_MANAGEMENT_MODULE.actual_frequency;
+        if (actual_mhz > 0.0f && actual_mhz <= (float)M45_ASIC_FREQUENCY_MAX_MHZ) {
+            return (uint16_t)(actual_mhz + 0.5f);
+        }
+    }
+
+    return m45_config_effective_asic_frequency_mhz(fallback_config);
+}
+
+static esp_err_t apply_frequency_setting(uint16_t frequency_mhz)
+{
+    const uint64_t started_us = http_now_us();
+    stratum_minimal_pause_work();
+    esp_err_t err = bitaxe_gamma602_set_frequency_mhz(g_state, frequency_mhz);
+    stratum_minimal_resume_work();
+    log_http_handler_delay("ASIC frequency apply", started_us);
+    return err;
+}
+
 static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
                                          const m45_config_t *new_config)
 {
     const float asic_temp_c = g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg
                                               : 0.0f;
-    const uint16_t old_voltage_mv =
-        m45_config_effective_asic_voltage_mv_for_temp(old_config, asic_temp_c);
+    const uint16_t old_voltage_mv = current_asic_voltage_mv(old_config, asic_temp_c);
     const uint16_t new_voltage_mv =
         m45_config_effective_asic_voltage_mv_for_temp(new_config, asic_temp_c);
-    const uint16_t old_frequency_mhz = m45_config_effective_asic_frequency_mhz(old_config);
+    const uint16_t old_frequency_mhz = current_asic_frequency_mhz(old_config);
     const uint16_t new_frequency_mhz = m45_config_effective_asic_frequency_mhz(new_config);
     const bool safety_changed = safety_settings_changed(old_config, new_config);
     const bool voltage_needs_new_limits =
@@ -1077,6 +1142,14 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
             return err;
         }
         safety_limits_applied = true;
+    }
+
+    if (old_frequency_mhz != new_frequency_mhz &&
+        new_frequency_mhz <= old_frequency_mhz) {
+        esp_err_t err = apply_frequency_setting(new_frequency_mhz);
+        if (err != ESP_OK) {
+            return err;
+        }
     }
 
     if (old_voltage_mv != new_voltage_mv) {
@@ -1096,12 +1169,9 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
             return err;
         }
     }
-    if (old_frequency_mhz != new_frequency_mhz) {
-        const uint64_t started_us = http_now_us();
-        stratum_minimal_pause_work();
-        esp_err_t err = bitaxe_gamma602_set_frequency_mhz(g_state, new_frequency_mhz);
-        stratum_minimal_resume_work();
-        log_http_handler_delay("ASIC frequency apply", started_us);
+    if (old_frequency_mhz != new_frequency_mhz &&
+        new_frequency_mhz > old_frequency_mhz) {
+        esp_err_t err = apply_frequency_setting(new_frequency_mhz);
         if (err != ESP_OK) {
             return err;
         }
@@ -1251,6 +1321,10 @@ static esp_err_t status_handler(httpd_req_t *req)
     stratum_minimal_get_stats(&stats);
     const bool have_power = bitaxe_gamma602_power_snapshot(&power);
     const float asic_power_watts = have_power ? power.read_vout * power.read_iout : 0.0f;
+    const double asic_efficiency_j_per_th =
+        asic_power_watts > 0.0f && stats.measured_hashrate_ghs > 0.0
+            ? ((double)asic_power_watts * 1000.0) / stats.measured_hashrate_ghs
+            : 0.0;
     bitaxe_gamma602_safety_limits(&limits);
     bitaxe_gamma602_auto_clock_status(&auto_clock);
     wifi_ap_record_t ap_info = {0};
@@ -1417,6 +1491,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"tps546_temp_c\":%d,"
                  "\"tps546_model\":\"%s\","
                  "\"asic_power_watts\":%.2f,"
+                 "\"asic_efficiency_j_per_th\":%.2f,"
                  "\"power_fault\":%u,"
                  "\"hardware_fault\":%s,"
                  "\"hardware_fault_msg\":\"%s\","
@@ -1512,7 +1587,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  have_power ? "true" : "false", have_power ? power.read_vout : 0.0f,
                  have_power ? power.read_vin : 0.0f, have_power ? power.read_iout : 0.0f,
                  have_power ? power.read_temp_c : 0, tps546_model, asic_power_watts,
-                 g_state->SYSTEM_MODULE.power_fault,
+                 asic_efficiency_j_per_th, g_state->SYSTEM_MODULE.power_fault,
                  g_state->SYSTEM_MODULE.hardware_fault ? "true" : "false", hardware_fault_msg,
                  pool_host, stats.pool_port > 0 ? stats.pool_port : config->pool_port,
                  stats.using_backup_pool ? "true" : "false",
@@ -2269,9 +2344,19 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     bool pool_reconnect = false;
     runtime_reconnect_flags(&old_config, &config, &wifi_reconnect, &pool_reconnect);
 
-    esp_err_t err = apply_hardware_settings(&old_config, &config);
+    esp_err_t err = m45_config_set_runtime(&config);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char error_body[80];
+        snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
+        return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
+    }
+
+    const m45_config_t applied_config = *m45_config_get();
+    err = apply_hardware_settings(&old_config, &applied_config);
+    if (err != ESP_OK) {
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after apply error: %s",
                      esp_err_to_name(revert_err));
@@ -2286,7 +2371,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     err = m45_config_save(&config);
     log_http_handler_delay("settings NVS save", started_us);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after save error: %s",
                      esp_err_to_name(revert_err));
@@ -2406,12 +2492,13 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     err = apply_runtime_settings(&old_config, m45_config_get(), &wifi_reconnect, &pool_reconnect);
     log_http_handler_delay("runtime tune apply", started_us);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(m45_config_get(), &old_config);
+        const m45_config_t applied_config = *m45_config_get();
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore runtime hardware settings after apply error: %s",
                      esp_err_to_name(revert_err));
         }
-        m45_config_set_runtime(&old_config);
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
         snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
@@ -3643,8 +3730,21 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
         settings_string_changed(old_config.hostname, config.hostname);
     const bool pool_reconnect = active_pool_settings_changed(&old_config, &config);
 
-    esp_err_t err = apply_hardware_settings(&old_config, &config);
+    esp_err_t err = m45_config_set_runtime(&config);
     if (err != ESP_OK) {
+        return send_espminer_json_error(req, "500 Internal Server Error",
+                                        esp_err_to_name(err));
+    }
+
+    const m45_config_t applied_config = *m45_config_get();
+    err = apply_hardware_settings(&old_config, &applied_config);
+    if (err != ESP_OK) {
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
+        if (revert_err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to restore hardware settings after ESP-Miner apply error: %s",
+                     esp_err_to_name(revert_err));
+        }
         return send_espminer_json_error(req, "500 Internal Server Error",
                                         esp_err_to_name(err));
     }
@@ -3653,7 +3753,8 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     err = m45_config_save(&config);
     log_http_handler_delay("ESP-Miner settings NVS save", started_us);
     if (err != ESP_OK) {
-        esp_err_t revert_err = apply_hardware_settings(&config, &old_config);
+        m45_config_set_runtime(&old_config);
+        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after ESP-Miner save error: %s",
                      esp_err_to_name(revert_err));
@@ -3843,6 +3944,8 @@ esp_err_t wifi_http_start(GlobalState *state)
         g_setup_ap_active = false;
     }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Wi-Fi start failed");
+    ESP_RETURN_ON_ERROR(set_wifi_low_latency_mode(), TAG,
+                        "Wi-Fi low-latency mode failed");
 
     init_page_token();
     ESP_RETURN_ON_ERROR(start_http_server(), TAG, "HTTP server failed");

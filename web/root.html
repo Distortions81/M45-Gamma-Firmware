@@ -125,7 +125,7 @@
 <section id=oc-safety-panel class='panel full oc-safety-panel'><div class=metric-head><div class=label>Warnings</div>
 <span id=oc-safety-state class='pill ok'>OK</span></div><div id=oc-safety-clear class=oc-warning-clear>No clock threshold notices.</div>
 <div class=oc-warning-list>
-<section class='oc-warning oc-auto-clock-warning'><div class=label>Experimental Auto Clock</div>
+<section id=oc-auto-clock-warning class='oc-warning oc-auto-clock-warning hidden'><div class=label>Experimental Auto Clock</div>
 <div class='value small'>Auto clock is experimental and can raise current draw quickly as it climbs presets. Use it only with a high-current, stable 5 V power supply and wiring/connectors rated for the configured IOUT fault limit. Weak supplies can sag VIN, overheat wiring, trip regulator faults, or damage hardware.</div></section>
 <section id=oc-vr-warning class='oc-warning hidden'><div class=label>VR Cooling</div>
 <div class='value small'>For clocks over 800 MHz, add heatsink to the TPS voltage regulator
@@ -423,8 +423,13 @@ function syncOverclockEnabled(){const on=$('cfg-overclock-enabled').checked;
 syncTempCompensationNote();syncClockModePanels();syncOverclockWarning();syncAutoClockSetting()}
 function setStockOverclock(){setVal('cfg-frequency',STOCK_FREQUENCY);setVal('cfg-voltage',STOCK_VOLTAGE);
 setVal('oc-voltage-offset',0);syncPreset()}
-function syncOverclockWarning(){const on=$('cfg-overclock-enabled').checked,f=num(val('cfg-frequency')),fanSet=val('cfg-fan-mode')==='fixed'&&num(val('cfg-fan-percent'))>=100;
-const vr=on&&f>800,psu=on&&f>725,fan=on&&f>800&&!fanSet,cooling=on&&f>975,active=vr||psu||fan||cooling;
+function setDefaultOverclockPanel(){setStockOverclock();$('oc-temp-compensation').checked=true;
+$('oc-auto-clock-enabled').checked=false;setVal('oc-auto-clock-target',62);
+$('oc-domain-reboot-enabled').checked=false;
+setDefaultLimits();syncDomainRebootSetting();syncFanSetting()}
+function syncOverclockWarning(){const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested(),f=num(val('cfg-frequency')),fanSet=val('cfg-fan-mode')==='fixed'&&num(val('cfg-fan-percent'))>=100;
+const vr=on&&f>800,psu=on&&f>725,fan=on&&f>800&&!fanSet,cooling=on&&f>975,active=auto||vr||psu||fan||cooling;
+$('oc-auto-clock-warning').classList.toggle('hidden',!auto);
 $('oc-vr-warning').classList.toggle('hidden',!vr);$('oc-psu-warning').classList.toggle('hidden',!psu);
 $('oc-fan-warning').classList.toggle('hidden',!fan);$('oc-cooling-warning').classList.toggle('hidden',!cooling);
 $('oc-safety-panel').classList.toggle('oc-safety-active',active);$('oc-safety-clear').classList.toggle('hidden',active);
@@ -607,7 +612,7 @@ $('limit-unrestricted').onchange=e=>setLimitRangeMode(e.currentTarget.checked,tr
 'limit-asic-temp-expected','limit-asic-temp-max','limit-tps546-temp-expected',
 'limit-tps546-temp-max','limit-iout-warn','limit-iout-fault'].forEach(id=>$(id).oninput=syncLimitSummary);
 $('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){$('cfg-overclock-enabled').checked=false;
-$('oc-enable-modal').classList.remove('hidden')}else syncOverclockEnabled()};
+$('oc-enable-modal').classList.remove('hidden')}else{setDefaultOverclockPanel();syncOverclockEnabled()}};
 $('oc-temp-compensation').onchange=()=>syncTempCompensationNote();
 $('oc-auto-clock-enabled').onchange=()=>{enforceAutoClockFanMode();syncFanSetting();
 syncTempCompensationNote();syncAutoClockSetting();syncOverclockWarning()};
@@ -920,6 +925,8 @@ const pi=payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
 setPayoutPanel(s);
 txt('nonce-errors',fmt(s.nonce_errors));const ns=nonceErrorStats(s);txt('nonce-error-rate',ns.pct);txt('hash-lost',ns.lost);
 txt('expected-hashrate',expectedHashValue(s));
+const efficiency=num(s.asic_efficiency_j_per_th),jth=Number.isFinite(efficiency)&&efficiency>0?efficiency:joulesPerTh(s.asic_power_watts,s.hashrate_ghs);
+txt('asic-efficiency',Number.isFinite(jth)?`${n(jth,1)} J/TH`:'--');
 txt('domain-hashrate',domainHashText(s));
 setDomainGrid(s);
 const w=s.wifi_connected?wifiQuality(s.wifi_rssi_dbm):s.setup_mode?{label:'Setup AP',cls:'warn'}:{label:'Offline',cls:'bad'};

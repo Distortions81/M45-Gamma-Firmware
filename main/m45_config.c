@@ -190,14 +190,32 @@ static void load_double(nvs_handle_t nvs, const char *key, double *value)
 
 void m45_config_apply_auto_clock_policy(m45_config_t *config)
 {
-    if (config == NULL || !config->auto_clock_enabled) {
+    if (config == NULL) {
         return;
     }
 
+    /* Disabled overclock is stock mode; scrub stale overclock-panel values. */
     if (!config->overclock_enabled) {
+        config->auto_clock_enabled = false;
+        config->auto_domain_reboot_enabled = false;
+        config->auto_clock_target_temp_c = M45_AUTO_CLOCK_TARGET_DEFAULT_C;
+        config->asic_frequency_mhz = CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
+        config->asic_voltage_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
+        config->overclock_voltage_offset_mv = 0;
+        config->asic_voltage_temp_compensation_enabled = true;
+        config->safety_limits_unrestricted = false;
+        set_default_safety_limits(config);
+        return;
+    }
+
+    if (!config->auto_clock_enabled) {
         config->auto_clock_enabled = false;
         return;
     }
+
+    /* Auto clock owns clock/voltage at runtime; persisted presets stay stock. */
+    config->asic_frequency_mhz = CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
+    config->asic_voltage_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
 
     if (!config->fan_override_enabled) {
         config->fan_override_enabled = true;

@@ -46,7 +46,7 @@ Response fields:
 | `auto_clock_target_temp_c`, `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_next_up_frequency_mhz`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_next_up_power_w`, `auto_clock_thermal_resistance_c_per_w`, `auto_clock_output_current_ceiling_a`, `auto_clock_next_up_output_current_a`, `auto_clock_input_voltage_limited`, `auto_clock_output_current_limited`, `auto_clock_vr_temp_limited`, `auto_clock_power_limited`, `auto_clock_temperature_limited`, `auto_clock_hold_reason` | mixed | Auto-clock target, controller telemetry, and clock-limiting state. |
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
-| `asic_power_watts`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power and fault state. |
+| `asic_power_watts`, `asic_efficiency_j_per_th`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power, efficiency, and fault state. `asic_efficiency_j_per_th` is computed from ASIC watts and measured hashrate. |
 | `pool`, `pool_port`, `pool_using_backup`, `stratum_connected`, `stratum_connected_seconds`, `stratum_response_ms` | mixed | Pool connection state. |
 | `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us` | number | Native M45 share-submit timing in microseconds. |
 | `work_received`, `shares_accepted`, `shares_rejected`, `valid_nonces`, `nonce_errors` | number | Mining counters. |
