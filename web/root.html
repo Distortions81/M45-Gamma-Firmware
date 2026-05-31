@@ -1,6 +1,7 @@
 <!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content='width=device-width,initial-scale=1'>
 <title>M45-Firmware</title>
+<link rel=icon type=image/svg+xml href=/favicon.svg>
 {{GLOBAL_STYLES}}</head><body class=app-page>
 {{TOOLBAR}}
 <main>
@@ -915,7 +916,7 @@ catch(e){$('logs-state').className='pill warn';$('logs-state').textContent='OFFL
 async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);return}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setFault(s);setBoot(s);
-const device=s.device_name||'M45-Bitaxe';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
+const device=s.device_name||'M45-Firmware';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
 txt('build-id',s.build_id||'unknown');txt('build-time',s.build_time||'unknown');
 updateVersionFromStatus(s);
 txt('tps-model',s.tps546_model||'--');

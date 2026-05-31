@@ -51,8 +51,8 @@
 #define STATUS_JSON_BUFFER_SIZE 9900
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 4000
-#define M45_DEVICE_NAME "M45-Bitaxe"
-#define HTTP_URI_HANDLER_SLOTS 56
+#define M45_DEVICE_NAME "M45-Firmware"
+#define HTTP_URI_HANDLER_SLOTS 58
 #define HTTP_HANDLER_WARN_MS 100
 #define LOG_CAPTURE_TIMEOUT_MS 5000
 #define OTA_UPLOAD_BUFFER_SIZE 4096
@@ -1303,6 +1303,13 @@ static esp_err_t styles_css_handler(httpd_req_t *req)
 {
     return send_gzip_asset(req, "text/css; charset=utf-8", WEB_STYLES_CSS_GZ,
                            WEB_STYLES_CSS_GZ_LEN);
+}
+
+static esp_err_t favicon_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "image/svg+xml");
+    set_no_store_headers(req);
+    return httpd_resp_sendstr(req, WEB_FAVICON_SVG);
 }
 
 static esp_err_t captive_portal_redirect_handler(httpd_req_t *req)
@@ -3841,6 +3848,8 @@ static esp_err_t start_http_server(void)
         {.uri = "/update", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/logs", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_handler},
+        {.uri = "/favicon.svg", .method = HTTP_GET, .handler = favicon_handler},
+        {.uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler},
         {.uri = "/api/system/info", .method = HTTP_GET,
          .handler = espminer_system_info_handler},

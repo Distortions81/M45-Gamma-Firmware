@@ -5,7 +5,6 @@
 <section class=summary-item><div class=summary-label>Wi-Fi</div><div id=wifi class='summary-value stack-value'><span id=wifi-state>--</span><span id=wifi-rssi class=stack-sub></span></div></section>
 <section class=summary-item><div class=summary-label>IP</div><div id=set-ip class=summary-value>--</div></section></div>
 <dl class='mini-list summary-list'><dt>Hardware</dt><dd id=set-hardware>--</dd><dt>TPS</dt><dd id=tps-model>--</dd>
-<dt>Job DSH <span class=mini-info><button id=job-latency-info class=mini-info-button type=button aria-describedby=job-latency-tip title='Job latency detail'>(i)</button><span id=job-latency-tip role=tooltip class=mini-info-text>Dispatch, Submit, Handle: pool job received to first ASIC send, nonce result to share submit, and Stratum line handling. Values are milliseconds.</span></span></dt><dd id=job-latency>--</dd>
 <dt>Build</dt><dd id=build-id>--</dd>
 <dt>Built</dt><dd id=build-time>--</dd><dt id=issue-label class=hidden>Issue</dt><dd id=issue class=hidden>--</dd></dl></section>
 <section class=summary-section><div class=summary-section-title>Pool</div><div class=summary-grid>
@@ -23,5 +22,7 @@
 <section class=summary-item><div class=summary-label>Efficiency</div><div id=asic-efficiency class=summary-value>--</div></section>
 <section class=summary-item><div class=summary-label>Error Rate</div><div id=nonce-error-rate class=summary-value>--</div></section>
 <section class=summary-item><div class=summary-label>Error Loss</div><div id=hash-lost class=summary-value>--</div></section>
-<section class='summary-item domain-map-item'><div class=summary-label>Domains</div><div id=domain-hashrate class=summary-value>--</div><div id=domain-grid class=domain-grid></div></section>
+<section class='summary-item domain-map-item'><div class=summary-label>Domains</div><div id=domain-hashrate class=summary-value>--</div>
+<dl class='mini-list domain-metrics'><dt>Job DSH <span class=mini-info><button id=job-latency-info class=mini-info-button type=button aria-describedby=job-latency-tip aria-label='Job latency details'>i</button><span id=job-latency-tip role=tooltip class=mini-info-text>Dispatch, Submit, Handle: pool job received to first ASIC send, nonce result to share submit, and Stratum line handling. Values are milliseconds.</span></span></dt><dd id=job-latency>--</dd></dl>
+<div id=domain-grid class=domain-grid></div></section>
 </div></section></div></article>

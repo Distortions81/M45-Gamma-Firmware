@@ -12,6 +12,7 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
     )
 
     set(WEB_ASSET_FILES
+        "${CMAKE_CURRENT_LIST_DIR}/../web/favicon.svg"
         "${CMAKE_CURRENT_LIST_DIR}/../web/modals.html"
         "${CMAKE_CURRENT_LIST_DIR}/../web/payout-panel.html"
         "${CMAKE_CURRENT_LIST_DIR}/../web/root.html"

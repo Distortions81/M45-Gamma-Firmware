@@ -74,7 +74,7 @@ dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .summary-item{min-width:0}.summary-label{color:var(--muted);font-size:10px;letter-spacing:.06em;text-transform:uppercase}
 .summary-value{margin-top:4px;font-size:15px;font-weight:720;line-height:1.2;overflow-wrap:anywhere}
 .summary-value.muted{color:var(--muted);font-weight:650}.summary-list{margin:0}
-.domain-map-item{grid-column:1/-1}.domain-grid{display:grid;gap:6px;margin-top:8px}
+.domain-map-item{grid-column:1/-1}.domain-metrics{margin-top:6px}.domain-grid{display:grid;gap:6px;margin-top:8px}
 .domain-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
 .domain-cell{min-height:38px;border:2px solid var(--line);border-radius:6px;padding:5px;display:grid;
 align-content:center;gap:2px;background:#111518;color:var(--text);overflow:hidden;text-align:center}
@@ -90,9 +90,10 @@ align-content:center;gap:2px;background:#111518;color:var(--text);overflow:hidde
 .summary-section .mini-list{grid-template-columns:82px minmax(0,1fr)}
 .mini-list dt{font-size:10px;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .mini-list dd{min-width:0;line-height:1.25}.mini-list .icon-btn{width:20px;height:20px;font-size:12px}
-.mini-info{position:relative;display:inline-flex;vertical-align:middle}.mini-info-button{border:0;background:transparent;
-color:var(--muted);font:inherit;font-size:10px;line-height:1;padding:0 0 0 2px;cursor:help}
-.mini-info-button:hover,.mini-info-button:focus{color:var(--blue);outline:none}
+.mini-info{position:relative;display:inline-flex;vertical-align:middle}.mini-info-button{width:18px;height:18px;display:grid;
+place-items:center;border:1px solid var(--line);border-radius:50%;background:#111518;color:var(--muted);font:inherit;
+font-size:11px;line-height:1;padding:0;cursor:help}
+.mini-info-button:hover,.mini-info-button:focus{color:var(--text);border-color:var(--blue);outline:none}
 .mini-info-text{position:absolute;left:0;top:18px;z-index:5;width:min(300px,calc(100vw - 48px));padding:9px;
 border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);font-size:12px;
 line-height:1.35;text-transform:none;letter-spacing:0;white-space:normal;opacity:0;visibility:hidden;
