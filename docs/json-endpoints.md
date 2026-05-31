@@ -48,7 +48,7 @@ Response fields:
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `asic_efficiency_j_per_th`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power, efficiency, and fault state. `asic_efficiency_j_per_th` is computed from ASIC watts and measured hashrate. |
 | `pool`, `pool_port`, `pool_using_backup`, `stratum_connected`, `stratum_connected_seconds`, `stratum_response_ms` | mixed | Pool connection state. |
-| `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us` | number | Native M45 share-submit timing in microseconds. |
+| `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us`, `stratum_line_handle_us`, `stratum_line_handle_max_us`, `stratum_job_queue_wait_us`, `stratum_job_queue_wait_max_us`, `stratum_job_dispatch_us`, `stratum_job_dispatch_max_us` | number | Native M45 Stratum timing in microseconds. Share submit tracks nonce-result-to-submit timing and socket write time. Line handle tracks JSON handling time after a Stratum line is received. Job queue wait tracks pool work waiting for the ASIC job task, and job dispatch tracks received pool work to first ASIC send. |
 | `work_received`, `shares_accepted`, `shares_rejected`, `valid_nonces`, `nonce_errors` | number | Mining counters. |
 | `best_diff`, `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Difficulty state. |
 | `payout_status`, `payout_percent_x100` | string/number | Coinbase payout detection. |

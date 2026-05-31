@@ -24,7 +24,7 @@ typedef enum {
 typedef struct {
     uint8_t job_id;
     uint32_t nonce;
-    uint32_t rolled_version;
+    uint32_t version_bits;
     register_type_t register_type;
     uint8_t asic_nr;
     uint32_t value;

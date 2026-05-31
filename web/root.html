@@ -292,6 +292,8 @@ return Number.isFinite(watts)&&Number.isFinite(ghs)&&watts>0&&ghs>0?watts*1000/g
 function shortTime(sec){sec=Number(sec);if(!Number.isFinite(sec)||sec<=0)return'';
 const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60);
 if(h>0)return`${h}h ${m}m`;if(m>0)return`${m}m ${s}s`;return`${s}s`}
+function latency(v){v=num(v);if(!Number.isFinite(v)||v<=0)return'--';
+if(v>=1000000)return`${n(v/1000000,2)} s`;if(v>=1000)return`${n(v/1000,1)} ms`;return`${fmt(v)} us`}
 function sharesPerMinute(s){if(!s.stratum_connected){shareSamples=[];return'--'}
 const total=num(s.shares_accepted)+num(s.shares_rejected);if(!Number.isFinite(total))return'--';
 const now=Date.now(),last=shareSamples[shareSamples.length-1];if(last&&total<last.total)shareSamples=[];
@@ -923,6 +925,9 @@ txt('best',human(s.best_diff));txt('accepted',fmt(s.shares_accepted));updateCali
 txt('rejected',fmt(s.shares_rejected));txt('difficulty',diffText(s.pool_difficulty));
 txt('shares-min',sharesPerMinute(s));
 const rt=num(s.stratum_response_ms);txt('stratum-response',rt>0?`${n(rt,0)} ms`:'--');
+txt('stratum-dispatch',latency(s.stratum_job_dispatch_us));
+txt('stratum-submit',latency(s.stratum_share_submit_us));
+txt('stratum-handle',latency(s.stratum_line_handle_us));
 const pi=payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
 setPayoutPanel(s);
 const ns=nonceErrorStats(s);txt('nonce-error-rate',ns.pct);txt('hash-lost',ns.lost);

@@ -1523,6 +1523,12 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"stratum_share_submit_max_us\":%" PRIu64 ","
                  "\"stratum_share_write_us\":%" PRIu64 ","
                  "\"stratum_share_write_max_us\":%" PRIu64 ","
+                 "\"stratum_line_handle_us\":%" PRIu64 ","
+                 "\"stratum_line_handle_max_us\":%" PRIu64 ","
+                 "\"stratum_job_queue_wait_us\":%" PRIu64 ","
+                 "\"stratum_job_queue_wait_max_us\":%" PRIu64 ","
+                 "\"stratum_job_dispatch_us\":%" PRIu64 ","
+                 "\"stratum_job_dispatch_max_us\":%" PRIu64 ","
                  "\"work_received\":%lu,"
                  "\"shares_accepted\":%lu,"
                  "\"shares_rejected\":%lu,"
@@ -1613,6 +1619,9 @@ static esp_err_t status_handler(httpd_req_t *req)
                  (unsigned long)stats.connected_seconds, (unsigned long)stats.response_time_ms,
                  stats.share_submit_us, stats.share_submit_max_us,
                  stats.share_write_us, stats.share_write_max_us,
+                 stats.line_handle_us, stats.line_handle_max_us,
+                 stats.job_queue_wait_us, stats.job_queue_wait_max_us,
+                 stats.job_dispatch_us, stats.job_dispatch_max_us,
                  (unsigned long)stats.work_received,
                  (unsigned long)stats.accepted, (unsigned long)stats.rejected,
                  (unsigned long)stats.valid_nonces, (unsigned long)stats.nonce_errors,

@@ -41,6 +41,7 @@
 #define STRATUM_DNS_PREFETCH_INTERVAL_MS 60000
 #define STRATUM_IDLE_TIMEOUT_MS 120000
 #define TRANSPORT_TIMEOUT_MS 5000
+#define STRATUM_SHARE_WRITE_TIMEOUT_MS 1000
 #define STRATUM_BUFFER_SIZE 1024
 #define STRATUM_MAX_LINE_SIZE 16384
 #define STRATUM_MAX_COINBASE_BYTES 4096
@@ -65,7 +66,7 @@
 #define STRATUM_MINER_VERSION_CHARS 7
 #define STRATUM_RX_TASK_PRIORITY 17
 #define STRATUM_JOB_TASK_PRIORITY 18
-#define STRATUM_RESULT_TASK_PRIORITY 16
+#define STRATUM_RESULT_TASK_PRIORITY 19
 #define STRATUM_HASHRATE_TASK_PRIORITY 6
 
 #define STRATUM_ID_CONFIGURE 1
@@ -84,6 +85,7 @@ static GlobalState *g_state;
 typedef struct {
     mining_notify *work;
     uint32_t epoch;
+    uint64_t queued_us;
 } queued_work_t;
 
 typedef struct {
@@ -131,6 +133,12 @@ static atomic_ullong g_share_submit_us;
 static atomic_ullong g_share_submit_max_us;
 static atomic_ullong g_share_write_us;
 static atomic_ullong g_share_write_max_us;
+static atomic_ullong g_line_handle_us;
+static atomic_ullong g_line_handle_max_us;
+static atomic_ullong g_job_queue_wait_us;
+static atomic_ullong g_job_queue_wait_max_us;
+static atomic_ullong g_job_dispatch_us;
+static atomic_ullong g_job_dispatch_max_us;
 static atomic_uint g_payout_status;
 static atomic_uint g_payout_percent_x100;
 static atomic_ullong g_connected_since_us;
@@ -1009,6 +1017,19 @@ static void record_share_submit_timing(uint64_t submit_us, uint64_t write_us)
     atomic_max_u64(&g_share_write_max_us, write_us);
 }
 
+static void record_latency_us(atomic_ullong *last, atomic_ullong *max, uint64_t value_us)
+{
+    atomic_store(last, (unsigned long long)value_us);
+    atomic_max_u64(max, value_us);
+}
+
+static void record_elapsed_latency_us(atomic_ullong *last, atomic_ullong *max,
+                                      uint64_t started_us)
+{
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    record_latency_us(last, max, now_us > started_us ? now_us - started_us : 0);
+}
+
 static int next_uid(void)
 {
     taskENTER_CRITICAL(&g_uid_mux);
@@ -1030,10 +1051,24 @@ static void mark_response_request(int id)
         return;
     }
 
+    const uint64_t sent_us = (uint64_t)esp_timer_get_time();
     taskENTER_CRITICAL(&g_response_id_mux);
     const size_t slot = g_pending_response_id_next++ % RESPONSE_ID_SLOTS;
     g_pending_response_ids[slot] = id;
-    g_pending_response_us[slot] = (uint64_t)esp_timer_get_time();
+    g_pending_response_us[slot] = sent_us;
+    taskEXIT_CRITICAL(&g_response_id_mux);
+}
+
+static void mark_response_request_at(int id, uint64_t sent_us)
+{
+    if (id < 0) {
+        return;
+    }
+
+    taskENTER_CRITICAL(&g_response_id_mux);
+    const size_t slot = g_pending_response_id_next++ % RESPONSE_ID_SLOTS;
+    g_pending_response_ids[slot] = id;
+    g_pending_response_us[slot] = sent_us;
     taskEXIT_CRITICAL(&g_response_id_mux);
 }
 
@@ -1362,7 +1397,8 @@ static int stratum_writef(esp_transport_handle_t transport, const char *fmt, ...
     return esp_transport_write(transport, msg, len, TRANSPORT_TIMEOUT_MS);
 }
 
-static int stratum_write_message(esp_transport_handle_t transport, const char *msg)
+static int stratum_write_message_timeout(esp_transport_handle_t transport, const char *msg,
+                                         int timeout_ms)
 {
     const size_t len = msg != NULL ? strlen(msg) : 0;
     if (len == 0 || len >= STRATUM_BUFFER_SIZE) {
@@ -1377,7 +1413,12 @@ static int stratum_write_message(esp_transport_handle_t transport, const char *m
         STRATUM_LOGI("tx: %s", msg);
     }
 
-    return esp_transport_write(transport, msg, (int)len, TRANSPORT_TIMEOUT_MS);
+    return esp_transport_write(transport, msg, (int)len, timeout_ms);
+}
+
+static int stratum_write_message(esp_transport_handle_t transport, const char *msg)
+{
+    return stratum_write_message_timeout(transport, msg, TRANSPORT_TIMEOUT_MS);
 }
 
 static bool stratum_append_text(char *dest, size_t dest_size, size_t *offset,
@@ -1529,29 +1570,6 @@ static void stratum_build_miner_info(char *out, size_t out_size)
     snprintf(out, out_size, "%s/%.*s%s", STRATUM_MINER_MODEL,
              STRATUM_MINER_VERSION_CHARS, APP_BUILD_GIT_SHA,
              APP_BUILD_DIRTY ? "-dirty" : "");
-}
-
-static int stratum_send_authorize(esp_transport_handle_t transport)
-{
-    char msg[STRATUM_BUFFER_SIZE];
-    size_t offset = 0;
-    msg[0] = '\0';
-
-    if (!stratum_append_text(msg, sizeof(msg), &offset, "{\"id\":") ||
-        !stratum_append_int(msg, sizeof(msg), &offset, STRATUM_ID_AUTHORIZE) ||
-        !stratum_append_text(msg, sizeof(msg), &offset,
-                             ",\"method\":\"mining.authorize\",\"params\":[") ||
-        !stratum_append_json_string_fast(msg, sizeof(msg), &offset,
-                                         g_state->SYSTEM_MODULE.pool_user) ||
-        !stratum_append_text(msg, sizeof(msg), &offset, ",") ||
-        !stratum_append_json_string_fast(msg, sizeof(msg), &offset,
-                                         g_state->SYSTEM_MODULE.pool_pass) ||
-        !stratum_append_text(msg, sizeof(msg), &offset, "]}\n")) {
-        ESP_LOGE(TAG, "stratum authorize format overflow");
-        return -1;
-    }
-
-    return stratum_write_message(transport, msg);
 }
 
 static esp_err_t rx_buffer_reserve(size_t needed)
@@ -2103,26 +2121,36 @@ static void stratum_update_payout_from_coinbase(const uint8_t *coinbase, size_t 
                       clamped);
 }
 
-static void stratum_update_payout_from_notify(const mining_notify *work)
+static bool stratum_copy_coinbase_from_notify(const mining_notify *work, uint8_t **coinbase_out,
+                                              size_t *coinbase_len_out)
 {
+    if (coinbase_out != NULL) {
+        *coinbase_out = NULL;
+    }
+    if (coinbase_len_out != NULL) {
+        *coinbase_len_out = 0;
+    }
+
     if (work == NULL || g_state == NULL || g_state->extranonce_str == NULL ||
         (g_extranonce_len > 0 && g_extranonce_bin == NULL) ||
-        g_state->extranonce_2_len <= 0 || g_state->extranonce_2_len > MAX_EXTRANONCE2_LEN) {
+        g_state->extranonce_2_len <= 0 ||
+        g_state->extranonce_2_len > MAX_EXTRANONCE2_LEN ||
+        coinbase_out == NULL || coinbase_len_out == NULL) {
         set_payout_status(STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
-        return;
+        return false;
     }
 
     const size_t coinbase_len = work->coinbase_1_len + g_extranonce_len +
                                 (size_t)g_state->extranonce_2_len + work->coinbase_2_len;
     if (coinbase_len > STRATUM_MAX_COINBASE_BYTES) {
         set_payout_status(STRATUM_PAYOUT_STATUS_PARSE_ERROR, 0);
-        return;
+        return false;
     }
 
     uint8_t *coinbase = malloc(coinbase_len);
     if (coinbase == NULL) {
         set_payout_status(STRATUM_PAYOUT_STATUS_PARSE_ERROR, 0);
-        return;
+        return false;
     }
 
     size_t offset = 0;
@@ -2140,8 +2168,10 @@ static void stratum_update_payout_from_notify(const mining_notify *work)
         memcpy(coinbase + offset, work->coinbase_2_bin, work->coinbase_2_len);
     }
 
-    stratum_update_payout_from_coinbase(coinbase, coinbase_len);
-    free(coinbase);
+    set_payout_status(STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
+    *coinbase_out = coinbase;
+    *coinbase_len_out = coinbase_len;
+    return true;
 }
 
 static bool array_string(cJSON *array, int index, const char **out)
@@ -2404,6 +2434,7 @@ static void enqueue_work(mining_notify *work)
     queued_work_t queued = {
         .work = work,
         .epoch = epoch,
+        .queued_us = (uint64_t)esp_timer_get_time(),
     };
     if (xQueueSend(g_work_queue, &queued, 0) != pdPASS) {
         queued_work_t old = {0};
@@ -2556,10 +2587,22 @@ static void handle_mining_notify_work(mining_notify *work)
     if (new_block) {
         reset_work_state(true);
     }
-    if (new_block || atomic_load(&g_payout_status) == STRATUM_PAYOUT_STATUS_UNCHECKED) {
-        stratum_update_payout_from_notify(work);
+
+    uint8_t *payout_coinbase = NULL;
+    size_t payout_coinbase_len = 0;
+    const bool update_payout =
+        new_block || atomic_load(&g_payout_status) == STRATUM_PAYOUT_STATUS_UNCHECKED;
+    if (update_payout) {
+        (void)stratum_copy_coinbase_from_notify(work, &payout_coinbase,
+                                                &payout_coinbase_len);
     }
+
     enqueue_work(work);
+
+    if (payout_coinbase != NULL) {
+        stratum_update_payout_from_coinbase(payout_coinbase, payout_coinbase_len);
+        free(payout_coinbase);
+    }
 }
 
 #if M45_STRATUM_FAST_PATHS
@@ -3003,10 +3046,12 @@ static void handle_stratum_method(cJSON *json, const char *method, int message_i
 
 static void handle_stratum_line(const char *line, esp_transport_handle_t transport)
 {
+    const uint64_t started_us = (uint64_t)esp_timer_get_time();
     STRATUM_LOGI("rx: %s", line);
 
 #if M45_STRATUM_FAST_PATHS
     if (fast_handle_stratum_line(line)) {
+        record_elapsed_latency_us(&g_line_handle_us, &g_line_handle_max_us, started_us);
         return;
     }
 #endif
@@ -3014,6 +3059,7 @@ static void handle_stratum_line(const char *line, esp_transport_handle_t transpo
     cJSON *json = cJSON_Parse(line);
     if (json == NULL) {
         ESP_LOGW(TAG, "invalid JSON from pool");
+        record_elapsed_latency_us(&g_line_handle_us, &g_line_handle_max_us, started_us);
         return;
     }
 
@@ -3031,64 +3077,67 @@ static void handle_stratum_line(const char *line, esp_transport_handle_t transpo
     }
 
     cJSON_Delete(json);
+    record_elapsed_latency_us(&g_line_handle_us, &g_line_handle_max_us, started_us);
 }
 
 static esp_err_t send_setup_messages(esp_transport_handle_t transport)
 {
-    if (stratum_write_message(
-            transport,
-            "{\"id\":1,\"method\":\"mining.configure\",\"params\":[[\"version-rolling\"],{\"version-rolling.mask\":\"ffffffff\"}]}\n") < 0) {
-        return ESP_FAIL;
-    }
-    mark_response_request(STRATUM_ID_CONFIGURE);
+    char setup_msg[STRATUM_BUFFER_SIZE];
+    size_t offset = 0;
     char miner_info[64];
-    char subscribe_msg[160];
-    size_t subscribe_offset = 0;
-    stratum_build_miner_info(miner_info, sizeof(miner_info));
-    subscribe_msg[0] = '\0';
-    if (!stratum_append_text(subscribe_msg, sizeof(subscribe_msg), &subscribe_offset,
-                             "{\"id\":") ||
-        !stratum_append_int(subscribe_msg, sizeof(subscribe_msg), &subscribe_offset,
-                            STRATUM_ID_SUBSCRIBE) ||
-        !stratum_append_text(subscribe_msg, sizeof(subscribe_msg), &subscribe_offset,
-                             ",\"method\":\"mining.subscribe\",\"params\":[") ||
-        !stratum_append_json_string_fast(subscribe_msg, sizeof(subscribe_msg),
-                                         &subscribe_offset, miner_info) ||
-        !stratum_append_text(subscribe_msg, sizeof(subscribe_msg), &subscribe_offset,
-                             "]}\n")) {
-        ESP_LOGE(TAG, "stratum subscribe format overflow");
-        return ESP_FAIL;
-    }
-    if (stratum_write_message(transport, subscribe_msg) < 0) {
-        return ESP_FAIL;
-    }
-    mark_response_request(STRATUM_ID_SUBSCRIBE);
     const uint16_t suggested_difficulty = configured_suggested_difficulty();
+
+    setup_msg[0] = '\0';
+    stratum_build_miner_info(miner_info, sizeof(miner_info));
+
+    if (!stratum_append_text(
+            setup_msg, sizeof(setup_msg), &offset,
+            "{\"id\":1,\"method\":\"mining.configure\",\"params\":[[\"version-rolling\"],{\"version-rolling.mask\":\"ffffffff\"}]}\n") ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset, "{\"id\":") ||
+        !stratum_append_int(setup_msg, sizeof(setup_msg), &offset,
+                            STRATUM_ID_SUBSCRIBE) ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset,
+                             ",\"method\":\"mining.subscribe\",\"params\":[") ||
+        !stratum_append_json_string_fast(setup_msg, sizeof(setup_msg), &offset,
+                                         miner_info) ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset, "]}\n") ||
+        !stratum_append_text(
+            setup_msg, sizeof(setup_msg), &offset,
+            "{\"id\":3,\"method\":\"mining.suggest_difficulty\",\"params\":[") ||
+        !stratum_append_int(setup_msg, sizeof(setup_msg), &offset,
+                            (int)suggested_difficulty) ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset, "]}\n") ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset, "{\"id\":") ||
+        !stratum_append_int(setup_msg, sizeof(setup_msg), &offset,
+                            STRATUM_ID_AUTHORIZE) ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset,
+                             ",\"method\":\"mining.authorize\",\"params\":[") ||
+        !stratum_append_json_string_fast(setup_msg, sizeof(setup_msg), &offset,
+                                         g_state->SYSTEM_MODULE.pool_user) ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset, ",") ||
+        !stratum_append_json_string_fast(setup_msg, sizeof(setup_msg), &offset,
+                                         g_state->SYSTEM_MODULE.pool_pass) ||
+        !stratum_append_text(setup_msg, sizeof(setup_msg), &offset, "]}\n") ||
+        !stratum_append_text(
+            setup_msg, sizeof(setup_msg), &offset,
+            "{\"id\":5,\"method\":\"mining.extranonce.subscribe\",\"params\":[]}\n")) {
+        ESP_LOGE(TAG, "stratum setup format overflow");
+        return ESP_FAIL;
+    }
+
     set_pool_difficulty((double)suggested_difficulty);
     STRATUM_LOGI("suggest difficulty %u", suggested_difficulty);
-    char difficulty_msg[96];
-    size_t difficulty_offset = 0;
-    difficulty_msg[0] = '\0';
-    if (!stratum_append_text(difficulty_msg, sizeof(difficulty_msg), &difficulty_offset,
-                             "{\"id\":3,\"method\":\"mining.suggest_difficulty\",\"params\":[") ||
-        !stratum_append_int(difficulty_msg, sizeof(difficulty_msg), &difficulty_offset,
-                            (int)suggested_difficulty) ||
-        !stratum_append_text(difficulty_msg, sizeof(difficulty_msg), &difficulty_offset,
-                             "]}\n") ||
-        stratum_write_message(transport, difficulty_msg) < 0) {
+
+    if (stratum_write_message(transport, setup_msg) < 0) {
         return ESP_FAIL;
     }
-    mark_response_request(STRATUM_ID_SUGGEST_DIFFICULTY);
-    if (stratum_send_authorize(transport) < 0) {
-        return ESP_FAIL;
-    }
-    mark_response_request(STRATUM_ID_AUTHORIZE);
-    if (stratum_write_message(
-            transport,
-            "{\"id\":5,\"method\":\"mining.extranonce.subscribe\",\"params\":[]}\n") < 0) {
-        return ESP_FAIL;
-    }
-    mark_response_request(STRATUM_ID_EXTRANONCE_SUBSCRIBE);
+
+    const uint64_t sent_us = (uint64_t)esp_timer_get_time();
+    mark_response_request_at(STRATUM_ID_CONFIGURE, sent_us);
+    mark_response_request_at(STRATUM_ID_SUBSCRIBE, sent_us);
+    mark_response_request_at(STRATUM_ID_SUGGEST_DIFFICULTY, sent_us);
+    mark_response_request_at(STRATUM_ID_AUTHORIZE, sent_us);
+    mark_response_request_at(STRATUM_ID_EXTRANONCE_SUBSCRIBE, sent_us);
     return ESP_OK;
 }
 
@@ -3181,22 +3230,23 @@ static void stratum_rx_task(void *arg)
     }
 }
 
-static void generate_and_send_work(mining_notify *notification, uint64_t extranonce_2,
-                                   uint32_t work_epoch, int interval_ms)
+static bool generate_and_send_work(mining_notify *notification, uint64_t extranonce_2,
+                                   uint32_t work_epoch, uint64_t notify_queued_us,
+                                   int interval_ms)
 {
     if (atomic_load(&g_work_paused)) {
         metric_inc(&g_metric_job_send_skipped);
-        return;
+        return false;
     }
     if (work_epoch != atomic_load(&g_work_epoch)) {
         metric_inc(&g_metric_job_send_skipped);
-        return;
+        return false;
     }
     if (!g_state->ASIC_initalized || g_state->extranonce_str == NULL ||
         (g_extranonce_len > 0 && g_extranonce_bin == NULL) ||
         g_state->extranonce_2_len <= 0 || g_state->extranonce_2_len > MAX_EXTRANONCE2_LEN) {
         metric_inc(&g_metric_job_send_skipped);
-        return;
+        return false;
     }
 
 #ifdef M45_ASIC_LOSS_METRICS
@@ -3210,7 +3260,7 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
     if (coinbase_len > STRATUM_MAX_COINBASE_BYTES) {
         metric_inc(&g_metric_job_send_skipped);
         ESP_LOGE(TAG, "dropping oversized coinbase work");
-        return;
+        return false;
     }
 
     extranonce_2_generate_bin(extranonce_2, g_state->extranonce_2_len, extranonce_2_bin);
@@ -3230,7 +3280,7 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
     if (job == NULL) {
         metric_inc(&g_metric_job_alloc_failed);
         ESP_LOGE(TAG, "job alloc failed");
-        return;
+        return false;
     }
 
     construct_bm_job(notification, merkle_root, g_state->version_mask, current_pool_difficulty(),
@@ -3239,7 +3289,7 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
     if (!bm_job_set_ids(job, notification->job_id, extranonce_2_str)) {
         metric_inc(&g_metric_job_alloc_failed);
         free_bm_job(job);
-        return;
+        return false;
     }
 #ifdef M45_ASIC_LOSS_METRICS
     metric_record_job_build((uint64_t)esp_timer_get_time() - build_started_us);
@@ -3265,12 +3315,18 @@ static void generate_and_send_work(mining_notify *notification, uint64_t extrano
     if (!sent) {
         metric_inc(&g_metric_job_send_skipped);
         free_bm_job(job);
-        return;
+        return false;
     }
 
+    const uint64_t sent_us = (uint64_t)esp_timer_get_time();
     atomic_fetch_add(&g_job_sent, 1);
-    atomic_store(&g_last_job_sent_us, (uint64_t)esp_timer_get_time());
+    atomic_store(&g_last_job_sent_us, sent_us);
+    if (notify_queued_us != 0 && sent_us >= notify_queued_us) {
+        record_latency_us(&g_job_dispatch_us, &g_job_dispatch_max_us,
+                          sent_us - notify_queued_us);
+    }
     record_assigned_work(interval_ms);
+    return true;
 }
 
 static int bm1370_job_interval_ms(void)
@@ -3299,6 +3355,92 @@ static int bm1370_job_interval_ms(void)
     return g_job_interval_ms;
 }
 
+static void job_task_clear_current(mining_notify **current, uint64_t *extranonce_2,
+                                   uint64_t *next_dispatch_us,
+                                   uint64_t *current_queued_us,
+                                   bool *first_dispatch_pending)
+{
+    if (current != NULL && *current != NULL) {
+        free_mining_notify(*current);
+        *current = NULL;
+    }
+    if (extranonce_2 != NULL) {
+        *extranonce_2 = 0;
+    }
+    if (next_dispatch_us != NULL) {
+        *next_dispatch_us = 0;
+    }
+    if (current_queued_us != NULL) {
+        *current_queued_us = 0;
+    }
+    if (first_dispatch_pending != NULL) {
+        *first_dispatch_pending = false;
+    }
+}
+
+static void job_task_sync_epoch(uint32_t *current_epoch, mining_notify **current,
+                                uint64_t *extranonce_2, uint64_t *next_dispatch_us,
+                                uint64_t *current_queued_us,
+                                bool *first_dispatch_pending)
+{
+    const uint32_t latest_epoch = atomic_load(&g_work_epoch);
+    if (latest_epoch == *current_epoch) {
+        return;
+    }
+
+    job_task_clear_current(current, extranonce_2, next_dispatch_us, current_queued_us,
+                           first_dispatch_pending);
+    *current_epoch = latest_epoch;
+}
+
+static void job_task_apply_incoming(const queued_work_t *incoming,
+                                    uint32_t *current_epoch, mining_notify **current,
+                                    uint64_t *extranonce_2,
+                                    uint64_t *next_dispatch_us,
+                                    uint64_t *current_queued_us,
+                                    bool *first_dispatch_pending)
+{
+    job_task_sync_epoch(current_epoch, current, extranonce_2, next_dispatch_us,
+                        current_queued_us, first_dispatch_pending);
+    if (incoming->epoch != *current_epoch) {
+        free_mining_notify(incoming->work);
+        return;
+    }
+
+    if (incoming->work == NULL) {
+        job_task_clear_current(current, extranonce_2, next_dispatch_us, current_queued_us,
+                               first_dispatch_pending);
+        return;
+    }
+
+    if (*current != NULL) {
+        free_mining_notify(*current);
+    }
+    *current = incoming->work;
+    *extranonce_2 = 0;
+    *next_dispatch_us = 0;
+    *current_queued_us = incoming->queued_us;
+    *first_dispatch_pending = incoming->queued_us != 0;
+    if (incoming->queued_us != 0) {
+        record_elapsed_latency_us(&g_job_queue_wait_us, &g_job_queue_wait_max_us,
+                                  incoming->queued_us);
+    }
+}
+
+static void job_task_drain_available(uint32_t *current_epoch, mining_notify **current,
+                                     uint64_t *extranonce_2,
+                                     uint64_t *next_dispatch_us,
+                                     uint64_t *current_queued_us,
+                                     bool *first_dispatch_pending)
+{
+    queued_work_t incoming = {0};
+    while (xQueueReceive(g_work_queue, &incoming, 0) == pdPASS) {
+        job_task_apply_incoming(&incoming, current_epoch, current, extranonce_2,
+                                next_dispatch_us, current_queued_us,
+                                first_dispatch_pending);
+    }
+}
+
 static void job_task(void *arg)
 {
     (void)arg;
@@ -3306,6 +3448,8 @@ static void job_task(void *arg)
     uint32_t current_epoch = atomic_load(&g_work_epoch);
     uint64_t extranonce_2 = 0;
     uint64_t next_dispatch_us = 0;
+    uint64_t current_queued_us = 0;
+    bool first_dispatch_pending = false;
 
     while (true) {
         int timeout_ms = 500;
@@ -3328,47 +3472,20 @@ static void job_task(void *arg)
         queued_work_t incoming = {0};
         const BaseType_t received =
             xQueueReceive(g_work_queue, &incoming, pdMS_TO_TICKS(timeout_ms));
-        const uint32_t latest_epoch = atomic_load(&g_work_epoch);
-
-        if (latest_epoch != current_epoch) {
-            if (current != NULL) {
-                free_mining_notify(current);
-                current = NULL;
-            }
-            extranonce_2 = 0;
-            next_dispatch_us = 0;
-            current_epoch = latest_epoch;
-        }
+        job_task_sync_epoch(&current_epoch, &current, &extranonce_2, &next_dispatch_us,
+                            &current_queued_us, &first_dispatch_pending);
 
         if (received == pdPASS) {
-            if (incoming.epoch != current_epoch) {
-                free_mining_notify(incoming.work);
-            } else if (incoming.work == NULL) {
-                if (current != NULL) {
-                    free_mining_notify(current);
-                    current = NULL;
-                }
-                extranonce_2 = 0;
-                next_dispatch_us = 0;
-            } else {
-                if (current != NULL) {
-                    free_mining_notify(current);
-                }
-                current = incoming.work;
-                extranonce_2 = 0;
-                next_dispatch_us = 0;
-            }
+            job_task_apply_incoming(&incoming, &current_epoch, &current, &extranonce_2,
+                                    &next_dispatch_us, &current_queued_us,
+                                    &first_dispatch_pending);
+            job_task_drain_available(&current_epoch, &current, &extranonce_2,
+                                     &next_dispatch_us, &current_queued_us,
+                                     &first_dispatch_pending);
         }
 
-        if (atomic_load(&g_work_epoch) != current_epoch) {
-            if (current != NULL) {
-                free_mining_notify(current);
-                current = NULL;
-            }
-            current_epoch = atomic_load(&g_work_epoch);
-            extranonce_2 = 0;
-            next_dispatch_us = 0;
-        }
+        job_task_sync_epoch(&current_epoch, &current, &extranonce_2, &next_dispatch_us,
+                            &current_queued_us, &first_dispatch_pending);
         if (current != NULL && !atomic_load(&g_work_paused)) {
             const uint64_t now_us = (uint64_t)esp_timer_get_time();
             if (next_dispatch_us == 0 || now_us >= next_dispatch_us) {
@@ -3378,7 +3495,14 @@ static void job_task(void *arg)
                 if (scheduled_us != 0 && now_us > scheduled_us) {
                     metric_record_dispatch_late(now_us - scheduled_us, interval_us);
                 }
-                generate_and_send_work(current, extranonce_2++, current_epoch, interval_ms);
+                const uint64_t notify_queued_us =
+                    first_dispatch_pending ? current_queued_us : 0;
+                if (generate_and_send_work(current, extranonce_2++, current_epoch,
+                                           notify_queued_us, interval_ms) &&
+                    first_dispatch_pending) {
+                    first_dispatch_pending = false;
+                    current_queued_us = 0;
+                }
 
                 if (scheduled_us == 0 || now_us > scheduled_us + interval_us) {
                     next_dispatch_us = now_us + interval_us;
@@ -3429,7 +3553,8 @@ static int submit_share(esp_transport_handle_t transport, int request_id, const 
     }
 
     const uint64_t started_us = (uint64_t)esp_timer_get_time();
-    const int ret = stratum_write_message(transport, msg);
+    const int ret =
+        stratum_write_message_timeout(transport, msg, STRATUM_SHARE_WRITE_TIMEOUT_MS);
     const uint64_t finished_us = (uint64_t)esp_timer_get_time();
     if (write_us != NULL) {
         *write_us = finished_us > started_us ? finished_us - started_us : 0;
@@ -3529,7 +3654,8 @@ static void result_task(void *arg)
             continue;
         }
 
-        const double diff = test_nonce_value(&job_snapshot, result->nonce, result->rolled_version);
+        const uint32_t rolled_version = job_snapshot.version | result->version_bits;
+        const double diff = test_nonce_value(&job_snapshot, result->nonce, rolled_version);
         if (diff <= 0.0) {
             atomic_fetch_add(&g_nonce_errors, 1);
             continue;
@@ -3560,7 +3686,7 @@ static void result_task(void *arg)
                      job_snapshot.jobid, result->asic_nr, result->core_id,
                      result->small_core_id, diff, job_snapshot.pool_diff, current_diff);
 
-        const uint32_t version_bits = result->rolled_version ^ job_snapshot.version;
+        const uint32_t version_bits = rolled_version ^ job_snapshot.version;
         const int request_id = next_uid();
         uint64_t write_us = 0;
         const int ret = submit_share_current_transport(request_id, &job_snapshot, result->nonce,
@@ -3597,6 +3723,12 @@ esp_err_t stratum_minimal_start(GlobalState *state)
     atomic_store(&g_share_submit_max_us, 0);
     atomic_store(&g_share_write_us, 0);
     atomic_store(&g_share_write_max_us, 0);
+    atomic_store(&g_line_handle_us, 0);
+    atomic_store(&g_line_handle_max_us, 0);
+    atomic_store(&g_job_queue_wait_us, 0);
+    atomic_store(&g_job_queue_wait_max_us, 0);
+    atomic_store(&g_job_dispatch_us, 0);
+    atomic_store(&g_job_dispatch_max_us, 0);
     set_payout_status(STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
     reset_hashrate_window();
     set_active_primary_pool_endpoint();
@@ -3676,6 +3808,12 @@ void stratum_minimal_get_stats(stratum_minimal_stats_t *out)
     out->share_submit_max_us = atomic_load(&g_share_submit_max_us);
     out->share_write_us = atomic_load(&g_share_write_us);
     out->share_write_max_us = atomic_load(&g_share_write_max_us);
+    out->line_handle_us = atomic_load(&g_line_handle_us);
+    out->line_handle_max_us = atomic_load(&g_line_handle_max_us);
+    out->job_queue_wait_us = atomic_load(&g_job_queue_wait_us);
+    out->job_queue_wait_max_us = atomic_load(&g_job_queue_wait_max_us);
+    out->job_dispatch_us = atomic_load(&g_job_dispatch_us);
+    out->job_dispatch_max_us = atomic_load(&g_job_dispatch_max_us);
     copy_pool_host(out->pool_host, sizeof(out->pool_host), endpoint.host);
     out->pool_port = endpoint.port;
     out->using_backup_pool = endpoint.using_backup;

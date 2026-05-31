@@ -56,6 +56,12 @@ typedef struct {
     uint64_t share_submit_max_us;
     uint64_t share_write_us;
     uint64_t share_write_max_us;
+    uint64_t line_handle_us;
+    uint64_t line_handle_max_us;
+    uint64_t job_queue_wait_us;
+    uint64_t job_queue_wait_max_us;
+    uint64_t job_dispatch_us;
+    uint64_t job_dispatch_max_us;
     char pool_host[M45_POOL_HOST_MAX + 1];
     uint16_t pool_port;
     bool using_backup_pool;
