@@ -1124,10 +1124,22 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
     const float asic_temp_c = g_state != NULL ? g_state->POWER_MANAGEMENT_MODULE.chip_temp_avg
                                               : 0.0f;
     const uint16_t old_voltage_mv = current_asic_voltage_mv(old_config, asic_temp_c);
-    const uint16_t new_voltage_mv =
-        m45_config_effective_asic_voltage_mv_for_temp(new_config, asic_temp_c);
     const uint16_t old_frequency_mhz = current_asic_frequency_mhz(old_config);
-    const uint16_t new_frequency_mhz = m45_config_effective_asic_frequency_mhz(new_config);
+    /*
+     * Auto Clock saves stock manual targets as boot defaults, but it owns the
+     * live ASIC tune. Preserve the current live tune on ordinary settings saves.
+     */
+    const bool auto_clock_owns_runtime_tune =
+        new_config->overclock_enabled && new_config->auto_clock_enabled &&
+        old_voltage_mv >= new_config->safety_asic_voltage_min_mv &&
+        old_voltage_mv < new_config->safety_asic_voltage_max_mv;
+    const uint16_t new_voltage_mv =
+        auto_clock_owns_runtime_tune
+            ? old_voltage_mv
+            : m45_config_effective_asic_voltage_mv_for_temp(new_config, asic_temp_c);
+    const uint16_t new_frequency_mhz =
+        auto_clock_owns_runtime_tune ? old_frequency_mhz
+                                     : m45_config_effective_asic_frequency_mhz(new_config);
     const bool safety_changed = safety_settings_changed(old_config, new_config);
     const bool voltage_needs_new_limits =
         new_voltage_mv < old_config->safety_asic_voltage_min_mv ||
