@@ -68,22 +68,21 @@
 <div class=field><label for=limit-asic-voltage-max>VOUT Stop High mV</label><input id=limit-asic-voltage-max type=number min=800 max=1400 step=5></div>
 <div class=field><label for=limit-asic-temp-expected>ASIC Watch C</label><input id=limit-asic-temp-expected type=number min=35 max=69 step=1></div>
 <div class=field><label for=limit-asic-temp-max>ASIC Stop C</label><input id=limit-asic-temp-max type=number min=45 max=69 step=1></div>
-<div class=field><label for=limit-tps546-temp-expected>VR Watch C</label><input id=limit-tps546-temp-expected type=number min=40 max=98 step=1></div>
-<div class=field><label for=limit-tps546-temp-max>VR Stop C</label><input id=limit-tps546-temp-max type=number min=60 max=98 step=1></div>
-<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=30 step=.5></div>
-<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=30 step=.5></div>
-<div id=oc-limit-power-note class='formula-note'>Power limits update from the current VOUT target.</div>
+<div class=field><label for=limit-tps546-temp-expected>VR Watch C</label><input id=limit-tps546-temp-expected type=number min=40 max=110 step=1></div>
+<div class=field><label for=limit-tps546-temp-max>VR Stop C</label><input id=limit-tps546-temp-max type=number min=60 max=110 step=1></div>
+<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=33 step=.5></div>
+<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=33 step=.5></div>
 </div></article>
 <article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
-<span id=oc-asic-state class=pill>--</span></div><div id=oc-asic class='value small'>--</div>
+<span id=oc-asic-state class=pill>--</span></div><div class=oc-asic-row><div id=oc-asic class='value small'>--</div>
+<div class=oc-asic-buttons><button id=oc-asic-power class=secondary type=button disabled>Turn Off</button>
+<button id=oc-asic-restart class=secondary type=button disabled>Restart</button></div></div>
 <div id=oc-asic-note class=subvalue></div>
 <label class='toggle-row oc-domain-reboot' for=oc-domain-reboot-enabled><input id=oc-domain-reboot-enabled type=checkbox>
 <span class=toggle-text><span class=label>Auto-Reboot Lost Domain</span><span id=oc-domain-reboot-note class=subvalue>Off</span></span></label>
 <div class=oc-power-actions>
 <label class=power-fan-toggle for=oc-asic-manage-fan title='Match fan to ASIC power'><input id=oc-asic-manage-fan type=checkbox checked>
 <span class=label>Fan follows ASIC</span></label>
-<button id=oc-asic-power class=secondary type=button disabled>Turn Off</button>
-<button id=oc-asic-restart class=secondary type=button disabled>Restart</button>
 <span id=oc-asic-power-status class=status-text></span></div></article>
 <article class='panel wide oc-card'><div class=metric-head><div class=label>Auto Clock</div>
 <span id=oc-auto-clock-state class=pill>OFF</span></div>
@@ -203,9 +202,9 @@ const txt=(id,v)=>{const el=$(id);if(el)el.textContent=v==null||v===''?'--':v};
 const asicName=s=>s.asic_chips===1?s.asic_model:`${s.asic_chips} ${s.asic_model}`;
 const PASSWORD_MASK='........';
 const STOCK_FREQUENCY=525,STOCK_VOLTAGE=1150,MAX_FREQUENCY=1500;
-const LIMIT_DEFAULTS={inputMin:4500,inputExpectedMin:4800,inputExpectedMax:5400,inputMax:5500,
-asicMin:700,asicMax:1400,asicTempExpected:60,asicTempMax:69,tpsTempExpected:85,tpsTempMax:98,
-ioutWarnDa:250,ioutFaultDa:300};
+const LIMIT_DEFAULTS={inputMin:4800,inputExpectedMin:4950,inputExpectedMax:5400,inputMax:5500,
+asicMin:700,asicMax:1400,asicTempExpected:65,asicTempMax:69,tpsTempExpected:90,tpsTempMax:110,
+ioutWarnDa:290,ioutFaultDa:330};
 const LIMIT_MAX_U16=65535,LIMIT_MAX_DECIAMPS_A=6553.5;
 const LIMIT_RANGES={
 'limit-input-voltage-min':[4500,5200,0,LIMIT_MAX_U16],
@@ -216,10 +215,10 @@ const LIMIT_RANGES={
 'limit-asic-voltage-max':[800,1400,0,LIMIT_MAX_U16],
 'limit-asic-temp-expected':[35,69,0,LIMIT_MAX_U16],
 'limit-asic-temp-max':[45,69,0,LIMIT_MAX_U16],
-'limit-tps546-temp-expected':[40,98,0,LIMIT_MAX_U16],
-'limit-tps546-temp-max':[60,98,0,LIMIT_MAX_U16],
-'limit-iout-warn':[5,30,0,LIMIT_MAX_DECIAMPS_A],
-'limit-iout-fault':[6,30,0,LIMIT_MAX_DECIAMPS_A]};
+'limit-tps546-temp-expected':[40,110,0,LIMIT_MAX_U16],
+'limit-tps546-temp-max':[60,110,0,LIMIT_MAX_U16],
+'limit-iout-warn':[5,33,0,LIMIT_MAX_DECIAMPS_A],
+'limit-iout-fault':[6,33,0,LIMIT_MAX_DECIAMPS_A]};
 const REFRESH_WARN_MS=10000;
 const UPDATE_REPO='Distortions81/M45-Gamma-Firmware',UPDATE_ASSET_PREFIX='esp-miner-factory-602-';
 const UPDATE_RELEASES_URL=`https://api.github.com/repos/${UPDATE_REPO}/releases`;
@@ -234,7 +233,7 @@ let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,s
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
 let currentBuildVersion='',latestRelease=null,latestFactoryAsset=null,releaseCheckInFlight=false,releaseAutoCheckStarted=false;
-let otaSupported=false,otaUploadInFlight=false;
+let otaSupported=false,otaUploadInFlight=false,otaLeaveAction=null,otaAllowNavigation=false;
 function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
 $('dashboard-view').classList.toggle('hidden',view!=='stats');
 $('overclock-view').classList.toggle('hidden',view!=='overclock');
@@ -243,12 +242,15 @@ $('update-view').classList.toggle('hidden',view!=='update');
 $('logs-view').classList.toggle('hidden',view!=='logs');
 $('settings-view').classList.toggle('hidden',view!=='settings');
 }
-$('status-btn').onclick=()=>{if(location.pathname!=='/'){location.href='/';}};
-$('overclock-btn').onclick=()=>{if(location.pathname!=='/overclock'){location.href='/overclock';}};
-$('calibration-btn').onclick=()=>{if(location.pathname!=='/calibration'){location.href='/calibration';}};
-$('settings-btn').onclick=()=>{if(location.pathname!=='/settings'){location.href='/settings';}};
-$('update-btn').onclick=()=>{if(location.pathname!=='/update'){location.href='/update';}};
-$('logs-btn').onclick=()=>{if(location.pathname!=='/logs'){location.href='/logs';}};
+function guardOtaNavigation(action){if(!otaUploadInFlight){action();return}
+otaLeaveAction=action;$('ota-leave-modal').classList.remove('hidden')}
+function navigateTo(path){if(location.pathname!==path)guardOtaNavigation(()=>{otaAllowNavigation=true;location.href=path})}
+$('status-btn').onclick=()=>navigateTo('/');
+$('overclock-btn').onclick=()=>navigateTo('/overclock');
+$('calibration-btn').onclick=()=>navigateTo('/calibration');
+$('settings-btn').onclick=()=>navigateTo('/settings');
+$('update-btn').onclick=()=>navigateTo('/update');
+$('logs-btn').onclick=()=>navigateTo('/logs');
 $('reboot-btn').onclick=()=>{$('reboot-modal').classList.remove('hidden')};
 $('reboot-cancel').onclick=()=>{$('reboot-modal').classList.add('hidden')};
 $('reboot-modal').onclick=e=>{if(e.target===$('reboot-modal'))$('reboot-cancel').click()};
@@ -260,6 +262,11 @@ $('settings-reset-cancel').onclick=()=>{$('settings-reset-modal').classList.add(
 $('settings-reset-modal').onclick=e=>{if(e.target===$('settings-reset-modal'))$('settings-reset-cancel').click()};
 $('update-privacy-cancel').onclick=()=>{$('update-privacy-modal').classList.add('hidden')};
 $('update-privacy-modal').onclick=e=>{if(e.target===$('update-privacy-modal'))$('update-privacy-cancel').click()};
+$('ota-leave-cancel').onclick=()=>{otaLeaveAction=null;$('ota-leave-modal').classList.add('hidden')};
+$('ota-leave-confirm').onclick=()=>{const action=otaLeaveAction;otaLeaveAction=null;otaAllowNavigation=true;$('ota-leave-modal').classList.add('hidden');if(action)action()};
+$('ota-leave-modal').onclick=e=>{if(e.target===$('ota-leave-modal'))$('ota-leave-cancel').click()};
+window.addEventListener('beforeunload',e=>{if(!otaUploadInFlight||otaAllowNavigation)return;
+e.preventDefault();e.returnValue=''});
 let dismissedFault=sessionStorage.getItem('dismissedFault')||'';
 $('fault-close').onclick=()=>{dismissedFault=$('fault-panel').dataset.reason||'';
 sessionStorage.setItem('dismissedFault',dismissedFault);$('fault-panel').classList.add('hidden')};
@@ -314,7 +321,9 @@ for(let d=0;d<domainCount;d++){const v=num(rows[a]?.[d]),cell=document.createEle
 const live=Number.isFinite(v)&&v>0,ratio=live&&Number.isFinite(expected)&&expected>0?v/expected:NaN;
 cell.className=`domain-cell ${live?'':'empty'}`;if(live&&Number.isFinite(ratio)){cell.style.borderColor=domainHeatColor(ratio);
 cell.title=`ASIC ${a+1} domain ${d+1}: ${h.join(' ').trim()}, expected ${rate(expected).join(' ').trim()} (${domainDeltaText(v,expected)})`;
-const top=document.createElement('span');top.textContent=`D${d+1} ${h[0]}${h[1]}`;const sub=document.createElement('small');sub.textContent=domainDeltaText(v,expected);
+const top=document.createElement('span');top.className='domain-rate';top.textContent=`D${d+1} `;
+const rateText=document.createElement('em');rateText.textContent=`${h[0]}${h[1]}`;top.appendChild(rateText);
+const sub=document.createElement('small');sub.className='domain-percent';sub.textContent=domainDeltaText(v,expected);
 cell.appendChild(top);cell.appendChild(sub)}else{cell.textContent=`D${d+1} --`}row.appendChild(cell)}grid.appendChild(row)}}
 function wifiQuality(rssi){rssi=Number(rssi);if(!Number.isFinite(rssi)||rssi===0)return{label:'Connected',cls:'ok'};
 if(rssi>=-50)return{label:'Excellent',cls:'ok'};if(rssi>=-60)return{label:'Very Good',cls:'ok'};
@@ -376,7 +385,7 @@ if(timer&&Number(val('cfg-display-sleep-minutes'))<1)setVal('cfg-display-sleep-m
 function setLimitRangeMode(unrestricted,clampValues=false){Object.entries(LIMIT_RANGES).forEach(([id,r])=>{
 const el=$(id),min=unrestricted?r[2]:r[0],max=unrestricted?r[3]:r[1];el.min=min;el.max=max;
 if(clampValues){const v=num(el.value);if(Number.isFinite(v))setVal(id,clamp(v,min,max))}});
-$('oc-limits-card').classList.toggle('oc-limits-unrestricted-active',unrestricted);syncLimitSummary()}
+$('oc-limits-card').classList.toggle('oc-limits-unrestricted-active',unrestricted)}
 function setLimitAmp(id,deciamps){setVal(id,n((Number(deciamps)||0)/10,1))}
 function limitAmpDa(id){const minDa=Math.round((Number($(id).min)||0)*10),maxDa=Math.round((Number($(id).max)||30)*10);
 return clamp(Math.round((Number(val(id))||0)*10),minDa,maxDa)}
@@ -393,12 +402,7 @@ setVal('limit-asic-temp-max',c.limit_asic_temp_max_c??LIMIT_DEFAULTS.asicTempMax
 setVal('limit-tps546-temp-expected',c.limit_tps546_temp_expected_max_c??LIMIT_DEFAULTS.tpsTempExpected);
 setVal('limit-tps546-temp-max',c.limit_tps546_temp_max_c??LIMIT_DEFAULTS.tpsTempMax);
 setLimitAmp('limit-iout-warn',c.limit_iout_warn_deciamps??LIMIT_DEFAULTS.ioutWarnDa);
-setLimitAmp('limit-iout-fault',c.limit_iout_fault_deciamps??LIMIT_DEFAULTS.ioutFaultDa);
-syncLimitSummary()}
-function syncLimitSummary(s=null){const l=s&&s.limits?s.limits:null;
-if(l){txt('oc-limit-power-note',`Power watch ${n(l.power_warn_w,1)} W, stop ${n(l.power_fault_w,1)} W at ${n(l.asic_voltage_target_v,3)} V target`);return}
-const v=Number(val('cfg-voltage'))/1000,wa=limitAmpDa('limit-iout-warn')/10,fa=limitAmpDa('limit-iout-fault')/10;
-txt('oc-limit-power-note',Number.isFinite(v)&&v>0?`Power watch ${n(v*wa,1)} W, stop ${n(v*fa,1)} W at saved VOUT target`:'Power limits update from the current VOUT target.')}
+setLimitAmp('limit-iout-fault',c.limit_iout_fault_deciamps??LIMIT_DEFAULTS.ioutFaultDa)}
 function setDefaultLimits(){setLimitFields({
 limit_input_voltage_min_mv:LIMIT_DEFAULTS.inputMin,limit_input_voltage_expected_min_mv:LIMIT_DEFAULTS.inputExpectedMin,
 limit_input_voltage_expected_max_mv:LIMIT_DEFAULTS.inputExpectedMax,limit_input_voltage_max_mv:LIMIT_DEFAULTS.inputMax,
@@ -491,11 +495,12 @@ setMetric('watts',haveTps?s.asic_power_watts:NaN,1,{min:10,max:50,goodMin:0,good
 warnHigh:l.power_warn_w,badHigh:l.power_fault_w,text:`Watch ${n(l.power_warn_w,1)} W | fault ${n(l.power_fault_w,1)} W`});
 setMetric('iout',haveTps?s.tps546_read_iout:NaN,2,{min:10,max:40,goodMin:0,goodMax:l.iout_warn_a,
 warnHigh:l.iout_warn_a,badHigh:l.iout_fault_a,text:`Watch ${n(l.iout_warn_a,1)} A | fault ${n(l.iout_fault_a,1)} A`});
-const fanAuto=s.fan_auto===true,fanNearMax=fanAuto&&num(s.fan_percent)>80;
-const fanColdOff=fanAuto&&num(s.fan_percent)<=0.5&&Number.isFinite(asicTemp)&&asicTemp<(asicTempTarget-1);
-setMetric('fan',s.fan_percent,0,{min:0,max:100,goodMin:20,goodMax:100,warnLow:fanColdOff?null:20,
-warnHigh:fanAuto?80.000001:null,text:fanColdOff?'Warming to target':fanNearMax?'Near cooling max!':`${s.fan_rpm==null?'--':s.fan_rpm} RPM | expected ${n(l.fan_expected_percent,0)}% fixed`});
-txt('fan-rpm',`${fmt(s.fan_rpm)} RPM`);
+const fanAuto=s.fan_auto===true,fanPercent=num(s.fan_percent),fanDisabled=!fanAuto&&fanPercent<=0.5,fanNearMax=fanAuto&&fanPercent>80;
+const fanColdOff=fanAuto&&fanPercent<=0.5&&Number.isFinite(asicTemp)&&asicTemp<(asicTempTarget-1);
+setMetric('fan',s.fan_percent,0,{min:0,max:100,goodMin:fanDisabled?0:20,goodMax:100,warnLow:fanDisabled||fanColdOff?null:20,
+warnHigh:fanDisabled?null:fanAuto?80.000001:null,text:fanDisabled?'disabled':fanColdOff?'Warming to target':fanNearMax?'Near cooling max!':`${s.fan_rpm==null?'--':s.fan_rpm} RPM | expected ${n(l.fan_expected_percent,0)}% fixed`});
+if(fanDisabled){$('fan-state').className='pill';$('fan-state').textContent='DISABLED'}
+txt('fan-rpm',fanDisabled?'disabled':`${fmt(s.fan_rpm)} RPM`);
 setMetric('hashrate',s.hashrate_ghs,0,{min:0,max:2500,goodMin:0,goodMax:2500,text:''});
 const hp=clamp(num(s.asic_error_rate_percent),0,100),hf=$('hashrate-bar').querySelector('.fill'),hl=$('hashrate-loss'),hw=parseFloat(hf.style.width)||0;
 const loss=Number.isFinite(hp)?hw*(hp/100):0;hl.style.left=Math.max(0,hw-loss)+'%';hl.style.width=Math.min(hw,loss)+'%';
@@ -538,7 +543,7 @@ function setOverclock(s){
 const asicOn=s.booting===true||s.asic_power_enabled!==false,asicCls=s.hardware_fault?'bad':s.booting?'warn':s.asic_ready?'ok':asicOn?'warn':'';
 txt('oc-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
 setOcCard('oc-asic',asicCls,s.hardware_fault?'FAULT':!asicOn?'OFF':s.booting?'BOOT':s.overclock_enabled?'OC':'STOCK',s.hardware||'--');
-syncTempCompensationNote(s);syncLimitSummary(s);syncAutoClockSetting(s);setAsicPowerButton(s)}
+syncTempCompensationNote(s);syncAutoClockSetting(s);setAsicPowerButton(s)}
 function calLine(key,min,max){if(calHistory.length<2)return'';const last=calHistory.length-1;
 return calHistory.map((p,i)=>{const v=Number.isFinite(num(p[key]))?p[key]:min;
 return `${last?i*360/last:0},${110-pct(v,min,max)}`}).join(' ')}
@@ -608,10 +613,6 @@ $('cfg-pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.va
 $('cfg-pool-diff-auto').onchange=syncPoolDifficulty;
 $('oc-limits-defaults').onclick=setDefaultLimits;
 $('limit-unrestricted').onchange=e=>setLimitRangeMode(e.currentTarget.checked,true);
-['limit-input-voltage-min','limit-input-voltage-expected-min','limit-input-voltage-expected-max',
-'limit-input-voltage-max','limit-asic-voltage-min','limit-asic-voltage-max',
-'limit-asic-temp-expected','limit-asic-temp-max','limit-tps546-temp-expected',
-'limit-tps546-temp-max','limit-iout-warn','limit-iout-fault'].forEach(id=>$(id).oninput=syncLimitSummary);
 $('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){$('cfg-overclock-enabled').checked=false;
 $('oc-enable-modal').classList.remove('hidden')}else{setDefaultOverclockPanel();syncOverclockEnabled()}};
 $('oc-temp-compensation').onchange=()=>syncTempCompensationNote();
@@ -623,7 +624,7 @@ $('oc-preset').onchange=()=>{const p=presetParts();if(!p)return;
 setVal('cfg-frequency',p[0]);applyVoltageOffset();syncOverclockWarning()};
 $('oc-voltage-offset').onchange=applyVoltageOffset;
 $('cfg-frequency').oninput=()=>{syncPreset();syncOverclockWarning()};
-$('cfg-voltage').oninput=()=>{setVal('oc-voltage-offset',0);syncPreset();syncLimitSummary()};
+$('cfg-voltage').oninput=()=>{setVal('oc-voltage-offset',0);syncPreset()};
 function configBody(){
 let fanMode=val('cfg-fan-mode');const sleepMode=val('cfg-display-sleep-mode');
 const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';

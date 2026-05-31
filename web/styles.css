@@ -77,9 +77,11 @@ dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .domain-map-item{grid-column:1/-1}.domain-grid{display:grid;gap:6px;margin-top:8px}
 .domain-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
 .domain-cell{min-height:38px;border:2px solid var(--line);border-radius:6px;padding:5px;display:grid;
-align-content:center;gap:2px;background:#111518;color:var(--text);overflow:hidden}
+align-content:center;gap:2px;background:#111518;color:var(--text);overflow:hidden;text-align:center}
 .domain-cell span{font-size:12px;font-weight:760;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.domain-rate em{font-size:11px;font-style:normal;font-weight:720}
 .domain-cell small{font-size:10px;font-weight:700;line-height:1;color:inherit;opacity:.86;white-space:nowrap}
+.domain-percent{justify-self:center;text-align:center}
 .domain-cell.empty{color:var(--muted);background:#111518}
 .split-value{display:grid;grid-template-columns:max-content max-content;gap:8px;align-items:baseline}
 .split-sub{color:var(--muted);font-size:12px;white-space:nowrap}
@@ -121,7 +123,9 @@ font-size:11px;font-weight:650;padding:0 5px;cursor:pointer;min-width:0;white-sp
 .oc-card-disabled{opacity:.48}
 .oc-auto-clock-limit{color:var(--warn)}
 .oc-preset-warning{color:var(--warn)}
-.oc-card-fields .toggle-row{padding:0}.oc-power-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.oc-card-fields .toggle-row{padding:0}.oc-asic-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.oc-asic-row .value.small{min-width:0}.oc-asic-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-left:auto;flex-wrap:wrap}
+.oc-asic-buttons .primary,.oc-asic-buttons .secondary{min-width:104px}.oc-power-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .power-fan-toggle{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}.power-fan-toggle .label{color:inherit;font-size:13px}
 .oc-auto-clock-warning{border:1px solid #725c22;border-radius:6px;background:#211a0f;padding:10px;color:var(--warn);
 font-size:12px;line-height:1.35}.oc-auto-clock-warning .label{color:var(--warn);margin-bottom:4px}

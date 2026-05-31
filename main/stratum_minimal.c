@@ -75,7 +75,7 @@
 #define STRATUM_ID_EXTRANONCE_SUBSCRIBE 5
 #define STRATUM_SUBMIT_NO_TRANSPORT (-2)
 
-static const char *TAG = "stratum_min";
+static const char *TAG = "stratum";
 
 #define STRATUM_LOGI(...) m45_log_buffer_append_verbose(TAG, __VA_ARGS__)
 

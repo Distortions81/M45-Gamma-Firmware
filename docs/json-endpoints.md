@@ -60,8 +60,8 @@ Response fields:
 
 ```json
 {
-  "input_voltage_min_v": 4.5,
-  "input_voltage_expected_min_v": 4.8,
+  "input_voltage_min_v": 4.8,
+  "input_voltage_expected_min_v": 4.95,
   "input_voltage_expected_max_v": 5.4,
   "input_voltage_max_v": 5.5,
   "asic_voltage_min_v": 0.7,
@@ -69,14 +69,14 @@ Response fields:
   "asic_voltage_expected_max_v": 1.225,
   "asic_voltage_max_v": 1.4,
   "asic_voltage_target_v": 1.15,
-  "asic_temp_expected_max_c": 60.0,
+  "asic_temp_expected_max_c": 65.0,
   "asic_temp_max_c": 69.0,
-  "tps546_temp_expected_max_c": 85.0,
-  "tps546_temp_max_c": 98.0,
-  "iout_warn_a": 25.0,
-  "iout_fault_a": 30.0,
-  "power_warn_w": 28.75,
-  "power_fault_w": 34.5,
+  "tps546_temp_expected_max_c": 90.0,
+  "tps546_temp_max_c": 110.0,
+  "iout_warn_a": 29.0,
+  "iout_fault_a": 33.0,
+  "power_warn_w": 33.35,
+  "power_fault_w": 37.95,
   "fan_expected_percent": 100
 }
 ```
@@ -256,18 +256,18 @@ password values:
   "display_screensaver_enabled": true,
   "display_sleep_minutes": 0,
   "safety_limits_unrestricted": false,
-  "limit_input_voltage_min_mv": 4500,
-  "limit_input_voltage_expected_min_mv": 4800,
+  "limit_input_voltage_min_mv": 4800,
+  "limit_input_voltage_expected_min_mv": 4950,
   "limit_input_voltage_expected_max_mv": 5400,
   "limit_input_voltage_max_mv": 5500,
   "limit_asic_voltage_min_mv": 700,
   "limit_asic_voltage_max_mv": 1400,
-  "limit_asic_temp_expected_max_c": 60,
+  "limit_asic_temp_expected_max_c": 65,
   "limit_asic_temp_max_c": 69,
-  "limit_tps546_temp_expected_max_c": 85,
-  "limit_tps546_temp_max_c": 98,
-  "limit_iout_warn_deciamps": 250,
-  "limit_iout_fault_deciamps": 300
+  "limit_tps546_temp_expected_max_c": 90,
+  "limit_tps546_temp_max_c": 110,
+  "limit_iout_warn_deciamps": 290,
+  "limit_iout_fault_deciamps": 330
 }
 ```
 

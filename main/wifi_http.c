@@ -960,8 +960,10 @@ static size_t filter_normal_logs(char *body, size_t body_len)
         }
 
         const size_t line_len = read_pos - line_start;
-        if (log_line_is_verbose(body + line_start, line_len) ||
-            line_contains_text(body + line_start, line_len, "share accepted")) {
+        const char *line = body + line_start;
+        const bool share_rejected = line_contains_text(line, line_len, "share rejected");
+        if ((log_line_is_verbose(line, line_len) && !share_rejected) ||
+            line_contains_text(line, line_len, "share accepted")) {
             continue;
         }
         if (write_pos != line_start) {

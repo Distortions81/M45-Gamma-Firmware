@@ -155,9 +155,10 @@ condition is detected. Default shutdown limits are:
 - ASIC temperature reaches `69 C`.
 - Enabled ASIC VOUT falls below `0.700 V`.
 - ASIC VOUT reaches `1.400 V`.
-- TPS546 temperature reaches `98 C`.
+- TPS546 temperature reaches `110 C`.
+- Input VIN falls below `4.8 V`.
 - Input VIN reaches `5.5 V`.
-- TPS546 output current reaches `30 A`.
+- TPS546 output current reaches `33 A`.
 - TPS546 or temperature monitor reads fail while hardware is active.
 
 These limits are last-resort protections, not a substitute for proper cooling,
