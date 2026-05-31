@@ -42,7 +42,8 @@ Response fields:
 | `domain_hashrate_ghs`, `domain_hashrates_ghs` | number/array | Domain hashrate totals. |
 | `asic_error_rate_percent`, `expected_hashrate_ghs` | number | Performance estimates. |
 | `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. `voltage_temp_compensation_mv` is signed relative to the base voltage. |
-| `overclock_enabled` | boolean | Saved overclock enable state. |
+| `overclock_enabled`, `auto_clock_enabled`, `auto_clock_active` | boolean | Overclock and auto-clock state. |
+| `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_thermal_resistance_c_per_w` | number | Auto-clock controller telemetry. |
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power and fault state. |
@@ -191,7 +192,7 @@ Response fields:
 | `pool_port`, `backup_pool_port` | number | 1-65535. |
 | `wifi_password_set`, `pool_password_set` | boolean | Password values are not returned. |
 | `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Pool difficulty settings. |
-| `overclock_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. |
+| `overclock_enabled`, `auto_clock_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock requires overclocking and a fixed nonzero fan speed. |
 | `asic_frequency_mhz`, `asic_voltage_mv`, `overclock_voltage_offset_mv` | number | ASIC tuning values. |
 | `fan_override_enabled`, `fan_override_percent`, `fan_auto_off_allowed`, `fan_target_override_enabled`, `fan_target_temp_c` | mixed | Fan settings. |
 | `display_screensaver_enabled`, `display_sleep_minutes`, `display_sleep_max_minutes` | mixed | OLED sleep settings. |
@@ -240,6 +241,7 @@ password values:
   "pool_difficulty_auto": true,
   "pool_difficulty": 1000,
   "overclock_enabled": false,
+  "auto_clock_enabled": false,
   "asic_frequency_mhz": 525,
   "asic_voltage_mv": 1150,
   "overclock_voltage_offset_mv": 0,
@@ -298,6 +300,7 @@ Request body fields are optional:
 ```json
 {
   "overclock_enabled": true,
+  "auto_clock_enabled": false,
   "frequency_mhz": 625,
   "asic_frequency_mhz": 625,
   "voltage_mv": 1200,

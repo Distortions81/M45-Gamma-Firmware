@@ -17,6 +17,7 @@
 #include "m45_config.h"
 #include "mining.h"
 #include "asic_serial.h"
+#include "stratum_minimal.h"
 #include "tps546.h"
 #include "utils.h"
 
@@ -35,6 +36,18 @@
 #define ASIC_FREQUENCY_SETTLE_MS 50
 #define ASIC_TEMP_STARTUP_GRACE_MS 3000
 #define ASIC_TEMP_VOLTAGE_UPDATE_DEADBAND_MV 5
+#define AUTO_CLOCK_INTERVAL_MS 5000
+#define AUTO_CLOCK_PRESET_MIN_MHZ 50
+#define AUTO_CLOCK_PRESET_MAX_MHZ 1500
+#define AUTO_CLOCK_PRESET_STEP_MHZ 25
+#define AUTO_CLOCK_THERMAL_R_C_PER_W 1.4f
+#define AUTO_CLOCK_TEMP_SAFETY_MARGIN_C 0.5f
+#define AUTO_CLOCK_TEMP_HYSTERESIS_C 0.5f
+#define AUTO_CLOCK_HOT_MARGIN_C 2.0f
+#define AUTO_CLOCK_FAILSAFE_MARGIN_C 1.0f
+#define AUTO_CLOCK_MAX_STEPS_UP 1
+#define AUTO_CLOCK_MAX_STEPS_DOWN 3
+#define AUTO_CLOCK_MAX_STEPS_DOWN_HOT 4
 static const char *TAG = "bitaxe_hw";
 static uint8_t g_chip_count = 0;
 static char g_hw_status[64] = "boot";
@@ -45,7 +58,12 @@ static bool g_tps546_ready = false;
 static uint16_t g_commanded_voltage_mv = 0;
 static TickType_t g_asic_temp_grace_until;
 static portMUX_TYPE g_power_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE g_auto_clock_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static bitaxe_gamma602_power_snapshot_t g_power_snapshot = {0};
+static bitaxe_gamma602_auto_clock_status_t g_auto_clock_status = {
+    .thermal_resistance_c_per_w = AUTO_CLOCK_THERMAL_R_C_PER_W,
+};
+static TickType_t g_auto_clock_next_tick;
 static float g_power_vin_window[TPS546_POWER_WINDOW_SAMPLES];
 static float g_power_vout_window[TPS546_POWER_WINDOW_SAMPLES];
 static float g_power_iout_window[TPS546_POWER_WINDOW_SAMPLES];
@@ -146,6 +164,172 @@ static void reset_power_average_window(void)
     g_power_temp_sum = 0.0f;
     g_power_window_count = 0;
     g_power_window_next = 0;
+}
+
+static void update_auto_clock_status(bool enabled, bool active, uint16_t target_frequency_mhz,
+                                     uint16_t target_voltage_mv, float power_now_w,
+                                     float power_target_w)
+{
+    const bitaxe_gamma602_auto_clock_status_t status = {
+        .enabled = enabled,
+        .active = active,
+        .target_frequency_mhz = target_frequency_mhz,
+        .target_voltage_mv = target_voltage_mv,
+        .power_now_w = power_now_w,
+        .power_target_w = power_target_w,
+        .thermal_resistance_c_per_w = AUTO_CLOCK_THERMAL_R_C_PER_W,
+    };
+
+    portENTER_CRITICAL(&g_auto_clock_status_lock);
+    g_auto_clock_status = status;
+    portEXIT_CRITICAL(&g_auto_clock_status_lock);
+}
+
+static uint16_t auto_clock_preset_frequency(uint8_t index)
+{
+    return AUTO_CLOCK_PRESET_MIN_MHZ +
+           (uint16_t)index * AUTO_CLOCK_PRESET_STEP_MHZ;
+}
+
+static uint8_t auto_clock_preset_count(void)
+{
+    return (uint8_t)(((AUTO_CLOCK_PRESET_MAX_MHZ - AUTO_CLOCK_PRESET_MIN_MHZ) /
+                      AUTO_CLOCK_PRESET_STEP_MHZ) +
+                     1);
+}
+
+static uint8_t auto_clock_index_for_frequency(uint16_t frequency_mhz)
+{
+    if (frequency_mhz <= AUTO_CLOCK_PRESET_MIN_MHZ) {
+        return 0;
+    }
+    if (frequency_mhz >= AUTO_CLOCK_PRESET_MAX_MHZ) {
+        return (uint8_t)(auto_clock_preset_count() - 1);
+    }
+
+    const uint16_t offset_mhz = frequency_mhz - AUTO_CLOCK_PRESET_MIN_MHZ;
+    const uint16_t rounded =
+        (offset_mhz + (AUTO_CLOCK_PRESET_STEP_MHZ / 2)) / AUTO_CLOCK_PRESET_STEP_MHZ;
+    return (uint8_t)rounded;
+}
+
+static uint16_t auto_clock_base_voltage_mv(uint16_t frequency_mhz,
+                                           int16_t voltage_offset_mv)
+{
+    int32_t base_mv = 0;
+    if (frequency_mhz == CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ) {
+        base_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
+    } else {
+        base_mv = (int32_t)lroundf((1150.0f + (0.35f * ((float)frequency_mhz - 850.0f))) /
+                                   5.0f) *
+                  5;
+    }
+
+    base_mv += voltage_offset_mv;
+    if (base_mv < 500) {
+        return 500;
+    }
+    if (base_mv > 1370) {
+        return 1370;
+    }
+    return (uint16_t)base_mv;
+}
+
+static bool auto_clock_candidate_voltage(const m45_config_t *config,
+                                         uint16_t frequency_mhz,
+                                         float asic_temp_c,
+                                         uint16_t *base_mv,
+                                         uint16_t *target_mv)
+{
+    m45_config_t candidate = *config;
+    candidate.overclock_enabled = true;
+    candidate.asic_frequency_mhz = frequency_mhz;
+    candidate.asic_voltage_mv =
+        auto_clock_base_voltage_mv(frequency_mhz, config->overclock_voltage_offset_mv);
+    if (candidate.asic_voltage_mv < candidate.safety_asic_voltage_min_mv ||
+        candidate.asic_voltage_mv >= candidate.safety_asic_voltage_max_mv) {
+        return false;
+    }
+
+    const uint16_t compensated_mv =
+        m45_config_effective_asic_voltage_mv_for_temp(&candidate, asic_temp_c);
+    if (compensated_mv < candidate.safety_asic_voltage_min_mv ||
+        compensated_mv >= candidate.safety_asic_voltage_max_mv) {
+        return false;
+    }
+
+    if (base_mv != NULL) {
+        *base_mv = candidate.asic_voltage_mv;
+    }
+    if (target_mv != NULL) {
+        *target_mv = compensated_mv;
+    }
+    return true;
+}
+
+static uint8_t auto_clock_clamp_toward(uint8_t current_index, uint8_t target_index,
+                                       uint8_t max_steps_up, uint8_t max_steps_down)
+{
+    if (target_index > current_index) {
+        const uint8_t delta = target_index - current_index;
+        return current_index + (delta > max_steps_up ? max_steps_up : delta);
+    }
+    if (target_index < current_index) {
+        const uint8_t delta = current_index - target_index;
+        return current_index - (delta > max_steps_down ? max_steps_down : delta);
+    }
+    return current_index;
+}
+
+static esp_err_t auto_clock_apply_preset(GlobalState *state, const m45_config_t *current_config,
+                                         uint16_t next_frequency_mhz,
+                                         uint16_t next_base_voltage_mv,
+                                         uint16_t next_target_voltage_mv)
+{
+    m45_config_t next_config = *current_config;
+    next_config.overclock_enabled = true;
+    next_config.asic_frequency_mhz = next_frequency_mhz;
+    next_config.asic_voltage_mv = next_base_voltage_mv;
+    m45_config_apply_auto_clock_policy(&next_config);
+
+    const uint16_t current_frequency_mhz =
+        m45_config_effective_asic_frequency_mhz(current_config);
+    esp_err_t err = ESP_OK;
+
+    ESP_LOGI(TAG, "auto clock preset: %u MHz / %u mV -> %u MHz / %u mV",
+             current_frequency_mhz,
+             m45_config_effective_asic_voltage_mv(current_config),
+             next_frequency_mhz, next_base_voltage_mv);
+
+    if (next_frequency_mhz <= current_frequency_mhz) {
+        stratum_minimal_pause_work();
+        err = bitaxe_gamma602_set_frequency_mhz(state, next_frequency_mhz);
+        stratum_minimal_resume_work();
+        if (err == ESP_OK) {
+            err = bitaxe_gamma602_set_voltage_mv_for_config(state, next_target_voltage_mv,
+                                                            &next_config);
+        }
+    } else {
+        err = bitaxe_gamma602_set_voltage_mv_for_config(state, next_target_voltage_mv,
+                                                        &next_config);
+        if (err == ESP_OK) {
+            stratum_minimal_pause_work();
+            err = bitaxe_gamma602_set_frequency_mhz(state, next_frequency_mhz);
+            stratum_minimal_resume_work();
+        }
+    }
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = m45_config_set_runtime(&next_config);
+    if (err == ESP_OK) {
+        state->pool_difficulty = m45_config_effective_pool_difficulty(
+            &next_config, state->DEVICE_CONFIG.family.asic.small_core_count,
+            state->DEVICE_CONFIG.family.asic_count);
+    }
+    return err;
 }
 
 static void update_power_state(GlobalState *state, const TPS546_StatusSnapshot *snapshot)
@@ -392,6 +576,167 @@ static esp_err_t apply_temperature_voltage_compensation(GlobalState *state, floa
     return bitaxe_gamma602_set_voltage_mv(state, target_mv);
 }
 
+static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
+                                          float control_temp_c,
+                                          const TPS546_StatusSnapshot *snapshot)
+{
+    const m45_config_t *config = m45_config_get();
+    const bool active = config->auto_clock_enabled && config->overclock_enabled &&
+                        config->fan_override_enabled && config->fan_override_percent > 0;
+    if (!config->auto_clock_enabled || !active || state->SYSTEM_MODULE.hardware_fault ||
+        !isfinite(asic_temp_c) || asic_temp_c <= 0.0f ||
+        !isfinite(control_temp_c) || control_temp_c <= 0.0f || snapshot == NULL) {
+        update_auto_clock_status(config->auto_clock_enabled, false,
+                                 m45_config_effective_asic_frequency_mhz(config),
+                                 m45_config_effective_asic_voltage_mv_for_temp(config,
+                                                                               asic_temp_c),
+                                 0.0f, 0.0f);
+        return ESP_OK;
+    }
+
+    const TickType_t now = xTaskGetTickCount();
+    if (g_auto_clock_next_tick != 0 &&
+        (int32_t)(now - g_auto_clock_next_tick) < 0) {
+        return ESP_OK;
+    }
+    g_auto_clock_next_tick = now + pdMS_TO_TICKS(AUTO_CLOCK_INTERVAL_MS);
+
+    const float v_now = snapshot->read_vout > 0.0f
+                            ? snapshot->read_vout
+                            : (float)m45_config_effective_asic_voltage_mv_for_temp(config,
+                                                                                     asic_temp_c) /
+                                  1000.0f;
+    const float i_now = snapshot->read_iout;
+    const float p_now = v_now * i_now;
+    const float mhz_now = state->POWER_MANAGEMENT_MODULE.actual_frequency > 0.0f
+                              ? state->POWER_MANAGEMENT_MODULE.actual_frequency
+                              : (float)m45_config_effective_asic_frequency_mhz(config);
+    if (!isfinite(v_now) || !isfinite(i_now) || !isfinite(p_now) || !isfinite(mhz_now) ||
+        v_now <= 0.0f || i_now <= 0.0f || p_now <= 0.0f || mhz_now <= 0.0f) {
+        update_auto_clock_status(true, false,
+                                 m45_config_effective_asic_frequency_mhz(config),
+                                 m45_config_effective_asic_voltage_mv_for_temp(config,
+                                                                               asic_temp_c),
+                                 0.0f, 0.0f);
+        return ESP_OK;
+    }
+
+    const float target_temp_c = (float)m45_config_effective_fan_target_temp_c(config);
+    const float p_target =
+        fmaxf(1.0f, p_now + ((target_temp_c - AUTO_CLOCK_TEMP_SAFETY_MARGIN_C -
+                              control_temp_c) /
+                             AUTO_CLOCK_THERMAL_R_C_PER_W));
+    const uint16_t current_frequency_mhz =
+        m45_config_effective_asic_frequency_mhz(config);
+    const uint8_t current_index = auto_clock_index_for_frequency(current_frequency_mhz);
+    uint8_t target_index = 0;
+    uint16_t target_base_mv = 0;
+    uint16_t target_voltage_mv = 0;
+    bool have_target = false;
+    bool have_lowest_valid = false;
+    uint8_t lowest_valid_index = 0;
+    uint8_t highest_valid_index = 0;
+
+    for (uint8_t i = 0; i < auto_clock_preset_count(); ++i) {
+        const uint16_t candidate_frequency_mhz = auto_clock_preset_frequency(i);
+        uint16_t candidate_base_mv = 0;
+        uint16_t candidate_voltage_mv = 0;
+        if (!auto_clock_candidate_voltage(config, candidate_frequency_mhz, asic_temp_c,
+                                          &candidate_base_mv, &candidate_voltage_mv)) {
+            continue;
+        }
+        if (!have_lowest_valid) {
+            lowest_valid_index = i;
+            have_lowest_valid = true;
+        }
+        highest_valid_index = i;
+
+        const float frequency_ratio = (float)candidate_frequency_mhz / mhz_now;
+        const float voltage_ratio = ((float)candidate_voltage_mv / 1000.0f) / v_now;
+        const float p_est = p_now * frequency_ratio * voltage_ratio * voltage_ratio;
+        if (p_est <= p_target) {
+            target_index = i;
+            target_base_mv = candidate_base_mv;
+            target_voltage_mv = candidate_voltage_mv;
+            have_target = true;
+        }
+    }
+    if (!have_lowest_valid) {
+        update_auto_clock_status(true, false, current_frequency_mhz,
+                                 m45_config_effective_asic_voltage_mv_for_temp(config,
+                                                                               asic_temp_c),
+                                 p_now, p_target);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!have_target) {
+        target_index = lowest_valid_index;
+    }
+    uint8_t control_current_index = current_index;
+    if (control_current_index < lowest_valid_index) {
+        control_current_index = lowest_valid_index;
+    } else if (control_current_index > highest_valid_index) {
+        control_current_index = highest_valid_index;
+    }
+
+    uint8_t max_steps_down = AUTO_CLOCK_MAX_STEPS_DOWN;
+    const float failsafe_temp_c =
+        fmaxf(0.0f, (float)config->safety_asic_temp_max_c - AUTO_CLOCK_FAILSAFE_MARGIN_C);
+    if (control_temp_c >= failsafe_temp_c) {
+        target_index = lowest_valid_index;
+        max_steps_down = AUTO_CLOCK_MAX_STEPS_DOWN_HOT;
+        bitaxe_fan_force_max_if_allowed(state, "auto clock failsafe");
+    } else if (control_temp_c >= target_temp_c + AUTO_CLOCK_HOT_MARGIN_C) {
+        if (target_index >= control_current_index) {
+            target_index = control_current_index > 0 ? control_current_index - 1 : 0;
+        }
+        max_steps_down = AUTO_CLOCK_MAX_STEPS_DOWN_HOT;
+    } else if (control_temp_c >= target_temp_c) {
+        if (target_index >= control_current_index) {
+            target_index = control_current_index > 0 ? control_current_index - 1 : 0;
+        }
+    } else if (control_temp_c >= target_temp_c - AUTO_CLOCK_TEMP_HYSTERESIS_C &&
+               target_index > control_current_index) {
+        target_index = control_current_index;
+    }
+    if (target_index < lowest_valid_index) {
+        target_index = lowest_valid_index;
+    }
+
+    const uint8_t next_index =
+        auto_clock_clamp_toward(control_current_index, target_index, AUTO_CLOCK_MAX_STEPS_UP,
+                                max_steps_down);
+    const uint16_t next_frequency_mhz = auto_clock_preset_frequency(next_index);
+    uint16_t next_base_mv = 0;
+    uint16_t next_voltage_mv = 0;
+    if (!auto_clock_candidate_voltage(config, next_frequency_mhz, asic_temp_c,
+                                      &next_base_mv, &next_voltage_mv)) {
+        update_auto_clock_status(true, false, current_frequency_mhz,
+                                 m45_config_effective_asic_voltage_mv_for_temp(config,
+                                                                               asic_temp_c),
+                                 p_now, p_target);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (target_base_mv == 0 || target_voltage_mv == 0) {
+        auto_clock_candidate_voltage(config, auto_clock_preset_frequency(target_index),
+                                     asic_temp_c, &target_base_mv, &target_voltage_mv);
+    }
+    update_auto_clock_status(true, true, auto_clock_preset_frequency(target_index),
+                             target_voltage_mv, p_now, p_target);
+
+    if (next_frequency_mhz == current_frequency_mhz &&
+        next_base_mv == config->asic_voltage_mv) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = auto_clock_apply_preset(state, config, next_frequency_mhz,
+                                            next_base_mv, next_voltage_mv);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "auto clock apply failed: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
 static esp_err_t validate_regulator_startup_snapshot(GlobalState *state,
                                                      const TPS546_StatusSnapshot *snapshot,
                                                      bool *settled,
@@ -522,7 +867,12 @@ static void power_monitor_task(void *arg)
                 ESP_LOGW(TAG, "temperature voltage compensation update failed");
                 continue;
             }
-            bitaxe_fan_update_auto(state, asic_temp_c, bitaxe_fan_control_temp_c(asic_temp_c),
+            const float control_temp_c = bitaxe_fan_control_temp_c(asic_temp_c);
+            if (apply_auto_clock_control(state, asic_temp_c, control_temp_c,
+                                         &averaged_snapshot) != ESP_OK) {
+                ESP_LOGW(TAG, "auto clock control update failed");
+            }
+            bitaxe_fan_update_auto(state, asic_temp_c, control_temp_c,
                                    (float)averaged_snapshot.read_temp1);
         }
 
@@ -938,4 +1288,15 @@ void bitaxe_gamma602_safety_limits(bitaxe_gamma602_safety_limits_t *limits)
         .power_fault_w = target_vout * iout_fault_a,
         .fan_expected_percent = 100.0f,
     };
+}
+
+void bitaxe_gamma602_auto_clock_status(bitaxe_gamma602_auto_clock_status_t *status)
+{
+    if (status == NULL) {
+        return;
+    }
+
+    portENTER_CRITICAL(&g_auto_clock_status_lock);
+    *status = g_auto_clock_status;
+    portEXIT_CRITICAL(&g_auto_clock_status_lock);
 }

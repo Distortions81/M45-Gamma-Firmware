@@ -46,11 +46,11 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 9900
+#define STATUS_JSON_BUFFER_SIZE 10400
 #else
-#define STATUS_JSON_BUFFER_SIZE 8600
+#define STATUS_JSON_BUFFER_SIZE 9100
 #endif
-#define SETTINGS_JSON_BUFFER_SIZE 3800
+#define SETTINGS_JSON_BUFFER_SIZE 4000
 #define M45_DEVICE_NAME "M45-Bitaxe"
 #define HTTP_URI_HANDLER_SLOTS 56
 #define HTTP_HANDLER_WARN_MS 100
@@ -1247,10 +1247,12 @@ static esp_err_t status_handler(httpd_req_t *req)
     stratum_minimal_stats_t stats;
     bitaxe_gamma602_power_snapshot_t power;
     bitaxe_gamma602_safety_limits_t limits;
+    bitaxe_gamma602_auto_clock_status_t auto_clock;
     stratum_minimal_get_stats(&stats);
     const bool have_power = bitaxe_gamma602_power_snapshot(&power);
     const float asic_power_watts = have_power ? power.read_vout * power.read_iout : 0.0f;
     bitaxe_gamma602_safety_limits(&limits);
+    bitaxe_gamma602_auto_clock_status(&auto_clock);
     wifi_ap_record_t ap_info = {0};
     const int wifi_rssi = g_connected && esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK
                               ? ap_info.rssi
@@ -1379,6 +1381,13 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"voltage_temp_compensation_enabled\":%s,"
                  "\"voltage_temp_compensation_mv\":%d,"
                  "\"overclock_enabled\":%s,"
+                 "\"auto_clock_enabled\":%s,"
+                 "\"auto_clock_active\":%s,"
+                 "\"auto_clock_target_frequency_mhz\":%u,"
+                 "\"auto_clock_target_voltage_mv\":%u,"
+                 "\"auto_clock_power_now_w\":%.2f,"
+                 "\"auto_clock_power_target_w\":%.2f,"
+                 "\"auto_clock_thermal_resistance_c_per_w\":%.2f,"
                  "\"asic_temp_c\":%.1f,"
                  "\"fan_percent\":%.1f,"
                  "\"fan_rpm\":%u,"
@@ -1461,6 +1470,11 @@ static esp_err_t status_handler(httpd_req_t *req)
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
                  voltage_compensation_mv,
                  config->overclock_enabled ? "true" : "false",
+                 config->auto_clock_enabled ? "true" : "false",
+                 auto_clock.active ? "true" : "false",
+                 auto_clock.target_frequency_mhz, auto_clock.target_voltage_mv,
+                 auto_clock.power_now_w, auto_clock.power_target_w,
+                 auto_clock.thermal_resistance_c_per_w,
                  asic_temp_c,
                  g_state->POWER_MANAGEMENT_MODULE.fan_perc,
                  g_state->POWER_MANAGEMENT_MODULE.fan_rpm,
@@ -1582,6 +1596,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"pool_difficulty_auto\":%s,"
                  "\"pool_suggested_difficulty\":%u,"
                  "\"overclock_enabled\":%s,"
+                 "\"auto_clock_enabled\":%s,"
                  "\"asic_frequency_mhz\":%u,"
                  "\"asic_voltage_mv\":%u,"
                  "\"overclock_voltage_offset_mv\":%d,"
@@ -1614,6 +1629,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  config->pool_pass[0] != '\0' ? "true" : "false", config->pool_difficulty,
                  config->pool_difficulty_auto ? "true" : "false",
                  suggested_pool_difficulty, config->overclock_enabled ? "true" : "false",
+                 config->auto_clock_enabled ? "true" : "false",
                  config->asic_frequency_mhz, config->asic_voltage_mv,
                  config->overclock_voltage_offset_mv,
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
@@ -2108,6 +2124,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                                &config.pool_difficulty_auto) &&
         json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535) &&
         json_get_optional_bool(json, "overclock_enabled", &config.overclock_enabled) &&
+        json_get_optional_bool(json, "auto_clock_enabled", &config.auto_clock_enabled) &&
         json_get_u16(json, "asic_frequency_mhz", &config.asic_frequency_mhz,
                      M45_ASIC_FREQUENCY_MIN_MHZ, M45_ASIC_FREQUENCY_MAX_MHZ) &&
         json_get_u16(json, "asic_voltage_mv", &config.asic_voltage_mv, 500, 1370) &&
@@ -2188,6 +2205,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_IOUT_FAULT_MAX_DA);
     cJSON_Delete(json);
+    m45_config_apply_auto_clock_policy(&config);
 
     if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
         config.backup_pool_host[0] == '\0' || config.pool_user[0] == '\0' ||
@@ -2270,7 +2288,7 @@ static bool json_get_tune_u16(cJSON *root, const char *name, const char *alt_nam
 
 static esp_err_t runtime_tune_handler(httpd_req_t *req)
 {
-    if (req->content_len <= 0 || req->content_len > 512) {
+    if (req->content_len <= 0 || req->content_len > 640) {
         httpd_resp_set_status(req, "413 Payload Too Large");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid size\"}");
     }
@@ -2302,6 +2320,7 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     m45_config_t runtime = *m45_config_get();
     const bool ok =
         json_get_optional_bool(json, "overclock_enabled", &runtime.overclock_enabled) &&
+        json_get_optional_bool(json, "auto_clock_enabled", &runtime.auto_clock_enabled) &&
         json_get_tune_u16(json, "frequency_mhz", "asic_frequency_mhz",
                           &runtime.asic_frequency_mhz, M45_ASIC_FREQUENCY_MIN_MHZ,
                           M45_ASIC_FREQUENCY_MAX_MHZ) &&
@@ -2319,6 +2338,7 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
         json_get_optional_u16(json, "fan_target_temp_c", &runtime.fan_target_temp_c,
                               35, 66);
     cJSON_Delete(json);
+    m45_config_apply_auto_clock_policy(&runtime);
 
     if (!ok || (runtime.fan_override_percent != 0 &&
                 (runtime.fan_override_percent < 35 || runtime.fan_override_percent > 100))) {
@@ -3560,6 +3580,7 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     m45_config_t config = *m45_config_get();
     const bool ok = espminer_apply_patch_json(json, &config);
     cJSON_Delete(json);
+    m45_config_apply_auto_clock_policy(&config);
 
     if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
         config.pool_user[0] == '\0' ||

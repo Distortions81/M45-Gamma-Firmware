@@ -65,6 +65,7 @@ typedef struct {
     uint16_t pool_difficulty;
     bool pool_difficulty_auto;
     bool overclock_enabled;
+    bool auto_clock_enabled;
     uint16_t asic_frequency_mhz;
     uint16_t asic_voltage_mv;
     int16_t overclock_voltage_offset_mv;
@@ -101,6 +102,7 @@ esp_err_t m45_config_set_pool_ip_cache(bool backup_pool, const char *expected_ho
 esp_err_t m45_config_set_best_diff(double best_diff);
 esp_err_t m45_config_reset_best_diff(void);
 const m45_config_t *m45_config_get(void);
+void m45_config_apply_auto_clock_policy(m45_config_t *config);
 uint16_t m45_config_auto_pool_difficulty(uint16_t frequency_mhz,
                                          uint16_t small_core_count,
                                          uint8_t asic_count);

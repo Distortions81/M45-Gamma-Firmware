@@ -127,6 +127,7 @@ static void set_defaults(m45_config_t *config)
     config->pool_difficulty = CONFIG_M45_BITAXE_STRATUM_SUGGESTED_DIFFICULTY;
     config->pool_difficulty_auto = M45_DEFAULT_POOL_DIFFICULTY_AUTO;
     config->overclock_enabled = false;
+    config->auto_clock_enabled = false;
     config->asic_frequency_mhz = CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
     config->asic_voltage_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
     config->overclock_voltage_offset_mv = 0;
@@ -185,6 +186,26 @@ static void load_double(nvs_handle_t nvs, const char *key, double *value)
     }
 }
 
+void m45_config_apply_auto_clock_policy(m45_config_t *config)
+{
+    if (config == NULL || !config->auto_clock_enabled) {
+        return;
+    }
+
+    if (!config->overclock_enabled ||
+        (config->fan_override_enabled && config->fan_override_percent == 0)) {
+        config->auto_clock_enabled = false;
+        return;
+    }
+
+    config->fan_override_enabled = true;
+    if (config->fan_override_percent < M45_FAN_OVERRIDE_MIN_PERCENT ||
+        config->fan_override_percent > M45_FAN_OVERRIDE_MAX_PERCENT) {
+        config->fan_override_percent = M45_FAN_OVERRIDE_MAX_PERCENT;
+    }
+    config->fan_auto_off_allowed = false;
+}
+
 static void sanitize_config(m45_config_t *config)
 {
     if (hostname_is_unsuffixed_default(config->hostname)) {
@@ -235,6 +256,7 @@ static void sanitize_config(m45_config_t *config)
         config->fan_target_temp_c > M45_FAN_TARGET_MAX_C) {
         config->fan_target_temp_c = M45_FAN_TARGET_DEFAULT_C;
     }
+    m45_config_apply_auto_clock_policy(config);
     if (!config->safety_limits_unrestricted) {
         config->safety_input_voltage_min_mv =
             default_if_outside(config->safety_input_voltage_min_mv,
@@ -386,6 +408,9 @@ esp_err_t m45_config_load(void)
     uint8_t overclock_enabled = g_config.overclock_enabled ? 1 : 0;
     load_u8(nvs, "oc_en", &overclock_enabled);
     g_config.overclock_enabled = overclock_enabled != 0;
+    uint8_t auto_clock_enabled = g_config.auto_clock_enabled ? 1 : 0;
+    load_u8(nvs, "auto_clk", &auto_clock_enabled);
+    g_config.auto_clock_enabled = auto_clock_enabled != 0;
     load_u16(nvs, "asic_freq", &g_config.asic_frequency_mhz);
     load_u16(nvs, "asic_mv", &g_config.asic_voltage_mv);
     load_i16(nvs, "oc_mv_off", &g_config.overclock_voltage_offset_mv);
@@ -490,6 +515,9 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "oc_en", clean.overclock_enabled ? 1 : 0);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "auto_clk", clean.auto_clock_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "asic_freq", clean.asic_frequency_mhz);

@@ -107,6 +107,11 @@ color:var(--text);padding:0 10px;font:inherit}.field input:focus,.field select:f
 .field option.stock{color:var(--ok)}.field option.warn{color:var(--warn)}.field option.hot{color:var(--bad)}
 .field input[type=range]{padding:0;height:28px}.range-line{display:flex;align-items:center;gap:10px}.range-line input{flex:1}
 .range-value{min-width:44px;color:var(--muted);font-size:12px;text-align:right}
+.fan-presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.fan-presets button{height:28px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--muted);
+font-size:11px;font-weight:650;padding:0 5px;cursor:pointer;min-width:0;white-space:nowrap}
+.fan-presets button:hover,.fan-presets button.active{border-color:var(--blue);background:#172333;color:var(--text)}
+.fan-presets button:disabled{opacity:.5;cursor:not-allowed}
 .formula-note{grid-column:1/-1;margin-top:-4px;color:var(--muted);font-size:12px;line-height:1.25}
 .oc-grid{align-items:start}.oc-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:18px}
 .oc-command-panel{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
