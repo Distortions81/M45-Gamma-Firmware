@@ -26,9 +26,7 @@ width:5px;height:5px;border-radius:50%;background:currentColor}
 .calibration-ico{position:relative;width:18px;height:18px;border:2px solid currentColor;border-radius:50%}
 .calibration-ico:before{content:'';position:absolute;left:3px;right:3px;top:7px;height:2px;background:currentColor}
 .calibration-ico:after{content:'';position:absolute;top:3px;bottom:3px;left:7px;width:2px;background:currentColor}
-.update-ico{position:relative;width:18px;height:18px;border:2px solid currentColor;border-radius:50%;
-border-left-color:transparent}.update-ico:before{content:'';position:absolute;right:-3px;top:-1px;width:7px;height:7px;
-border-top:2px solid currentColor;border-right:2px solid currentColor}
+.update-ico{width:18px;height:18px;fill:currentColor;display:block}
 .settings-ico{width:18px;height:18px;display:grid;place-items:center;font-size:18px;
 line-height:1;color:currentColor}
 .reboot-ico{width:18px;height:18px;display:grid;place-items:center;font-size:18px;
