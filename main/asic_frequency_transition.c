@@ -3,12 +3,24 @@
 #include <math.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "global_state.h"
 
 #define ASIC_FREQUENCY_MATCH_EPSILON 0.0001f
-#define ASIC_FREQUENCY_STEP_MHZ 6.25f
+#define ASIC_FREQUENCY_STEP_MHZ 5.0f
+#define ASIC_FREQUENCY_STEP_SETTLE_MS 100
 
 static const char *TAG = "asic_frequency";
+
+static void apply_frequency_step(GlobalState *global_state,
+                                 set_hash_frequency_fn set_frequency_fn,
+                                 float frequency_mhz)
+{
+    global_state->POWER_MANAGEMENT_MODULE.actual_frequency =
+        set_frequency_fn(frequency_mhz);
+    vTaskDelay(pdMS_TO_TICKS(ASIC_FREQUENCY_STEP_SETTLE_MS));
+}
 
 void do_frequency_transition(void *state, set_hash_frequency_fn set_frequency_fn)
 {
@@ -25,8 +37,7 @@ void do_frequency_transition(void *state, set_hash_frequency_fn set_frequency_fn
     }
 
     if (fabsf(target_frequency - current_frequency) < ASIC_FREQUENCY_STEP_MHZ) {
-        global_state->POWER_MANAGEMENT_MODULE.actual_frequency =
-            set_frequency_fn(target_frequency);
+        apply_frequency_step(global_state, set_frequency_fn, target_frequency);
         return;
     }
 
@@ -47,14 +58,12 @@ void do_frequency_transition(void *state, set_hash_frequency_fn set_frequency_fn
                (step_direction < 0 && current_step > target_step)) {
             current_step += step_direction;
             current_frequency = (float)current_step * ASIC_FREQUENCY_STEP_MHZ;
-            global_state->POWER_MANAGEMENT_MODULE.actual_frequency =
-                set_frequency_fn(current_frequency);
+            apply_frequency_step(global_state, set_frequency_fn, current_frequency);
         }
     }
 
     if (fabsf(current_frequency - target_frequency) > ASIC_FREQUENCY_MATCH_EPSILON) {
-        global_state->POWER_MANAGEMENT_MODULE.actual_frequency =
-            set_frequency_fn(target_frequency);
+        apply_frequency_step(global_state, set_frequency_fn, target_frequency);
     }
 
     ESP_LOGI(TAG, "Frequency transition complete at %g MHz", target_frequency);
