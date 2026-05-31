@@ -129,7 +129,6 @@ font-size:11px;font-weight:650;padding:0 5px;cursor:pointer;min-width:0;white-sp
 .oc-enable-row{grid-column:auto;flex:1;min-width:220px;padding:0}.oc-form-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;min-width:0}
 .oc-save-panel{display:flex;justify-content:flex-end}
 .oc-card{display:grid;align-content:start;gap:12px}.oc-card .value.small{margin-top:0}.oc-card-fields{margin-top:12px}
-.oc-card-disabled{opacity:.48}
 .oc-auto-clock-limit{color:var(--warn)}
 .oc-preset-warning{color:var(--warn)}
 .oc-card-fields .toggle-row{padding:0}.oc-asic-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}

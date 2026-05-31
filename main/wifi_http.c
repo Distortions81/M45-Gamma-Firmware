@@ -534,6 +534,15 @@ static void clear_wifi_test_result_locked(void)
     g_last_wifi_test_password[0] = '\0';
 }
 
+static void record_wifi_test_result_locked(const char *ssid, const char *password)
+{
+    g_last_wifi_test_ok = true;
+    strlcpy(g_last_wifi_test_ssid, ssid != NULL ? ssid : "",
+            sizeof(g_last_wifi_test_ssid));
+    strlcpy(g_last_wifi_test_password, password != NULL ? password : "",
+            sizeof(g_last_wifi_test_password));
+}
+
 static bool wifi_test_result_matches(const char *ssid, const char *password)
 {
     if (g_wifi_test_mutex == NULL ||
@@ -546,6 +555,35 @@ static bool wifi_test_result_matches(const char *ssid, const char *password)
         strcmp(g_last_wifi_test_password, password != NULL ? password : "") == 0;
     xSemaphoreGive(g_wifi_test_mutex);
     return matches;
+}
+
+static bool current_wifi_connection_matches_saved_config(const m45_config_t *saved_config,
+                                                         const char *ssid,
+                                                         const char *password,
+                                                         int *rssi, char *ip,
+                                                         size_t ip_size)
+{
+    if (saved_config == NULL || !g_connected ||
+        strcmp(saved_config->wifi_ssid, ssid != NULL ? ssid : "") != 0 ||
+        strcmp(saved_config->wifi_password, password != NULL ? password : "") != 0) {
+        return false;
+    }
+
+    wifi_ap_record_t ap_info = {0};
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+        return false;
+    }
+
+    char current_ssid[sizeof(ap_info.ssid) + 1];
+    memcpy(current_ssid, ap_info.ssid, sizeof(ap_info.ssid));
+    current_ssid[sizeof(ap_info.ssid)] = '\0';
+    if (strcmp(current_ssid, ssid) != 0) {
+        return false;
+    }
+
+    *rssi = ap_info.rssi;
+    strlcpy(ip, g_ip, ip_size);
+    return true;
 }
 
 static esp_err_t run_wifi_connection_test(const char *ssid, const char *password, int *rssi,
@@ -565,6 +603,13 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
     *reason = 0;
 
     const m45_config_t saved_config = *m45_config_get();
+    if (current_wifi_connection_matches_saved_config(&saved_config, ssid, password, rssi,
+                                                     ip, ip_size)) {
+        record_wifi_test_result_locked(ssid, password);
+        xSemaphoreGive(g_wifi_test_mutex);
+        return ESP_OK;
+    }
+
     esp_err_t test_err = ESP_OK;
     bool connected = false;
     g_wifi_test_disconnect_reason = 0;
@@ -619,10 +664,7 @@ static esp_err_t run_wifi_connection_test(const char *ssid, const char *password
             *rssi = ap_info.rssi;
         }
         strlcpy(ip, g_ip, ip_size);
-        g_last_wifi_test_ok = true;
-        strlcpy(g_last_wifi_test_ssid, ssid, sizeof(g_last_wifi_test_ssid));
-        strlcpy(g_last_wifi_test_password, password != NULL ? password : "",
-                sizeof(g_last_wifi_test_password));
+        record_wifi_test_result_locked(ssid, password);
     }
 
     if (g_connected) {

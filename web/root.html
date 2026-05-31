@@ -90,7 +90,9 @@
 <label class='toggle-row oc-auto-clock' for=oc-auto-clock-enabled><input id=oc-auto-clock-enabled type=checkbox>
 <span class=toggle-text><span class=label>Auto Clock Speed</span><span id=oc-auto-clock-note class=subvalue>--</span></span></label>
 <div class='settings-form oc-card-fields'><div class=field><label for=oc-auto-clock-target>Target Temp</label><div class=range-line>
-<input id=oc-auto-clock-target type=range min=35 max=66 step=1 value=62><span id=oc-auto-clock-target-value class=range-value>--C</span></div></div></div>
+<input id=oc-auto-clock-target type=range min=35 max=66 step=1 value=62><span id=oc-auto-clock-target-value class=range-value>--C</span></div></div>
+<div id=oc-auto-clock-offset-field class='field hidden'><label for=oc-auto-clock-voltage-offset>Voltage Offset</label><input id=oc-auto-clock-voltage-offset type=number min=-500 max=300 step=5 value=0>
+<div class=subvalue>Preset voltage trim.</div></div></div>
 <div id=oc-auto-clock-live class=formula-note>--</div></article>
 <article id=oc-preset-card class='panel wide oc-card'><div class=label>Preset</div><div class='settings-form oc-card-fields'>
 <div class=field><label for=oc-preset>Preset</label><select id=oc-preset>
@@ -427,13 +429,15 @@ const extra=s&&Number.isFinite(num(s.voltage_temp_compensation_mv))?num(s.voltag
 const temp=s&&Number.isFinite(num(s.asic_temp_c))&&num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN;
 note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`${extra>0?'+':''}${n(extra,0)} mV now at ${n(temp,1)} C`:'25-70 C: +/-5.5 mV/C from 60 C; off outside'}
 function syncClockModePanels(){const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested();
-['oc-preset','oc-voltage-offset','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on||auto);
-['oc-preset-card','oc-manual-card'].forEach(id=>$(id).classList.toggle('oc-card-disabled',auto))}
+['oc-preset','oc-voltage-offset','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on);
+['oc-preset-card','oc-manual-card'].forEach(id=>$(id).classList.toggle('hidden',auto));
+$('oc-auto-clock-offset-field').classList.toggle('hidden',!auto);
+$('oc-auto-clock-voltage-offset').disabled=!on}
 function syncOverclockEnabled(){const on=$('cfg-overclock-enabled').checked;
-['oc-temp-compensation','oc-auto-clock-enabled','oc-auto-clock-target'].forEach(id=>$(id).disabled=!on);
+['oc-temp-compensation','oc-auto-clock-enabled','oc-auto-clock-target','oc-auto-clock-voltage-offset'].forEach(id=>$(id).disabled=!on);
 syncTempCompensationNote();syncClockModePanels();syncOverclockWarning();syncAutoClockSetting()}
 function setStockOverclock(){setVal('cfg-frequency',STOCK_FREQUENCY);setVal('cfg-voltage',STOCK_VOLTAGE);
-setVal('oc-voltage-offset',0);syncPreset()}
+setVoltageOffset(0);syncPreset()}
 function setDefaultOverclockPanel(){setStockOverclock();$('oc-temp-compensation').checked=true;
 $('oc-auto-clock-enabled').checked=false;setVal('oc-auto-clock-target',62);
 $('oc-domain-reboot-enabled').checked=false;
@@ -451,9 +455,13 @@ function presetClass(f){return f>975?'hot':f>800?'warn':''}
 function buildPresets(){const s=$('oc-preset');for(let f=50;f<=MAX_FREQUENCY;f+=25){if(f===STOCK_FREQUENCY)continue;const v=presetVoltage(f),o=document.createElement('option');
 o.value=`${f},${v}`;o.textContent=`${f} MHz / ${v} mV`;const c=presetClass(f);if(c)o.className=c;s.appendChild(o)}}
 function presetParts(){const v=val('oc-preset');return v==='custom'?null:v.split(',').map(Number)}
-function voltageOffset(){return clamp(Number(val('oc-voltage-offset'))||0,-500,300)}
+function voltageOffset(){return clamp(Number(val(autoClockRequested()?'oc-auto-clock-voltage-offset':'oc-voltage-offset'))||0,-500,300)}
+function setVoltageOffset(v){const off=clamp(Number(v)||0,-500,300);
+setVal('oc-voltage-offset',off);setVal('oc-auto-clock-voltage-offset',off);return off}
+function syncVoltageOffset(sourceId){return setVoltageOffset(val(sourceId))}
+function mirrorVoltageOffset(sourceId){setVal(sourceId==='oc-voltage-offset'?'oc-auto-clock-voltage-offset':'oc-voltage-offset',val(sourceId))}
 function applyVoltageOffset(){const p=presetParts();if(!p)return;
-setVal('cfg-voltage',clamp(p[1]+voltageOffset(),500,1370))}
+setVal('cfg-voltage',clamp(p[1]+syncVoltageOffset('oc-voltage-offset'),500,1370))}
 function syncPreset(){const f=Number(val('cfg-frequency')),v=Number(val('cfg-voltage')),off=voltageOffset();
 const opt=[...$('oc-preset').options].find(o=>{if(o.value==='custom')return false;const p=o.value.split(',').map(Number);return p[0]===f&&clamp(p[1]+off,500,1370)===v});
 $('oc-preset').value=opt?opt.value:'custom'}
@@ -590,7 +598,7 @@ const sleepMinutes=Number(c.display_sleep_minutes)||0;setVal('cfg-display-sleep-
 $('cfg-display-sleep-minutes').max=c.display_sleep_max_minutes||65535;setVal('cfg-display-sleep-minutes',sleepMinutes>0?sleepMinutes:15);syncDisplaySleep();
 setLimitFields(c);
 $('cfg-overclock-enabled').checked=!!c.overclock_enabled;
-setVal('cfg-frequency',c.asic_frequency_mhz);setVal('cfg-voltage',c.asic_voltage_mv);setVal('oc-voltage-offset',c.overclock_voltage_offset_mv||0);
+setVal('cfg-frequency',c.asic_frequency_mhz);setVal('cfg-voltage',c.asic_voltage_mv);setVoltageOffset(c.overclock_voltage_offset_mv||0);
 $('oc-temp-compensation').checked=!!c.asic_voltage_temp_compensation_enabled;
 syncPreset();
 setVal('cfg-fan-mode',!c.fan_override_enabled?'auto':c.fan_override_percent===0?'off':'fixed');
@@ -623,14 +631,17 @@ $('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){
 $('oc-enable-modal').classList.remove('hidden')}else{setDefaultOverclockPanel();syncOverclockEnabled()}};
 $('oc-temp-compensation').onchange=()=>syncTempCompensationNote();
 $('oc-auto-clock-enabled').onchange=()=>{enforceAutoClockFanMode();syncFanSetting();
-syncTempCompensationNote();syncAutoClockSetting();syncOverclockWarning()};
+syncTempCompensationNote();syncClockModePanels();syncAutoClockSetting();syncOverclockWarning()};
 $('oc-auto-clock-target').oninput=syncAutoClockSetting;
 $('oc-domain-reboot-enabled').onchange=syncDomainRebootSetting;
 $('oc-preset').onchange=()=>{const p=presetParts();if(!p)return;
 setVal('cfg-frequency',p[0]);applyVoltageOffset();syncOverclockWarning()};
+$('oc-voltage-offset').oninput=()=>mirrorVoltageOffset('oc-voltage-offset');
 $('oc-voltage-offset').onchange=applyVoltageOffset;
+$('oc-auto-clock-voltage-offset').oninput=()=>mirrorVoltageOffset('oc-auto-clock-voltage-offset');
+$('oc-auto-clock-voltage-offset').onchange=()=>{syncVoltageOffset('oc-auto-clock-voltage-offset');syncAutoClockSetting()};
 $('cfg-frequency').oninput=()=>{syncPreset();syncOverclockWarning()};
-$('cfg-voltage').oninput=()=>{setVal('oc-voltage-offset',0);syncPreset()};
+$('cfg-voltage').oninput=()=>{setVoltageOffset(0);syncPreset()};
 function configBody(){
 let fanMode=val('cfg-fan-mode');const sleepMode=val('cfg-display-sleep-mode');
 const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';
@@ -796,8 +807,8 @@ setStatus('overclock-status',`ASIC restart failed: ${e.message||e}`,'err')}
 finally{asicRestartBusy=false;refresh()}}
 function calibrationTune(v){return{overclock_enabled:true,auto_clock_enabled:false,frequency_mhz:600,voltage_mv:v,fan_override_enabled:false,
 fan_override_percent:100,fan_target_override_enabled:true,fan_target_temp_c:CAL_TARGET_TEMP_C}}
-function setCalibrationFields(v){applyTuneFields(calibrationTune(v));setVal('oc-voltage-offset',0);$('oc-preset').value='custom'}
-function setCalibrationResult(v,measured){calibrationOffsetMv=clamp(v-1110,-500,300);setVal('oc-voltage-offset',calibrationOffsetMv);$('save-calibration').disabled=false}
+function setCalibrationFields(v){applyTuneFields(calibrationTune(v));setVoltageOffset(0);$('oc-preset').value='custom'}
+function setCalibrationResult(v,measured){calibrationOffsetMv=clamp(v-1110,-500,300);setVoltageOffset(calibrationOffsetMv);$('save-calibration').disabled=false}
 function updateCalibrationButton(s){const btn=$('calibrate-base');if(calibrationActive){btn.disabled=false;btn.textContent='Stop Calibration';btn.title='Stop calibration';return}
 const accepted=num(s&&s.shares_accepted);if(!Number.isFinite(accepted)||accepted<CAL_MIN_ACCEPTED_SHARES){
 btn.disabled=true;btn.textContent='Waiting for shares';btn.title=`Accepted shares ${Number.isFinite(accepted)?fmt(accepted):'--'}/${CAL_MIN_ACCEPTED_SHARES}`}
@@ -825,7 +836,7 @@ setStatus('calibration-status',`${label}: sampling ${n(elapsedMs/1000,0)}s, temp
 if(elapsedMs>=minMs&&!needResults){return calibrationSample(start,s,startMs,temps,hashes)}await sleep(CAL_SAMPLE_POLL_MS)}
 throw new Error(`${label}: no usable ${CAL_TARGET_TEMP_C}+/-${CAL_TEMP_MARGIN_C} C sample`)}
 async function calibrateBase(){if(calibrationActive){calibrationAbort=true;setStatus('calibration-status','stopping...','warn');return}
-calibrationActive=true;calibrationAbort=false;clearCalibrationTelemetry();const btn=$('calibrate-base'),original=tuneBody(),originalOffset=val('oc-voltage-offset');
+calibrationActive=true;calibrationAbort=false;clearCalibrationTelemetry();const btn=$('calibrate-base'),original=tuneBody(),originalOffset=voltageOffset();
 $('save-calibration').disabled=true;btn.textContent='Stop Calibration';
 try{const now=await statusJson();if(!now.asic_ready||!now.stratum_connected)throw new Error('ASIC and Stratum must be online');
 const accepted=num(now.shares_accepted);if(!Number.isFinite(accepted)||accepted<CAL_MIN_ACCEPTED_SHARES)
@@ -849,11 +860,11 @@ const s=await collectCalibrationSample(CAL_STEP_TIMEOUT_MS,CAL_STEP_SAMPLE_MS,`r
 setStatus('calibration-status',`recovering ${v} mV: ${issue||'ok'} (${calibrationSampleSummary(s)})`,issue?'warn':'');if(!issue){result=v;break}}}
 const safeResult=Math.min(1370,result+CAL_SAFETY_MV);setCalibrationFields(safeResult);await runtimeTune(calibrationTune(safeResult));
 try{setCalibrationTelemetry(await statusJson())}catch(_){}
-setCalibrationResult(safeResult,result);await runtimeTune(original);applyTuneFields(original);setVal('oc-voltage-offset',calibrationOffsetMv);syncPreset();const off=calibrationOffsetMv;
+setCalibrationResult(safeResult,result);await runtimeTune(original);applyTuneFields(original);setVoltageOffset(calibrationOffsetMv);syncPreset();const off=calibrationOffsetMv;
 const resultReason=trendStart==null?`reached ${CAL_MIN_MV} mV floor cleanly`:'performance recovered';setStatus('calibration-status',
 `OC voltage ${safeResult} mV (${off>=0?'+':''}${off} mV offset, +10 mV safety); ${resultReason}; restored previous tune; Save Calibration to keep`,'ok');
 const live=$('cal-live-state');live.className='pill ok';live.textContent='DONE';setStatus('overclock-status','Calibration complete; restored previous tune','ok',true);}
-catch(e){try{await runtimeTune(original)}catch(_){}applyTuneFields(original);setVal('oc-voltage-offset',originalOffset);syncPreset();
+catch(e){try{await runtimeTune(original)}catch(_){}applyTuneFields(original);setVoltageOffset(originalOffset);syncPreset();
 const live=$('cal-live-state');live.className='pill bad';live.textContent=calibrationAbort?'STOP':'FAIL';
 setStatus('calibration-status',`calibration failed: ${e.message||e}`,'err')}finally{calibrationActive=false;calibrationAbort=false;btn.textContent='Calibrate OC Voltage';refresh()}}
 async function saveConfig(statusId,forceRisk=false){if(!cfgWifiReady()){setStatus(statusId,'test Wi-Fi before saving','err');
@@ -917,6 +928,7 @@ async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{cons
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);return}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setFault(s);setBoot(s);
 const device=s.device_name||'M45-Firmware';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
+txt('firmware-version',s.version||'unknown');
 txt('build-id',s.build_id||'unknown');txt('build-time',s.build_time||'unknown');
 updateVersionFromStatus(s);
 txt('tps-model',s.tps546_model||'--');
