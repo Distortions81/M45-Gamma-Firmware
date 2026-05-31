@@ -1134,6 +1134,10 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
         new_voltage_mv >= old_config->safety_asic_voltage_max_mv;
     bool safety_limits_applied = false;
 
+    if (old_config->auto_clock_enabled != new_config->auto_clock_enabled) {
+        bitaxe_gamma602_reset_auto_clock_control();
+    }
+
     if (safety_changed && voltage_needs_new_limits) {
         const uint64_t started_us = http_now_us();
         esp_err_t err = bitaxe_gamma602_apply_safety_limits(new_config);

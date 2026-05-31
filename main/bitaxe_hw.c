@@ -31,6 +31,7 @@
 #define TPS546_VOUT_TOLERANCE_VOLTS 0.075f
 #define TPS546_MONITOR_INTERVAL_MS 250
 #define ASIC_FAN_MONITOR_INTERVAL_MS 250
+#define TPS546_POWER_MONITOR_STACK_BYTES 8192
 #define TPS546_POWER_WINDOW_SAMPLES 16
 #define TPS546_OUTPUT_SETTLE_INITIAL_MS 20
 #define TPS546_OUTPUT_SETTLE_POLL_MS 10
@@ -267,14 +268,24 @@ static void give_asic_transition_lock(void)
     }
 }
 
-static void reset_mining_telemetry_gate(void)
+static void reset_auto_clock_control_state(void)
 {
     g_auto_clock_mining_ready_since = 0;
     g_auto_clock_next_tick = 0;
     g_auto_clock_up_dwell_ticks = 0;
     g_auto_clock_down_dwell_ticks = 0;
+}
+
+static void reset_mining_telemetry_gate(void)
+{
+    reset_auto_clock_control_state();
     g_mining_gate_job_sent_baseline = stratum_minimal_job_sent_count();
     g_mining_gate_valid_nonce_baseline = stratum_minimal_valid_nonce_count();
+}
+
+void bitaxe_gamma602_reset_auto_clock_control(void)
+{
+    reset_auto_clock_control_state();
 }
 
 static bool mining_startup_gate_ready(const char **reason_out)
@@ -605,22 +616,25 @@ static esp_err_t auto_clock_apply_preset(GlobalState *state, const m45_config_t 
              current_frequency_mhz, current_voltage_mv,
              next_frequency_mhz, next_base_voltage_mv);
 
-    if (next_frequency_mhz <= current_frequency_mhz) {
+    const bool frequency_changing = next_frequency_mhz != current_frequency_mhz;
+    const bool voltage_changing = next_target_voltage_mv != current_voltage_mv;
+    const bool raise_voltage_before_frequency =
+        frequency_changing && voltage_changing &&
+        next_frequency_mhz > current_frequency_mhz &&
+        next_target_voltage_mv > current_voltage_mv;
+
+    if (raise_voltage_before_frequency) {
+        err = bitaxe_gamma602_set_voltage_mv_for_config_unlocked(
+            state, next_target_voltage_mv, &next_config);
+    }
+    if (err == ESP_OK && frequency_changing) {
         stratum_minimal_pause_work();
         err = bitaxe_gamma602_set_frequency_mhz_unlocked(state, next_frequency_mhz);
         stratum_minimal_resume_work();
-        if (err == ESP_OK) {
-            err = bitaxe_gamma602_set_voltage_mv_for_config_unlocked(
-                state, next_target_voltage_mv, &next_config);
-        }
-    } else {
+    }
+    if (err == ESP_OK && voltage_changing && !raise_voltage_before_frequency) {
         err = bitaxe_gamma602_set_voltage_mv_for_config_unlocked(
             state, next_target_voltage_mv, &next_config);
-        if (err == ESP_OK) {
-            stratum_minimal_pause_work();
-            err = bitaxe_gamma602_set_frequency_mhz_unlocked(state, next_frequency_mhz);
-            stratum_minimal_resume_work();
-        }
     }
 
     if (err != ESP_OK) {
@@ -1587,7 +1601,8 @@ static esp_err_t start_power_monitor(GlobalState *state)
     }
 
     BaseType_t created =
-        xTaskCreate(power_monitor_task, "tps546_mon", 4096, state, tskIDLE_PRIORITY + 2, NULL);
+        xTaskCreate(power_monitor_task, "tps546_mon", TPS546_POWER_MONITOR_STACK_BYTES,
+                    state, tskIDLE_PRIORITY + 2, NULL);
     if (created == pdPASS) {
         g_power_monitor_started = true;
         return ESP_OK;
