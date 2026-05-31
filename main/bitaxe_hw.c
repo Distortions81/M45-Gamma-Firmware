@@ -59,8 +59,6 @@
 #define AUTO_CLOCK_MAX_STEPS_UP 1
 #define AUTO_CLOCK_MAX_STEPS_DOWN 3
 #define AUTO_CLOCK_MAX_STEPS_DOWN_HOT 4
-#define MINING_TELEMETRY_MIN_STRATUM_CONNECTED_SECONDS 5
-#define MINING_TELEMETRY_READY_STABLE_MS 20000
 #define DOMAIN_REBOOT_CHECK_INTERVAL_MS 15000
 #define DOMAIN_REBOOT_STARTUP_GRACE_MS 60000
 #define DOMAIN_REBOOT_RECOVERY_MS 60000
@@ -79,7 +77,6 @@ static portMUX_TYPE g_asic_transition_lock_init_mux = portMUX_INITIALIZER_UNLOCK
 static uint16_t g_commanded_voltage_mv = 0;
 static TickType_t g_asic_temp_grace_until;
 static TickType_t g_asic_temp_no_reading_log_next;
-static TickType_t g_mining_telemetry_ready_since;
 static uint32_t g_mining_gate_job_sent_baseline;
 static portMUX_TYPE g_power_snapshot_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE g_auto_clock_status_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -269,7 +266,6 @@ static void give_asic_transition_lock(void)
 
 static void reset_mining_telemetry_gate(void)
 {
-    g_mining_telemetry_ready_since = 0;
     g_mining_gate_job_sent_baseline = stratum_minimal_job_sent_count();
 }
 
@@ -283,43 +279,21 @@ static bool mining_telemetry_ready(stratum_minimal_stats_t *stats_out,
     }
 
     const uint32_t jobs_sent = stratum_minimal_job_sent_count();
-    const bool has_post_transition_work =
+    const bool has_post_boot_work =
         (uint32_t)(jobs_sent - g_mining_gate_job_sent_baseline) > 0;
-    const bool has_hashrate =
-        (isfinite(stats.measured_hashrate_ghs) && stats.measured_hashrate_ghs > 0.0) ||
-        (isfinite(stats.domain_hashrate_ghs) && stats.domain_hashrate_ghs > 0.0);
     const char *reason = "";
 
     if (!stats.connected) {
         reason = "waiting for stratum";
-    } else if (stats.connected_seconds <
-               MINING_TELEMETRY_MIN_STRATUM_CONNECTED_SECONDS) {
-        reason = "waiting for stratum warmup";
-    } else if (!has_post_transition_work) {
+    } else if (!has_post_boot_work) {
         reason = "waiting for ASIC work";
-    } else if (!has_hashrate) {
-        reason = "waiting for hashrate telemetry";
     } else {
-        const TickType_t now = xTaskGetTickCount();
-        const TickType_t stable_ticks =
-            pdMS_TO_TICKS(MINING_TELEMETRY_READY_STABLE_MS);
-        if (g_mining_telemetry_ready_since == 0) {
-            g_mining_telemetry_ready_since = now;
-            reason = "waiting for stable mining telemetry";
-        } else if ((TickType_t)(now - g_mining_telemetry_ready_since) <
-                   stable_ticks) {
-            reason = "waiting for stable mining telemetry";
-        } else {
-            if (reason_out != NULL) {
-                *reason_out = "";
-            }
-            return true;
+        if (reason_out != NULL) {
+            *reason_out = "";
         }
+        return true;
     }
 
-    if (strcmp(reason, "waiting for stable mining telemetry") != 0) {
-        g_mining_telemetry_ready_since = 0;
-    }
     if (reason_out != NULL) {
         *reason_out = reason;
     }
@@ -850,10 +824,15 @@ static bool read_asic_temp_for_voltage(GlobalState *state, float *temp_c)
 
 static esp_err_t apply_temperature_voltage_compensation(GlobalState *state, float asic_temp_c)
 {
+    const m45_config_t *config = m45_config_get();
+    if (config != NULL && config->overclock_enabled && config->auto_clock_enabled) {
+        return ESP_OK;
+    }
+
     const uint16_t target_mv =
-        m45_config_effective_asic_voltage_mv_for_temp(m45_config_get(), asic_temp_c);
+        m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
     if (g_commanded_voltage_mv == 0) {
-        g_commanded_voltage_mv = m45_config_effective_asic_voltage_mv(m45_config_get());
+        g_commanded_voltage_mv = m45_config_effective_asic_voltage_mv(config);
     }
 
     const int delta_mv = (int)target_mv - (int)g_commanded_voltage_mv;
@@ -1793,7 +1772,6 @@ static esp_err_t bitaxe_gamma602_set_frequency_mhz_unlocked(GlobalState *state,
         return ESP_ERR_INVALID_ARG;
     }
 
-    reset_mining_telemetry_gate();
     state->POWER_MANAGEMENT_MODULE.frequency_value = (float)frequency_mhz;
     if (!state->ASIC_initalized) {
         return ESP_OK;
@@ -1833,7 +1811,6 @@ static esp_err_t bitaxe_gamma602_set_voltage_mv_for_config_unlocked(
         return ESP_ERR_INVALID_ARG;
     }
 
-    reset_mining_telemetry_gate();
     const float volts = voltage_mv / 1000.0f;
     state->POWER_MANAGEMENT_MODULE.core_voltage = volts;
     if (!g_tps546_ready || !g_regulator_enabled) {
