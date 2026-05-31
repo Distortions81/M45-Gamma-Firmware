@@ -47,6 +47,9 @@ typedef struct {
     float power_now_w;
     float power_target_w;
     float thermal_resistance_c_per_w;
+    bool input_voltage_limited;
+    bool output_current_limited;
+    bool vr_temp_limited;
 } bitaxe_gamma602_auto_clock_status_t;
 
 void bitaxe_gamma602_init_state(GlobalState *state);

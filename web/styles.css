@@ -116,9 +116,15 @@ font-size:11px;font-weight:650;padding:0 5px;cursor:pointer;min-width:0;white-sp
 .oc-grid{align-items:start}.oc-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:18px}
 .oc-command-panel{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
 .oc-enable-row{grid-column:auto;flex:1;min-width:220px;padding:0}.oc-form-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;min-width:0}
+.oc-save-panel{display:flex;justify-content:flex-end}
 .oc-card{display:grid;align-content:start;gap:12px}.oc-card .value.small{margin-top:0}.oc-card-fields{margin-top:12px}
+.oc-card-disabled{opacity:.48}
+.oc-auto-clock-limit{color:var(--warn)}
+.oc-preset-warning{color:var(--warn)}
 .oc-card-fields .toggle-row{padding:0}.oc-power-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .power-fan-toggle{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}.power-fan-toggle .label{color:inherit;font-size:13px}
+.oc-auto-clock-warning{border:1px solid #725c22;border-radius:6px;background:#211a0f;padding:10px;color:var(--warn);
+font-size:12px;line-height:1.35}.oc-auto-clock-warning .label{color:var(--warn);margin-bottom:4px}
 .oc-safety-panel{display:grid;gap:12px}.oc-safety-panel.oc-safety-active{border-color:#725c22;background:#251f12}
 .oc-warning-clear{color:var(--muted);font-size:13px}.oc-warning-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .oc-warning{border:1px solid #725c22;border-radius:6px;background:#211a0f;padding:10px}
@@ -185,7 +191,7 @@ justify-content:space-between;gap:12px}.boot-title{font-size:18px;font-weight:76
 padding:0 9px;cursor:pointer;font-size:12px;font-weight:650}.log-action:hover{background:#20262c}
 .log-toggle{display:inline-flex;align-items:center;gap:6px;
 color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.log-toggle input{width:16px;height:16px}
-.logs-output{height:calc(100vh - 150px);min-height:360px;margin:0;padding:12px;border:1px solid var(--line);
+.logs-output{height:calc(100vh - clamp(220px,24vh,320px));min-height:280px;margin:0;padding:12px;border:1px solid var(--line);
 border-radius:6px;background:#060809;color:#d8f8df;overflow:auto;white-space:pre-wrap;word-break:break-word;
 font:12px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace}
 @media(max-width:760px){main{padding:74px 14px 18px}.toolbar-title{font-size:14px}.tool-text{display:none}

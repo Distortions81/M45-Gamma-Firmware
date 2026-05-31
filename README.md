@@ -139,6 +139,9 @@ M45-specific additions compared with the stock ESP-Miner-style workflow:
   advanced testing.
 - Runtime TPS546 PMBus limit updates when safety limits change, including
   values outside the normal ranges when unrestricted mode is enabled.
+- Auto-clock preset selection holds or steps down instead of increasing when
+  VIN is at or below `5.01 V`, TPS546 current or VR temperature is close to
+  configured safety limits, and caps automatic increases at `1200 MHz`.
 - Coinbase payout detection, block-found alerting, best-diff reset, and
   automatic fallback and return behavior for backup Stratum pools.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes documented in

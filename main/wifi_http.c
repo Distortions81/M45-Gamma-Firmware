@@ -46,9 +46,9 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 10400
+#define STATUS_JSON_BUFFER_SIZE 10500
 #else
-#define STATUS_JSON_BUFFER_SIZE 9100
+#define STATUS_JSON_BUFFER_SIZE 9200
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 4000
 #define M45_DEVICE_NAME "M45-Bitaxe"
@@ -1382,7 +1382,12 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"voltage_temp_compensation_mv\":%d,"
                  "\"overclock_enabled\":%s,"
                  "\"auto_clock_enabled\":%s,"
+                 "\"auto_domain_reboot_enabled\":%s,"
+                 "\"auto_clock_target_temp_c\":%u,"
                  "\"auto_clock_active\":%s,"
+                 "\"auto_clock_input_voltage_limited\":%s,"
+                 "\"auto_clock_output_current_limited\":%s,"
+                 "\"auto_clock_vr_temp_limited\":%s,"
                  "\"auto_clock_target_frequency_mhz\":%u,"
                  "\"auto_clock_target_voltage_mv\":%u,"
                  "\"auto_clock_power_now_w\":%.2f,"
@@ -1471,7 +1476,12 @@ static esp_err_t status_handler(httpd_req_t *req)
                  voltage_compensation_mv,
                  config->overclock_enabled ? "true" : "false",
                  config->auto_clock_enabled ? "true" : "false",
+                 config->auto_domain_reboot_enabled ? "true" : "false",
+                 m45_config_effective_auto_clock_target_temp_c(config),
                  auto_clock.active ? "true" : "false",
+                 auto_clock.input_voltage_limited ? "true" : "false",
+                 auto_clock.output_current_limited ? "true" : "false",
+                 auto_clock.vr_temp_limited ? "true" : "false",
                  auto_clock.target_frequency_mhz, auto_clock.target_voltage_mv,
                  auto_clock.power_now_w, auto_clock.power_target_w,
                  auto_clock.thermal_resistance_c_per_w,
@@ -1597,6 +1607,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"pool_suggested_difficulty\":%u,"
                  "\"overclock_enabled\":%s,"
                  "\"auto_clock_enabled\":%s,"
+                 "\"auto_domain_reboot_enabled\":%s,"
+                 "\"auto_clock_target_temp_c\":%u,"
                  "\"asic_frequency_mhz\":%u,"
                  "\"asic_voltage_mv\":%u,"
                  "\"overclock_voltage_offset_mv\":%d,"
@@ -1630,6 +1642,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  config->pool_difficulty_auto ? "true" : "false",
                  suggested_pool_difficulty, config->overclock_enabled ? "true" : "false",
                  config->auto_clock_enabled ? "true" : "false",
+                 config->auto_domain_reboot_enabled ? "true" : "false",
+                 config->auto_clock_target_temp_c,
                  config->asic_frequency_mhz, config->asic_voltage_mv,
                  config->overclock_voltage_offset_mv,
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
@@ -2125,6 +2139,12 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535) &&
         json_get_optional_bool(json, "overclock_enabled", &config.overclock_enabled) &&
         json_get_optional_bool(json, "auto_clock_enabled", &config.auto_clock_enabled) &&
+        json_get_optional_bool(json, "auto_domain_reboot_enabled",
+                               &config.auto_domain_reboot_enabled) &&
+        json_get_optional_u16(json, "auto_clock_target_temp_c",
+                              &config.auto_clock_target_temp_c,
+                              M45_AUTO_CLOCK_TARGET_MIN_C,
+                              M45_AUTO_CLOCK_TARGET_MAX_C) &&
         json_get_u16(json, "asic_frequency_mhz", &config.asic_frequency_mhz,
                      M45_ASIC_FREQUENCY_MIN_MHZ, M45_ASIC_FREQUENCY_MAX_MHZ) &&
         json_get_u16(json, "asic_voltage_mv", &config.asic_voltage_mv, 500, 1370) &&
@@ -2212,6 +2232,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         (config.fan_override_percent != 0 &&
          (config.fan_override_percent < 35 || config.fan_override_percent > 100)) ||
         config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||
+        config.auto_clock_target_temp_c < M45_AUTO_CLOCK_TARGET_MIN_C ||
+        config.auto_clock_target_temp_c > M45_AUTO_CLOCK_TARGET_MAX_C ||
         !safety_settings_valid_for_tune(&config)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid settings\"}");
@@ -2321,6 +2343,10 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     const bool ok =
         json_get_optional_bool(json, "overclock_enabled", &runtime.overclock_enabled) &&
         json_get_optional_bool(json, "auto_clock_enabled", &runtime.auto_clock_enabled) &&
+        json_get_optional_u16(json, "auto_clock_target_temp_c",
+                              &runtime.auto_clock_target_temp_c,
+                              M45_AUTO_CLOCK_TARGET_MIN_C,
+                              M45_AUTO_CLOCK_TARGET_MAX_C) &&
         json_get_tune_u16(json, "frequency_mhz", "asic_frequency_mhz",
                           &runtime.asic_frequency_mhz, M45_ASIC_FREQUENCY_MIN_MHZ,
                           M45_ASIC_FREQUENCY_MAX_MHZ) &&

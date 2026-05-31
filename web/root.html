@@ -54,23 +54,7 @@
 <form id=overclock-form class='oc-form full' novalidate>
 <article class='panel full oc-command-panel'>
 <label class='toggle-row oc-enable-row' for=cfg-overclock-enabled><input id=cfg-overclock-enabled type=checkbox aria-label='Enable overclocking'>
-<span class=toggle-text><span class=label>Overclocking</span><span class=subvalue>Disabled keeps stock ASIC settings enforced.</span></span></label>
-<div class=oc-form-actions><button class=primary type=submit>Save &amp; Apply</button>
-<span id=overclock-status class=status-text></span></div></article>
-<section id=oc-safety-panel class='panel full oc-safety-panel'><div class=metric-head><div class=label>Safety</div>
-<span id=oc-safety-state class='pill ok'>OK</span></div><div id=oc-safety-clear class=oc-warning-clear>No active overclock notices.</div>
-<div class=oc-warning-list>
-<section id=oc-vr-warning class='oc-warning hidden'><div class=label>VR Cooling</div>
-<div class='value small'>For clocks over 800 MHz, add heatsink to the TPS voltage regulator
-<a class=warning-link href='https://www.solosatoshi.com/mosfet-heatsink-placement-guide' target=_blank rel=noopener><span class=link-ico>&#128279;</span>guide</a>.</div></section>
-<section id=oc-psu-warning class='oc-warning hidden'><div class=label>Power Supply</div>
-<div class='value small'>For clocks over 725 MHz, an upgraded PSU is required
-<a class=warning-link href='https://www.amazon.com/dp/B07DKCMJN9' target=_blank rel=noopener><span class=link-ico>&#128279;</span>buy</a>.</div></section>
-<section id=oc-fan-warning class='oc-warning hidden'><div class=label>Fan Speed</div>
-<div class='value small'>For clocks over 800 MHz, set fan speed to 100%.</div></section>
-<section id=oc-cooling-warning class='oc-warning hidden'><div class=label>Cooling Required</div>
-<div class='value small'>For clocks over 975 MHz, liquid cooling or a very large heatsink is required.</div></section>
-</div></section>
+<span class=toggle-text><span class=label>Overclocking</span><span class=subvalue>Disabled keeps stock ASIC settings enforced.</span></span></label></article>
 <article id=oc-limits-card class='panel full oc-card oc-limits-card'><div class=metric-head><div class=label>Limits</div>
 <button id=oc-limits-defaults class=secondary type=button>Defaults</button></div>
 <label class='toggle-row oc-limits-unrestricted' for=limit-unrestricted><input id=limit-unrestricted type=checkbox>
@@ -92,17 +76,23 @@
 </div></article>
 <article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
 <span id=oc-asic-state class=pill>--</span></div><div id=oc-asic class='value small'>--</div>
-<div id=oc-asic-note class=subvalue></div><div class=oc-power-actions>
+<div id=oc-asic-note class=subvalue></div>
+<label class='toggle-row oc-domain-reboot' for=oc-domain-reboot-enabled><input id=oc-domain-reboot-enabled type=checkbox>
+<span class=toggle-text><span class=label>Auto-Reboot Lost Domain</span><span id=oc-domain-reboot-note class=subvalue>Off</span></span></label>
+<div class=oc-power-actions>
 <label class=power-fan-toggle for=oc-asic-manage-fan title='Match fan to ASIC power'><input id=oc-asic-manage-fan type=checkbox checked>
 <span class=label>Fan follows ASIC</span></label>
 <button id=oc-asic-power class=secondary type=button disabled>Turn Off</button>
+<button id=oc-asic-restart class=secondary type=button disabled>Restart</button>
 <span id=oc-asic-power-status class=status-text></span></div></article>
 <article class='panel wide oc-card'><div class=metric-head><div class=label>Auto Clock</div>
 <span id=oc-auto-clock-state class=pill>OFF</span></div>
 <label class='toggle-row oc-auto-clock' for=oc-auto-clock-enabled><input id=oc-auto-clock-enabled type=checkbox>
 <span class=toggle-text><span class=label>Auto Clock Speed</span><span id=oc-auto-clock-note class=subvalue>--</span></span></label>
+<div class='settings-form oc-card-fields'><div class=field><label for=oc-auto-clock-target>Target Temp</label><div class=range-line>
+<input id=oc-auto-clock-target type=range min=35 max=66 step=1 value=62><span id=oc-auto-clock-target-value class=range-value>--C</span></div></div></div>
 <div id=oc-auto-clock-live class=formula-note>--</div></article>
-<article class='panel wide oc-card'><div class=label>Preset</div><div class='settings-form oc-card-fields'>
+<article id=oc-preset-card class='panel wide oc-card'><div class=label>Preset</div><div class='settings-form oc-card-fields'>
 <div class=field><label for=oc-preset>Preset</label><select id=oc-preset>
 <option class=stock value='525,1150'>525 MHz / 1150 mV (STOCK)</option><option value=custom>Custom</option></select></div>
 <div class=field><label for=oc-voltage-offset>Voltage Offset</label><input id=oc-voltage-offset type=number min=-500 max=300 step=5 value=0>
@@ -110,8 +100,9 @@
 <label class='toggle-row oc-temp-comp' for=oc-temp-compensation><input id=oc-temp-compensation type=checkbox checked>
 <span class=toggle-text><span class=label>ASIC Temperature Compensation</span><span id=oc-temp-compensation-note class=subvalue>--</span></span></label>
 <div class=formula-note>Warm formula: voltage mV = round5(1150 + 0.35 * (MHz - 850)) + offset.</div>
+<div class='formula-note oc-preset-warning'>Over 1200 MHz rarely increases real performance. Auto Clock is capped at 1200 MHz.</div>
 </div></article>
-<article class='panel wide oc-card'><div class=label>Manual Target</div><div class='settings-form oc-card-fields'>
+<article id=oc-manual-card class='panel wide oc-card'><div class=label>Manual Target</div><div class='settings-form oc-card-fields'>
 <div class=field><label for=cfg-frequency>Frequency MHz</label><input id=cfg-frequency type=number max=1500></div>
 <div class=field><label for=cfg-voltage>Voltage mV</label><input id=cfg-voltage type=number min=700 max=1370 step=5></div>
 </div></article>
@@ -131,6 +122,24 @@
 <div id=cfg-fan-target-field class=field><label for=cfg-fan-target>Target Temp</label><div class=range-line>
 <input id=cfg-fan-target type=range min=35 max=66 step=1><span id=cfg-fan-target-value class=range-value>--C</span></div></div>
 </div></article>
+<section id=oc-safety-panel class='panel full oc-safety-panel'><div class=metric-head><div class=label>Warnings</div>
+<span id=oc-safety-state class='pill ok'>OK</span></div><div id=oc-safety-clear class=oc-warning-clear>No clock threshold notices.</div>
+<div class=oc-warning-list>
+<section class='oc-warning oc-auto-clock-warning'><div class=label>Experimental Auto Clock</div>
+<div class='value small'>Auto clock is experimental and can raise current draw quickly as it climbs presets. Use it only with a high-current, stable 5 V power supply and wiring/connectors rated for the configured IOUT fault limit. Weak supplies can sag VIN, overheat wiring, trip regulator faults, or damage hardware.</div></section>
+<section id=oc-vr-warning class='oc-warning hidden'><div class=label>VR Cooling</div>
+<div class='value small'>For clocks over 800 MHz, add heatsink to the TPS voltage regulator
+<a class=warning-link href='https://www.solosatoshi.com/mosfet-heatsink-placement-guide' target=_blank rel=noopener><span class=link-ico>&#128279;</span>guide</a>.</div></section>
+<section id=oc-psu-warning class='oc-warning hidden'><div class=label>Power Supply</div>
+<div class='value small'>For clocks over 725 MHz, an upgraded PSU is required
+<a class=warning-link href='https://www.amazon.com/dp/B07DKCMJN9' target=_blank rel=noopener><span class=link-ico>&#128279;</span>buy</a>.</div></section>
+<section id=oc-fan-warning class='oc-warning hidden'><div class=label>Fan Speed</div>
+<div class='value small'>For clocks over 800 MHz, set fan speed to 100%.</div></section>
+<section id=oc-cooling-warning class='oc-warning hidden'><div class=label>Cooling Required</div>
+<div class='value small'>For clocks over 975 MHz, liquid cooling or a very large heatsink is required.</div></section>
+</div></section>
+<article class='panel full oc-save-panel'><div class=oc-form-actions><button class=primary type=submit>Save &amp; Apply</button>
+<span id=overclock-status class=status-text></span></div></article>
 </form>
 </section></section>
 <section id=calibration-view class=hidden><section class=grid>
@@ -149,7 +158,7 @@
 <article class='panel cal-metric'><div class=label>ASIC Temp</div><div id=cal-temp class=value>--</div><div id=cal-temp-note class=subvalue>target 61 C</div></article>
 <article class='panel cal-metric'><div class=label>Error Rate</div><div id=cal-error-rate class=value>--</div><div id=cal-error-total class=subvalue>total --</div></article>
 <article class='panel cal-metric'><div class=label>Hashrate</div><div id=cal-hash class=value>--</div><div id=cal-hash-note class=subvalue>sample --</div></article>
-<article class='panel cal-metric'><div class=label>ASIC Results</div><div id=cal-result-rate class=value>--</div><div id=cal-result-total class=subvalue>valid --</div></article>
+<article class='panel cal-metric'><div class=label>ASIC Results</div><div id=cal-result-rate class=value>-- J/TH</div><div id=cal-result-total class=subvalue>valid --</div></article>
 <article class='panel cal-metric'><div class=label>Fan</div><div id=cal-fan class=value>--</div><div id=cal-fan-note class=subvalue>RPM --</div></article>
 </section></section>
 <section id=settings-view class=hidden>
@@ -222,7 +231,7 @@ const CAL_TARGET_TEMP_C=61,CAL_TEMP_MARGIN_C=2;
 const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MIN_SAMPLE_RESULTS=3;
 const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
-let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false;
+let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
 let currentBuildVersion='',latestRelease=null,latestFactoryAsset=null,releaseCheckInFlight=false,releaseAutoCheckStarted=false;
 let otaSupported=false,otaUploadInFlight=false;
@@ -271,6 +280,8 @@ return `${v>=100?n(v,0):v>=10?n(v,1):n(v,2)}${u[i]}`}
 function rate(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return['--',''];
 if(v>=1000)return[n(v/1000,2),'Th'];if(v>=1)return[n(v,0),'Gh'];
 if(v>=0.001)return[n(v*1000,0),'Mh'];return[n(v*1000000,0),'Kh']}
+function joulesPerTh(watts,ghs){watts=Number(watts);ghs=Number(ghs);
+return Number.isFinite(watts)&&Number.isFinite(ghs)&&watts>0&&ghs>0?watts*1000/ghs:NaN}
 function shortTime(sec){sec=Number(sec);if(!Number.isFinite(sec)||sec<=0)return'';
 const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60);
 if(h>0)return`${h}h ${m}m`;if(m>0)return`${m}m ${s}s`;return`${s}s`}
@@ -332,7 +343,10 @@ function syncFanPresetButtons(){const group=$('cfg-fan-presets');if(!group)retur
 const pct=Math.round(num(val('cfg-fan-percent'))),fixed=val('cfg-fan-mode')==='fixed';
 [...group.querySelectorAll('button')].forEach(b=>{const active=fixed&&pct===Number(b.dataset.pct);
 b.disabled=!fixed;b.classList.toggle('active',active);b.setAttribute('aria-pressed',active?'true':'false')})}
-function syncFanSetting(){const mode=val('cfg-fan-mode'),pct=$('cfg-fan-percent'),auto=mode==='auto',fixed=mode==='fixed';
+function autoClockRequested(){return $('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked}
+function enforceAutoClockFanMode(){if(autoClockRequested()&&val('cfg-fan-mode')==='auto'){
+setVal('cfg-fan-mode','fixed');if(num(val('cfg-fan-percent'))<35)setVal('cfg-fan-percent',100)}}
+function syncFanSetting(){enforceAutoClockFanMode();const mode=val('cfg-fan-mode'),pct=$('cfg-fan-percent'),auto=mode==='auto',fixed=mode==='fixed';
 $('cfg-fan-percent-field').classList.toggle('hidden',!fixed);pct.disabled=!fixed;txt('cfg-fan-percent-value',`${pct.value}%`);
 $('cfg-fan-auto-off-field').classList.toggle('hidden',!auto);$('cfg-fan-auto-off').disabled=!auto;
 $('cfg-fan-target-enabled-field').classList.toggle('hidden',!auto);$('cfg-fan-target-field').classList.toggle('hidden',!auto);
@@ -340,13 +354,20 @@ const tgt=$('cfg-fan-target');tgt.disabled=!auto||!$('cfg-fan-target-enabled').c
 txt('cfg-fan-target-value',`${tgt.value}C`);syncFanPresetButtons();syncOverclockWarning();syncAutoClockSetting()}
 function syncAutoClockSetting(s=null){const cb=$('oc-auto-clock-enabled');if(!cb)return;
 const on=$('cfg-overclock-enabled').checked,mode=val('cfg-fan-mode'),fanOff=mode==='off';
-if(fanOff&&cb.checked)cb.checked=false;cb.disabled=!on||fanOff;
-const configured=cb.checked&&!cb.disabled,active=s&&s.auto_clock_active===true,pill=$('oc-auto-clock-state');
-pill.className=`pill ${active?'ok':configured?'warn':''}`.trim();pill.textContent=active?'ACTIVE':configured?'ARMED':'OFF';
-let note='Manual preset control';if(!on)note='Overclocking off';else if(fanOff)note='No fan selected';else if(configured)note=`Fixed fan ${val('cfg-fan-percent')||'--'}%`;
+cb.disabled=!on;cb.title=!on?'Enable overclocking first':'Auto Clock Speed';
+const target=$('oc-auto-clock-target'),targetValue=$('oc-auto-clock-target-value'),targetTemp=Number(val('oc-auto-clock-target'))||62;
+if(target)target.disabled=!on;if(targetValue)targetValue.textContent=`${targetTemp}C`;
+const configured=cb.checked&&!cb.disabled,active=s&&s.auto_clock_active===true,vinLimited=s&&s.auto_clock_input_voltage_limited===true,ampLimited=s&&s.auto_clock_output_current_limited===true,vrLimited=s&&s.auto_clock_vr_temp_limited===true,limited=vinLimited||ampLimited||vrLimited,pill=$('oc-auto-clock-state');
+pill.className=`pill ${limited?'warn':active?'ok':configured?'warn':''}`.trim();pill.textContent=limited?(vinLimited&&!ampLimited&&!vrLimited?'VIN LIMIT':ampLimited&&!vinLimited&&!vrLimited?'AMP LIMIT':vrLimited&&!vinLimited&&!ampLimited?'VR LIMIT':'LIMITS'):active?'ACTIVE':configured?'ARMED':'OFF';
+let note='Manual preset control';if(!on)note='Overclocking off';else if(configured&&fanOff)note=`No fan, target ${targetTemp}C`;else if(configured)note=`Fixed fan ${val('cfg-fan-percent')||'--'}%, target ${targetTemp}C`;
 txt('oc-auto-clock-note',note);
-const tf=num(s&&s.auto_clock_target_frequency_mhz),tv=num(s&&s.auto_clock_target_voltage_mv),pn=num(s&&s.auto_clock_power_now_w),pt=num(s&&s.auto_clock_power_target_w),tr=num(s&&s.auto_clock_thermal_resistance_c_per_w);
-txt('oc-auto-clock-live',active&&Number.isFinite(tf)&&Number.isFinite(tv)?`Target ${n(tf,0)} MHz / ${n(tv,0)} mV | power ${n(pn,1)} / ${n(pt,1)} W | R ${n(tr,1)} C/W`:'Preset step limit: +1 / -3 levels per tick')}
+const tf=num(s&&s.auto_clock_target_frequency_mhz),tv=num(s&&s.auto_clock_target_voltage_mv),pn=num(s&&s.auto_clock_power_now_w),pt=num(s&&s.auto_clock_power_target_w),tr=num(s&&s.auto_clock_thermal_resistance_c_per_w),vin=num(s&&s.tps546_read_vin),iout=num(s&&s.tps546_read_iout),vrTemp=num(s&&s.tps546_temp_c);
+const live=$('oc-auto-clock-live'),liveText=active&&Number.isFinite(tf)&&Number.isFinite(tv)?`Target ${n(tf,0)} MHz / ${n(tv,0)} mV | power ${n(pn,1)} / ${n(pt,1)} W | R ${n(tr,1)} C/W`:'Preset step limit: +1 / -3 levels per tick';
+const limitNotes=[];if(vinLimited)limitNotes.push(`input voltage ${n(vin,2)} V`);if(ampLimited)limitNotes.push(`amperage ${n(iout,1)} A`);if(vrLimited)limitNotes.push(`VR temp ${n(vrTemp,0)} C`);
+live.classList.toggle('oc-auto-clock-limit',limited);live.textContent=limited?`${limitNotes.join(', ')} limiting clock speed | ${liveText}`:liveText;
+syncClockModePanels()}
+function syncDomainRebootSetting(){const cb=$('oc-domain-reboot-enabled');if(!cb)return;
+txt('oc-domain-reboot-note',cb.checked?'Waits 1 min below 75% expected':'Off')}
 function syncDisplaySleep(){const timer=val('cfg-display-sleep-mode')==='timer',m=$('cfg-display-sleep-minutes');
 $('cfg-display-sleep-minutes-field').classList.toggle('hidden',!timer);m.disabled=!timer;
 if(timer&&Number(val('cfg-display-sleep-minutes'))<1)setVal('cfg-display-sleep-minutes',15)}
@@ -387,14 +408,18 @@ function syncPoolDifficulty(){const input=$('cfg-pool-diff'),auto=$('cfg-pool-di
 if(auto){if(input.value)input.dataset.manual=input.value;input.value=input.dataset.auto||input.value||1000}
 else if(input.dataset.manual)input.value=input.dataset.manual;input.disabled=auto}
 function syncTempCompensationNote(s=null){const cb=$('oc-temp-compensation'),note=$('oc-temp-compensation-note');if(!cb||!note)return;
-const on=$('cfg-overclock-enabled').checked;cb.disabled=!on;
+const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested();cb.disabled=!on||auto;
+if(auto){note.textContent='Locked while Auto Clock is armed';return}
 if(!cb.checked){note.textContent='Off';return}
 const extra=s&&Number.isFinite(num(s.voltage_temp_compensation_mv))?num(s.voltage_temp_compensation_mv):NaN;
 const temp=s&&Number.isFinite(num(s.asic_temp_c))&&num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN;
 note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`${extra>0?'+':''}${n(extra,0)} mV now at ${n(temp,1)} C`:'25-70 C: +/-5.5 mV/C from 60 C; off outside'}
+function syncClockModePanels(){const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested();
+['oc-preset','oc-voltage-offset','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on||auto);
+['oc-preset-card','oc-manual-card'].forEach(id=>$(id).classList.toggle('oc-card-disabled',auto))}
 function syncOverclockEnabled(){const on=$('cfg-overclock-enabled').checked;
-['oc-preset','oc-voltage-offset','oc-temp-compensation','cfg-frequency','cfg-voltage','oc-auto-clock-enabled'].forEach(id=>$(id).disabled=!on);
-syncTempCompensationNote();syncOverclockWarning();syncAutoClockSetting()}
+['oc-temp-compensation','oc-auto-clock-enabled','oc-auto-clock-target'].forEach(id=>$(id).disabled=!on);
+syncTempCompensationNote();syncClockModePanels();syncOverclockWarning();syncAutoClockSetting()}
 function setStockOverclock(){setVal('cfg-frequency',STOCK_FREQUENCY);setVal('cfg-voltage',STOCK_VOLTAGE);
 setVal('oc-voltage-offset',0);syncPreset()}
 function syncOverclockWarning(){const on=$('cfg-overclock-enabled').checked,f=num(val('cfg-frequency')),fanSet=val('cfg-fan-mode')==='fixed'&&num(val('cfg-fan-percent'))>=100;
@@ -494,13 +519,14 @@ txt('set-hardware',s.hardware)}
 function setOcCard(id,cls,pill,note){const card=$(id+'-card'),state=$(id+'-state'),sub=$(id+'-note');
 if(card)card.className='panel wide oc-card oc-power-panel';if(state){state.className=`pill ${cls||''}`.trim();state.textContent=pill||'--'}
 if(sub)sub.textContent=note||''}
-function setAsicPowerButton(s){const btn=$('oc-asic-power');if(!btn)return;
-const powered=s.booting===true||s.asic_power_enabled!==false;btn.dataset.enabled=powered?'1':'0';
-btn.className=powered?'secondary':'primary';btn.setAttribute('aria-pressed',powered?'true':'false');
+function setAsicPowerButton(s){const btn=$('oc-asic-power'),restart=$('oc-asic-restart');if(!btn)return;
+const powered=s.booting===true||s.asic_power_enabled!==false,busy=asicPowerBusy||asicRestartBusy,blocked=busy||!!s.booting||!!s.hardware_fault;
+btn.dataset.enabled=powered?'1':'0';btn.className=powered?'secondary':'primary';btn.setAttribute('aria-pressed',powered?'true':'false');
 btn.textContent=asicPowerBusy?(powered?'Turning Off...':'Turning On...'):(powered?'Turn Off':'Turn On');
-btn.title=s.hardware_fault?'Hardware fault latched':powered?'Turn ASIC off':'Turn ASIC on';
-btn.disabled=asicPowerBusy||!!s.booting||!!s.hardware_fault;
-const fan=$('oc-asic-manage-fan');if(fan)fan.disabled=btn.disabled}
+btn.title=s.hardware_fault?'Hardware fault latched':powered?'Turn ASIC off':'Turn ASIC on';btn.disabled=blocked;
+if(restart){restart.textContent=asicRestartBusy?'Restarting...':'Restart';restart.title=s.hardware_fault?'Hardware fault latched':powered?'Restart ASIC power':'ASIC is off';
+restart.disabled=blocked||!powered}
+const fan=$('oc-asic-manage-fan');if(fan)fan.disabled=busy||!!s.booting||!!s.hardware_fault}
 function setOverclock(s){
 const asicOn=s.booting===true||s.asic_power_enabled!==false,asicCls=s.hardware_fault?'bad':s.booting?'warn':s.asic_ready?'ok':asicOn?'warn':'';
 txt('oc-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
@@ -512,7 +538,7 @@ return `${last?i*360/last:0},${110-pct(v,min,max)}`}).join(' ')}
 function clearCalibrationTelemetry(){calHistory=[];calRateSamples=[];
 ['cal-voltage-line','cal-temp-line','cal-error-line','cal-hash-line'].forEach(id=>$(id).setAttribute('points',''));
 txt('cal-voltage','--');txt('cal-vout','TPS --');txt('cal-temp','--');txt('cal-error-rate','--');txt('cal-error-total','total --');
-txt('cal-hash','--');txt('cal-hash-note','expected --');txt('cal-result-rate','--');txt('cal-result-total','valid --');
+txt('cal-hash','--');txt('cal-hash-note','expected --');txt('cal-result-rate','-- J/TH');txt('cal-result-total','valid --');
 txt('cal-fan','--');txt('cal-fan-note','RPM --');
 const live=$('cal-live-state');live.className='pill';live.textContent='--'}
 function setCalibrationTelemetry(s){const now=Date.now(),valid=num(s.valid_nonces),errors=num(s.nonce_errors);let resultRate=0,errRate=0;
@@ -522,12 +548,12 @@ calRateSamples=calRateSamples.slice(-(CAL_RATE_WINDOW_SAMPLES+1));const first=ca
 if(first&&calRateSamples.length>1){const mins=(now-first.t)/60000;if(mins>0){resultRate=(valid-first.valid)/mins;errRate=(errors-first.errors)/mins}}}
 const setMv=num(s.voltage_mv),readMv=s.tps546_valid?num(s.tps546_read_vout)*1000:NaN;
 const mv=Number.isFinite(readMv)&&readMv>0?readMv:setMv,temp=num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN,hash=num(s.hashrate_ghs);
-const expected=num(s.expected_hashrate_ghs),fan=num(s.fan_percent),rpm=num(s.fan_rpm);
+const expected=num(s.expected_hashrate_ghs),fan=num(s.fan_percent),rpm=num(s.fan_rpm),jth=joulesPerTh(s.asic_power_watts,hash);
 txt('cal-voltage',Number.isFinite(setMv)?`${n(setMv,0)} mV`:'--');txt('cal-vout',Number.isFinite(readMv)?`TPS ${n(readMv,0)} mV`:'TPS --');
 txt('cal-temp',Number.isFinite(temp)?`${n(temp,1)} C`:'--');txt('cal-error-rate',`${n(errRate,1)}/min`);txt('cal-error-total',`total ${fmt(errors)}`);
 const hr=rate(hash),eh=rate(expected);txt('cal-hash',`${hr[0]} ${hr[1]}`.trim());
 txt('cal-hash-note',eh[0]==='--'?'expected --':`expected ${eh[0]} ${eh[1]}`.trim());
-txt('cal-result-rate',`${n(resultRate,1)}/min`);txt('cal-result-total',`valid ${fmt(valid)}`);
+txt('cal-result-rate',Number.isFinite(jth)?`${n(jth,1)} J/TH`:'-- J/TH');txt('cal-result-total',`valid ${fmt(valid)} | ${n(resultRate,1)}/min`);
 txt('cal-fan',Number.isFinite(fan)?`${n(fan,0)}%`:'--');txt('cal-fan-note',Number.isFinite(rpm)?`RPM ${fmt(rpm)}`:'RPM --');
 calHistory.push({t:now,voltage:mv,temp,errorRate:errRate,hash});calHistory=calHistory.filter(p=>now-p.t<=180000).slice(-90);
 $('cal-voltage-line').setAttribute('points',calLine('voltage',CAL_MIN_MV,1370));$('cal-temp-line').setAttribute('points',calLine('temp',30,80));
@@ -554,7 +580,10 @@ $('cfg-fan-auto-off').checked=!!c.fan_auto_off_allowed;
 setVal('cfg-fan-percent',c.fan_override_percent>=35?c.fan_override_percent:100);syncFanSetting();
 $('cfg-fan-target-enabled').checked=!!c.fan_target_override_enabled;
 setVal('cfg-fan-target',c.fan_target_temp_c||62);syncFanSetting();
-$('oc-auto-clock-enabled').checked=!!c.auto_clock_enabled;syncOverclockEnabled();
+$('oc-auto-clock-enabled').checked=!!c.auto_clock_enabled;
+setVal('oc-auto-clock-target',c.auto_clock_target_temp_c||62);
+if($('oc-auto-clock-enabled').checked){enforceAutoClockFanMode();syncFanSetting()}
+$('oc-domain-reboot-enabled').checked=!!c.auto_domain_reboot_enabled;syncDomainRebootSetting();syncOverclockEnabled();
 setVal('cfg-wifi-pass',c.wifi_password_set?PASSWORD_MASK:'');setVal('cfg-pool-pass',c.pool_password_set?PASSWORD_MASK:'');
 loadedWifiSsid=val('cfg-wifi-ssid');wifiSettingsTestOk=true;wifiSettingsTestKey=cfgWifiKey();setStatus('wifi-test-status','');syncWifiTest();}
 catch(e){txt('settings-status',`settings error: ${e.message||e}`);txt('overclock-status',`settings error: ${e.message||e}`)}}
@@ -579,9 +608,10 @@ $('limit-unrestricted').onchange=e=>setLimitRangeMode(e.currentTarget.checked,tr
 $('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){$('cfg-overclock-enabled').checked=false;
 $('oc-enable-modal').classList.remove('hidden')}else syncOverclockEnabled()};
 $('oc-temp-compensation').onchange=()=>syncTempCompensationNote();
-$('oc-auto-clock-enabled').onchange=()=>{if($('oc-auto-clock-enabled').checked&&val('cfg-fan-mode')==='auto'){
-setVal('cfg-fan-mode','fixed');if(num(val('cfg-fan-percent'))<35)setVal('cfg-fan-percent',100);syncFanSetting()}
-syncAutoClockSetting();syncOverclockWarning()};
+$('oc-auto-clock-enabled').onchange=()=>{enforceAutoClockFanMode();syncFanSetting();
+syncTempCompensationNote();syncAutoClockSetting();syncOverclockWarning()};
+$('oc-auto-clock-target').oninput=syncAutoClockSetting;
+$('oc-domain-reboot-enabled').onchange=syncDomainRebootSetting;
 $('oc-preset').onchange=()=>{const p=presetParts();if(!p)return;
 setVal('cfg-frequency',p[0]);applyVoltageOffset();syncOverclockWarning()};
 $('oc-voltage-offset').onchange=applyVoltageOffset;
@@ -589,7 +619,7 @@ $('cfg-frequency').oninput=()=>{syncPreset();syncOverclockWarning()};
 $('cfg-voltage').oninput=()=>{setVal('oc-voltage-offset',0);syncPreset();syncLimitSummary()};
 function configBody(){
 let fanMode=val('cfg-fan-mode');const sleepMode=val('cfg-display-sleep-mode');
-const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked&&fanMode!=='off';if(autoClock&&fanMode==='auto')fanMode='fixed';
+const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';
 const sleepMax=Number($('cfg-display-sleep-minutes').max)||65535;
 const sleepMinutes=clamp(Number(val('cfg-display-sleep-minutes'))||15,1,sleepMax);
 const body={wifi_ssid:val('cfg-wifi-ssid'),hostname:val('cfg-hostname'),pool_host:val('cfg-pool-host'),
@@ -599,6 +629,8 @@ pool_difficulty:Number(($('cfg-pool-diff-auto').checked?$('cfg-pool-diff').datas
 display_screensaver_enabled:$('cfg-display-screensaver').checked,display_sleep_minutes:sleepMode==='off'?0:sleepMinutes,
 overclock_enabled:$('cfg-overclock-enabled').checked,asic_frequency_mhz:Number(val('cfg-frequency')),asic_voltage_mv:Number(val('cfg-voltage')),
 auto_clock_enabled:autoClock,
+auto_domain_reboot_enabled:$('oc-domain-reboot-enabled').checked,
+auto_clock_target_temp_c:Number(val('oc-auto-clock-target')),
 overclock_voltage_offset_mv:voltageOffset(),
 asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,
 fan_override_enabled:fanMode!=='auto',fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),
@@ -708,8 +740,9 @@ const url=factoryMirrorUrl(latestRelease,latestFactoryAsset);try{setOtaMessage(`
 const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`download failed: ${r.status}`);
 const blob=await r.blob();await uploadOtaBlob(blob,latestFactoryAsset.name)}catch(e){setOtaState('bad','FAILED');setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
 $('ota-file').onchange=syncOtaControls;$('ota-upload').onclick=uploadSelectedOta;$('ota-install-latest').onclick=installLatestOta;syncOtaControls();
-function tuneBody(){let fanMode=val('cfg-fan-mode');const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked&&fanMode!=='off';if(autoClock&&fanMode==='auto')fanMode='fixed';return{overclock_enabled:$('cfg-overclock-enabled').checked,
+function tuneBody(){let fanMode=val('cfg-fan-mode');const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';return{overclock_enabled:$('cfg-overclock-enabled').checked,
 auto_clock_enabled:autoClock,
+auto_clock_target_temp_c:Number(val('oc-auto-clock-target')),
 frequency_mhz:Number(val('cfg-frequency')),voltage_mv:Number(val('cfg-voltage')),
 asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,fan_override_enabled:fanMode!=='auto',
 fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,
@@ -717,24 +750,36 @@ fan_auto_off_allowed:fanMode==='auto'&&$('cfg-fan-auto-off').checked,fan_target_
 function applyTuneFields(t){$('cfg-overclock-enabled').checked=!!t.overclock_enabled;setVal('cfg-frequency',t.frequency_mhz);
 setVal('cfg-voltage',t.voltage_mv);if('asic_voltage_temp_compensation_enabled' in t)$('oc-temp-compensation').checked=!!t.asic_voltage_temp_compensation_enabled;
 if('auto_clock_enabled' in t)$('oc-auto-clock-enabled').checked=!!t.auto_clock_enabled;
+if('auto_clock_target_temp_c' in t)setVal('oc-auto-clock-target',t.auto_clock_target_temp_c);
 setVal('cfg-fan-mode',!t.fan_override_enabled?'auto':t.fan_override_percent===0?'off':'fixed');
 if('fan_auto_off_allowed' in t)$('cfg-fan-auto-off').checked=!!t.fan_auto_off_allowed;
 setVal('cfg-fan-percent',t.fan_override_percent>=35?t.fan_override_percent:100);$('cfg-fan-target-enabled').checked=!!t.fan_target_override_enabled;
 setVal('cfg-fan-target',t.fan_target_temp_c||62);syncFanSetting();syncOverclockEnabled();syncPreset()}
 async function runtimeTune(t){const r=await fetch('/api/runtime-tune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(t)});
 const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);return j}
-async function setAsicPower(enabled){if(asicPowerBusy)return;asicPowerBusy=true;
-const btn=$('oc-asic-power');if(btn){btn.disabled=true;btn.textContent=enabled?'Turning On...':'Turning Off...'}
-setStatus('oc-asic-power-status',enabled?'turning on...':'turning off...');
+async function applyAsicPower(enabled,manageFan){const r=await fetch('/api/asic-power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,manage_fan:manageFan})});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+return j}
+async function setAsicPower(enabled){if(asicPowerBusy||asicRestartBusy)return;asicPowerBusy=true;
+const btn=$('oc-asic-power'),restart=$('oc-asic-restart');if(btn){btn.disabled=true;btn.textContent=enabled?'Turning On...':'Turning Off...'}
+if(restart)restart.disabled=true;setStatus('oc-asic-power-status',enabled?'turning on...':'turning off...');
 setStatus('overclock-status',enabled?'turning ASIC on...':'turning ASIC off...');
 const manageFan=$('oc-asic-manage-fan')?$('oc-asic-manage-fan').checked:true;
-try{const r=await fetch('/api/asic-power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,manage_fan:manageFan})});
-const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+try{await applyAsicPower(enabled,manageFan);
 setStatus('oc-asic-power-status',enabled?'ASIC on':'ASIC off','ok',true);
 setStatus('overclock-status',enabled?'ASIC on':'ASIC off','ok',true)}
 catch(e){setStatus('oc-asic-power-status',`failed: ${e.message||e}`,'err');
 setStatus('overclock-status',`ASIC power failed: ${e.message||e}`,'err')}
 finally{asicPowerBusy=false;refresh()}}
+async function restartAsicPower(){if(asicPowerBusy||asicRestartBusy)return;asicRestartBusy=true;
+const btn=$('oc-asic-power'),restart=$('oc-asic-restart');if(btn)btn.disabled=true;if(restart){restart.disabled=true;restart.textContent='Restarting...'}
+setStatus('oc-asic-power-status','restarting ASIC...');setStatus('overclock-status','restarting ASIC...');
+const manageFan=$('oc-asic-manage-fan')?$('oc-asic-manage-fan').checked:true;
+try{await applyAsicPower(false,manageFan);await sleep(750);await applyAsicPower(true,manageFan);
+setStatus('oc-asic-power-status','ASIC restarted','ok',true);setStatus('overclock-status','ASIC restarted','ok',true)}
+catch(e){setStatus('oc-asic-power-status',`restart failed: ${e.message||e}`,'err');
+setStatus('overclock-status',`ASIC restart failed: ${e.message||e}`,'err')}
+finally{asicRestartBusy=false;refresh()}}
 function calibrationTune(v){return{overclock_enabled:true,auto_clock_enabled:false,frequency_mhz:600,voltage_mv:v,fan_override_enabled:false,
 fan_override_percent:100,fan_target_override_enabled:true,fan_target_temp_c:CAL_TARGET_TEMP_C}}
 function setCalibrationFields(v){applyTuneFields(calibrationTune(v));setVal('oc-voltage-offset',0);$('oc-preset').value='custom'}
@@ -809,6 +854,7 @@ setStatus(statusId,msg,'ok',true);refresh()}catch(err){setStatus(statusId,`save 
 $('settings-form').onsubmit=e=>{e.preventDefault();saveConfig('settings-status')};
 $('overclock-form').onsubmit=e=>{e.preventDefault();saveConfig('overclock-status')};
 $('oc-asic-power').onclick=()=>{const powered=$('oc-asic-power').dataset.enabled==='1';setAsicPower(!powered)};
+$('oc-asic-restart').onclick=restartAsicPower;
 $('risk-confirm').onclick=()=>{const s=pendingRiskStatus;pendingRiskStatus=null;$('risk-modal').classList.add('hidden');
 if(s)saveConfig(s,true)};
 $('calibrate-base').onclick=calibrateBase;

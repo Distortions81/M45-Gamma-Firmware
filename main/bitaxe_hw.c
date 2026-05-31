@@ -1,6 +1,7 @@
 #include "bitaxe_hw.h"
 
 #include "bitaxe_fan.h"
+#include <float.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -38,16 +39,26 @@
 #define ASIC_TEMP_VOLTAGE_UPDATE_DEADBAND_MV 5
 #define AUTO_CLOCK_INTERVAL_MS 5000
 #define AUTO_CLOCK_PRESET_MIN_MHZ 50
-#define AUTO_CLOCK_PRESET_MAX_MHZ 1500
+#define AUTO_CLOCK_PRESET_MAX_MHZ 1200
 #define AUTO_CLOCK_PRESET_STEP_MHZ 25
 #define AUTO_CLOCK_THERMAL_R_C_PER_W 1.4f
 #define AUTO_CLOCK_TEMP_SAFETY_MARGIN_C 0.5f
-#define AUTO_CLOCK_TEMP_HYSTERESIS_C 0.5f
+#define AUTO_CLOCK_UP_TEMP_HYSTERESIS_C 1.0f
+#define AUTO_CLOCK_UP_POWER_HEADROOM_RATIO 0.97f
+#define AUTO_CLOCK_UP_CURRENT_HEADROOM_RATIO 0.90f
+#define AUTO_CLOCK_UP_VR_TEMP_HEADROOM_C 5.0f
+#define AUTO_CLOCK_UP_VIN_MIN_V 5.01f
 #define AUTO_CLOCK_HOT_MARGIN_C 2.0f
 #define AUTO_CLOCK_FAILSAFE_MARGIN_C 1.0f
 #define AUTO_CLOCK_MAX_STEPS_UP 1
 #define AUTO_CLOCK_MAX_STEPS_DOWN 3
 #define AUTO_CLOCK_MAX_STEPS_DOWN_HOT 4
+#define DOMAIN_REBOOT_CHECK_INTERVAL_MS 15000
+#define DOMAIN_REBOOT_STARTUP_GRACE_MS 60000
+#define DOMAIN_REBOOT_RECOVERY_MS 60000
+#define DOMAIN_REBOOT_COOLDOWN_MS 300000
+#define DOMAIN_REBOOT_POWER_CYCLE_OFF_MS 1000
+#define DOMAIN_REBOOT_MIN_EXPECTED_RATIO 0.75
 static const char *TAG = "bitaxe_hw";
 static uint8_t g_chip_count = 0;
 static char g_hw_status[64] = "boot";
@@ -64,6 +75,11 @@ static bitaxe_gamma602_auto_clock_status_t g_auto_clock_status = {
     .thermal_resistance_c_per_w = AUTO_CLOCK_THERMAL_R_C_PER_W,
 };
 static TickType_t g_auto_clock_next_tick;
+static TickType_t g_domain_reboot_next_tick;
+static TickType_t g_domain_reboot_grace_until;
+static TickType_t g_domain_reboot_cooldown_until;
+static TickType_t g_domain_reboot_low_since[STRATUM_HASHRATE_MAX_ASICS]
+                                            [STRATUM_HASH_DOMAIN_COUNT];
 static float g_power_vin_window[TPS546_POWER_WINDOW_SAMPLES];
 static float g_power_vout_window[TPS546_POWER_WINDOW_SAMPLES];
 static float g_power_iout_window[TPS546_POWER_WINDOW_SAMPLES];
@@ -166,9 +182,32 @@ static void reset_power_average_window(void)
     g_power_window_next = 0;
 }
 
+static bool tick_before(TickType_t now, TickType_t target)
+{
+    return target != 0 && (int32_t)(now - target) < 0;
+}
+
+static void clear_domain_reboot_low_since(void)
+{
+    memset(g_domain_reboot_low_since, 0, sizeof(g_domain_reboot_low_since));
+}
+
+static void reset_domain_reboot_recovery(void)
+{
+    g_domain_reboot_next_tick = 0;
+    clear_domain_reboot_low_since();
+}
+
+static void reset_domain_reboot_watchdog(void)
+{
+    reset_domain_reboot_recovery();
+    g_domain_reboot_cooldown_until = 0;
+}
+
 static void update_auto_clock_status(bool enabled, bool active, uint16_t target_frequency_mhz,
                                      uint16_t target_voltage_mv, float power_now_w,
-                                     float power_target_w)
+                                     float power_target_w, bool input_voltage_limited,
+                                     bool output_current_limited, bool vr_temp_limited)
 {
     const bitaxe_gamma602_auto_clock_status_t status = {
         .enabled = enabled,
@@ -178,6 +217,9 @@ static void update_auto_clock_status(bool enabled, bool active, uint16_t target_
         .power_now_w = power_now_w,
         .power_target_w = power_target_w,
         .thermal_resistance_c_per_w = AUTO_CLOCK_THERMAL_R_C_PER_W,
+        .input_voltage_limited = input_voltage_limited,
+        .output_current_limited = output_current_limited,
+        .vr_temp_limited = vr_temp_limited,
     };
 
     portENTER_CRITICAL(&g_auto_clock_status_lock);
@@ -265,6 +307,30 @@ static bool auto_clock_candidate_voltage(const m45_config_t *config,
         *target_mv = compensated_mv;
     }
     return true;
+}
+
+static float auto_clock_upshift_current_ceiling_a(const m45_config_t *config)
+{
+    const float warn_a = config->safety_iout_warn_deciamps / 10.0f;
+    const float fault_headroom_a =
+        (config->safety_iout_fault_deciamps / 10.0f) *
+        AUTO_CLOCK_UP_CURRENT_HEADROOM_RATIO;
+    if (warn_a > 0.0f && fault_headroom_a > 0.0f) {
+        return fminf(warn_a, fault_headroom_a);
+    }
+    return fmaxf(warn_a, fault_headroom_a);
+}
+
+static float auto_clock_upshift_vr_temp_ceiling_c(const m45_config_t *config)
+{
+    const float expected_c = (float)config->safety_tps546_temp_expected_max_c;
+    const float max_headroom_c =
+        fmaxf(0.0f, (float)config->safety_tps546_temp_max_c -
+                        AUTO_CLOCK_UP_VR_TEMP_HEADROOM_C);
+    if (expected_c > 0.0f && max_headroom_c > 0.0f) {
+        return fminf(expected_c, max_headroom_c);
+    }
+    return fmaxf(expected_c, max_headroom_c);
 }
 
 static uint8_t auto_clock_clamp_toward(uint8_t current_index, uint8_t target_index,
@@ -582,7 +648,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
 {
     const m45_config_t *config = m45_config_get();
     const bool active = config->auto_clock_enabled && config->overclock_enabled &&
-                        config->fan_override_enabled && config->fan_override_percent > 0;
+                        config->fan_override_enabled;
     if (!config->auto_clock_enabled || !active || state->SYSTEM_MODULE.hardware_fault ||
         !isfinite(asic_temp_c) || asic_temp_c <= 0.0f ||
         !isfinite(control_temp_c) || control_temp_c <= 0.0f || snapshot == NULL) {
@@ -590,7 +656,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
                                  m45_config_effective_asic_frequency_mhz(config),
                                  m45_config_effective_asic_voltage_mv_for_temp(config,
                                                                                asic_temp_c),
-                                 0.0f, 0.0f);
+                                 0.0f, 0.0f, false, false, false);
         return ESP_OK;
     }
 
@@ -617,11 +683,12 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
                                  m45_config_effective_asic_frequency_mhz(config),
                                  m45_config_effective_asic_voltage_mv_for_temp(config,
                                                                                asic_temp_c),
-                                 0.0f, 0.0f);
+                                 0.0f, 0.0f, false, false, false);
         return ESP_OK;
     }
 
-    const float target_temp_c = (float)m45_config_effective_fan_target_temp_c(config);
+    const float target_temp_c =
+        (float)m45_config_effective_auto_clock_target_temp_c(config);
     const float p_target =
         fmaxf(1.0f, p_now + ((target_temp_c - AUTO_CLOCK_TEMP_SAFETY_MARGIN_C -
                               control_temp_c) /
@@ -629,6 +696,21 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
     const uint16_t current_frequency_mhz =
         m45_config_effective_asic_frequency_mhz(config);
     const uint8_t current_index = auto_clock_index_for_frequency(current_frequency_mhz);
+    const float current_ceiling_a = auto_clock_upshift_current_ceiling_a(config);
+    const float vr_temp_c = (float)snapshot->read_temp1;
+    const float vr_temp_ceiling_c = auto_clock_upshift_vr_temp_ceiling_c(config);
+    const bool current_near_limit =
+        current_ceiling_a > 0.0f && i_now >= current_ceiling_a;
+    const bool vr_temp_near_limit =
+        vr_temp_ceiling_c > 0.0f && vr_temp_c >= vr_temp_ceiling_c;
+    const bool vin_low_for_upshift = isfinite(snapshot->read_vin) &&
+                                     snapshot->read_vin > 0.0f &&
+                                     snapshot->read_vin <= AUTO_CLOCK_UP_VIN_MIN_V;
+    const bool upshift_blocked_by_limits =
+        current_near_limit || vr_temp_near_limit || vin_low_for_upshift;
+    bool input_voltage_limited = false;
+    bool output_current_limited = false;
+    bool vr_temp_limited = false;
     uint8_t target_index = 0;
     uint16_t target_base_mv = 0;
     uint16_t target_voltage_mv = 0;
@@ -654,7 +736,36 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         const float frequency_ratio = (float)candidate_frequency_mhz / mhz_now;
         const float voltage_ratio = ((float)candidate_voltage_mv / 1000.0f) / v_now;
         const float p_est = p_now * frequency_ratio * voltage_ratio * voltage_ratio;
-        if (p_est <= p_target) {
+        const bool upshift_candidate = i > current_index;
+        const float candidate_v = (float)candidate_voltage_mv / 1000.0f;
+        const float i_est = candidate_v > 0.0f ? p_est / candidate_v : 0.0f;
+        if (!isfinite(p_est) || !isfinite(i_est) || p_est <= 0.0f ||
+            i_est <= 0.0f) {
+            continue;
+        }
+        const bool candidate_current_limited =
+            current_ceiling_a > 0.0f && i_est >= current_ceiling_a;
+        const float allowed_power =
+            upshift_candidate ? p_target * AUTO_CLOCK_UP_POWER_HEADROOM_RATIO : p_target;
+        const bool power_allowed = p_est <= allowed_power;
+        if (upshift_candidate && power_allowed) {
+            if (candidate_current_limited || current_near_limit) {
+                output_current_limited = true;
+            }
+            if (vr_temp_near_limit) {
+                vr_temp_limited = true;
+            }
+            if (vin_low_for_upshift) {
+                input_voltage_limited = true;
+            }
+        }
+        if (candidate_current_limited) {
+            continue;
+        }
+        if (upshift_candidate && upshift_blocked_by_limits) {
+            continue;
+        }
+        if (power_allowed) {
             target_index = i;
             target_base_mv = candidate_base_mv;
             target_voltage_mv = candidate_voltage_mv;
@@ -665,7 +776,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         update_auto_clock_status(true, false, current_frequency_mhz,
                                  m45_config_effective_asic_voltage_mv_for_temp(config,
                                                                                asic_temp_c),
-                                 p_now, p_target);
+                                 p_now, p_target, false, false, false);
         return ESP_ERR_INVALID_ARG;
     }
     if (!have_target) {
@@ -694,9 +805,14 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         if (target_index >= control_current_index) {
             target_index = control_current_index > 0 ? control_current_index - 1 : 0;
         }
-    } else if (control_temp_c >= target_temp_c - AUTO_CLOCK_TEMP_HYSTERESIS_C &&
+    } else if (control_temp_c >= target_temp_c - AUTO_CLOCK_UP_TEMP_HYSTERESIS_C &&
                target_index > control_current_index) {
         target_index = control_current_index;
+    }
+    if (control_temp_c >= target_temp_c - AUTO_CLOCK_UP_TEMP_HYSTERESIS_C) {
+        input_voltage_limited = false;
+        output_current_limited = false;
+        vr_temp_limited = false;
     }
     if (target_index < lowest_valid_index) {
         target_index = lowest_valid_index;
@@ -713,7 +829,7 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         update_auto_clock_status(true, false, current_frequency_mhz,
                                  m45_config_effective_asic_voltage_mv_for_temp(config,
                                                                                asic_temp_c),
-                                 p_now, p_target);
+                                 p_now, p_target, false, false, false);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -722,7 +838,9 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
                                      asic_temp_c, &target_base_mv, &target_voltage_mv);
     }
     update_auto_clock_status(true, true, auto_clock_preset_frequency(target_index),
-                             target_voltage_mv, p_now, p_target);
+                             target_voltage_mv, p_now, p_target,
+                             input_voltage_limited, output_current_limited,
+                             vr_temp_limited);
 
     if (next_frequency_mhz == current_frequency_mhz &&
         next_base_mv == config->asic_voltage_mv) {
@@ -733,6 +851,166 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
                                             next_base_mv, next_voltage_mv);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "auto clock apply failed: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
+static bool domain_reboot_expected_per_domain_ghs(GlobalState *state,
+                                                  const m45_config_t *config,
+                                                  const stratum_minimal_stats_t *stats,
+                                                  double *expected_per_domain_ghs)
+{
+    if (state == NULL || config == NULL || stats == NULL ||
+        expected_per_domain_ghs == NULL || stats->domain_asic_count == 0 ||
+        stats->domain_count == 0) {
+        return false;
+    }
+
+    const float active_frequency_mhz =
+        state->POWER_MANAGEMENT_MODULE.actual_frequency > 0.0f
+            ? state->POWER_MANAGEMENT_MODULE.actual_frequency
+            : (float)m45_config_effective_asic_frequency_mhz(config);
+    if (!isfinite(active_frequency_mhz) || active_frequency_mhz <= 0.0f) {
+        return false;
+    }
+
+    const double expected_total_ghs =
+        (double)active_frequency_mhz *
+        (double)state->DEVICE_CONFIG.family.asic.small_core_count *
+        (double)stats->domain_asic_count / 1000.0;
+    const double domain_slots =
+        (double)stats->domain_asic_count * (double)stats->domain_count;
+    if (!isfinite(expected_total_ghs) || expected_total_ghs <= 0.0 ||
+        domain_slots <= 0.0) {
+        return false;
+    }
+
+    *expected_per_domain_ghs = expected_total_ghs / domain_slots;
+    return isfinite(*expected_per_domain_ghs) && *expected_per_domain_ghs > 0.0;
+}
+
+static bool update_domain_reboot_recovery(const stratum_minimal_stats_t *stats,
+                                          double threshold_ghs,
+                                          TickType_t now,
+                                          uint8_t *trigger_asic,
+                                          uint8_t *trigger_domain,
+                                          double *trigger_hashrate_ghs)
+{
+    bool should_reboot = false;
+    double lowest_ghs = DBL_MAX;
+    const uint8_t asic_count = stats->domain_asic_count > STRATUM_HASHRATE_MAX_ASICS
+                                   ? STRATUM_HASHRATE_MAX_ASICS
+                                   : stats->domain_asic_count;
+    const uint8_t domain_count = stats->domain_count > STRATUM_HASH_DOMAIN_COUNT
+                                     ? STRATUM_HASH_DOMAIN_COUNT
+                                     : stats->domain_count;
+
+    for (uint8_t asic = 0; asic < STRATUM_HASHRATE_MAX_ASICS; ++asic) {
+        for (uint8_t domain = 0; domain < STRATUM_HASH_DOMAIN_COUNT; ++domain) {
+            if (asic >= asic_count || domain >= domain_count) {
+                g_domain_reboot_low_since[asic][domain] = 0;
+                continue;
+            }
+
+            double hashrate_ghs = stats->domain_hashrates_ghs[asic][domain];
+            if (!isfinite(hashrate_ghs) || hashrate_ghs < 0.0) {
+                hashrate_ghs = 0.0;
+            }
+            if (hashrate_ghs >= threshold_ghs) {
+                g_domain_reboot_low_since[asic][domain] = 0;
+                continue;
+            }
+
+            if (g_domain_reboot_low_since[asic][domain] == 0) {
+                g_domain_reboot_low_since[asic][domain] = now;
+                ESP_LOGW(TAG,
+                         "ASIC %u domain %u below %.2f GH/s threshold at %.2f GH/s; waiting %u seconds before auto-reboot",
+                         (unsigned)asic, (unsigned)domain, threshold_ghs,
+                         hashrate_ghs,
+                         (unsigned)(DOMAIN_REBOOT_RECOVERY_MS / 1000));
+                continue;
+            }
+
+            if ((now - g_domain_reboot_low_since[asic][domain]) >=
+                    pdMS_TO_TICKS(DOMAIN_REBOOT_RECOVERY_MS) &&
+                hashrate_ghs < lowest_ghs) {
+                lowest_ghs = hashrate_ghs;
+                *trigger_asic = asic;
+                *trigger_domain = domain;
+                *trigger_hashrate_ghs = hashrate_ghs;
+                should_reboot = true;
+            }
+        }
+    }
+
+    return should_reboot;
+}
+
+static esp_err_t apply_domain_reboot_watchdog(GlobalState *state)
+{
+    const m45_config_t *config = m45_config_get();
+    const TickType_t now = xTaskGetTickCount();
+    if (config == NULL || !config->auto_domain_reboot_enabled || state == NULL ||
+        state->SYSTEM_MODULE.hardware_fault || !state->ASIC_initalized ||
+        !g_regulator_enabled) {
+        reset_domain_reboot_watchdog();
+        return ESP_OK;
+    }
+
+    if (tick_before(now, g_domain_reboot_cooldown_until) ||
+        tick_before(now, g_domain_reboot_grace_until) ||
+        tick_before(now, g_domain_reboot_next_tick)) {
+        if (tick_before(now, g_domain_reboot_grace_until)) {
+            clear_domain_reboot_low_since();
+        }
+        return ESP_OK;
+    }
+    g_domain_reboot_next_tick = now + pdMS_TO_TICKS(DOMAIN_REBOOT_CHECK_INTERVAL_MS);
+
+    stratum_minimal_stats_t stats;
+    stratum_minimal_get_stats(&stats);
+    if (!stats.connected || stats.work_received == 0 || stats.domain_asic_count == 0 ||
+        stats.domain_count == 0) {
+        clear_domain_reboot_low_since();
+        return ESP_OK;
+    }
+
+    double expected_per_domain_ghs = 0.0;
+    if (!domain_reboot_expected_per_domain_ghs(state, config, &stats,
+                                               &expected_per_domain_ghs)) {
+        clear_domain_reboot_low_since();
+        return ESP_OK;
+    }
+
+    const double threshold_ghs =
+        expected_per_domain_ghs * DOMAIN_REBOOT_MIN_EXPECTED_RATIO;
+    uint8_t trigger_asic = 0;
+    uint8_t trigger_domain = 0;
+    double trigger_hashrate_ghs = 0.0;
+    if (!update_domain_reboot_recovery(&stats, threshold_ghs, now, &trigger_asic,
+                                       &trigger_domain, &trigger_hashrate_ghs)) {
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG,
+             "ASIC %u domain %u stayed below %.2f GH/s threshold for %u seconds (%.2f GH/s); auto-rebooting ASIC",
+             (unsigned)trigger_asic, (unsigned)trigger_domain, threshold_ghs,
+             (unsigned)(DOMAIN_REBOOT_RECOVERY_MS / 1000), trigger_hashrate_ghs);
+    clear_domain_reboot_low_since();
+    g_domain_reboot_cooldown_until =
+        now + pdMS_TO_TICKS(DOMAIN_REBOOT_COOLDOWN_MS);
+    g_domain_reboot_next_tick = g_domain_reboot_cooldown_until;
+
+    stratum_minimal_pause_work();
+    esp_err_t err = bitaxe_gamma602_set_asic_power(state, false, true);
+    vTaskDelay(pdMS_TO_TICKS(DOMAIN_REBOOT_POWER_CYCLE_OFF_MS));
+    if (err == ESP_OK && !state->SYSTEM_MODULE.hardware_fault) {
+        err = bitaxe_gamma602_set_asic_power(state, true, true);
+    }
+    stratum_minimal_resume_work();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "domain-loss ASIC auto-reboot failed: %s",
+                 esp_err_to_name(err));
     }
     return err;
 }
@@ -874,6 +1152,9 @@ static void power_monitor_task(void *arg)
             }
             bitaxe_fan_update_auto(state, asic_temp_c, control_temp_c,
                                    (float)averaged_snapshot.read_temp1);
+            if (apply_domain_reboot_watchdog(state) != ESP_OK) {
+                ESP_LOGW(TAG, "domain reboot watchdog update failed");
+            }
         }
 
         if (!state->SYSTEM_MODULE.hardware_fault) {
@@ -1041,6 +1322,8 @@ esp_err_t bitaxe_gamma602_start_hardware(GlobalState *state)
     state->ASIC_initalized = true;
     g_asic_temp_grace_until =
         xTaskGetTickCount() + pdMS_TO_TICKS(ASIC_TEMP_STARTUP_GRACE_MS);
+    g_domain_reboot_grace_until =
+        xTaskGetTickCount() + pdMS_TO_TICKS(DOMAIN_REBOOT_STARTUP_GRACE_MS);
     set_hw_status("ready");
 
     ESP_LOGI(TAG, "Gamma 602 ASIC ready: %u chip(s), %.0f MHz, %d mV",
@@ -1071,6 +1354,7 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
             ESP_RETURN_ON_ERROR(bitaxe_fan_start_for_asic(state), TAG,
                                 "ASIC fan start failed");
         }
+        reset_domain_reboot_recovery();
         g_asic_temp_grace_until =
             xTaskGetTickCount() + pdMS_TO_TICKS(ASIC_TEMP_STARTUP_GRACE_MS);
         bitaxe_gamma602_clear_jobs(state);
@@ -1083,6 +1367,7 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
 
     ESP_LOGI(TAG, "manual ASIC power off requested");
     set_hw_status("asic off");
+    reset_domain_reboot_recovery();
     g_regulator_enabled = false;
     g_commanded_voltage_mv = 0;
     g_chip_count = 0;

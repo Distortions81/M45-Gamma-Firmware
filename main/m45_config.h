@@ -16,6 +16,9 @@
 #define M45_FAN_TARGET_DEFAULT_C 62
 #define M45_FAN_TARGET_MIN_C 35
 #define M45_FAN_TARGET_MAX_C 66
+#define M45_AUTO_CLOCK_TARGET_DEFAULT_C M45_FAN_TARGET_DEFAULT_C
+#define M45_AUTO_CLOCK_TARGET_MIN_C M45_FAN_TARGET_MIN_C
+#define M45_AUTO_CLOCK_TARGET_MAX_C M45_FAN_TARGET_MAX_C
 #define M45_DISPLAY_SLEEP_DEFAULT_MINUTES 0
 #define M45_DISPLAY_SLEEP_MAX_MINUTES UINT16_MAX
 #define M45_ASIC_FREQUENCY_MIN_MHZ 1
@@ -66,6 +69,8 @@ typedef struct {
     bool pool_difficulty_auto;
     bool overclock_enabled;
     bool auto_clock_enabled;
+    bool auto_domain_reboot_enabled;
+    uint16_t auto_clock_target_temp_c;
     uint16_t asic_frequency_mhz;
     uint16_t asic_voltage_mv;
     int16_t overclock_voltage_offset_mv;
@@ -116,3 +121,4 @@ int16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
 uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *config,
                                                        float asic_temp_c);
 uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config);
+uint16_t m45_config_effective_auto_clock_target_temp_c(const m45_config_t *config);

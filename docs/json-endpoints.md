@@ -42,8 +42,8 @@ Response fields:
 | `domain_hashrate_ghs`, `domain_hashrates_ghs` | number/array | Domain hashrate totals. |
 | `asic_error_rate_percent`, `expected_hashrate_ghs` | number | Performance estimates. |
 | `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. `voltage_temp_compensation_mv` is signed relative to the base voltage. |
-| `overclock_enabled`, `auto_clock_enabled`, `auto_clock_active` | boolean | Overclock and auto-clock state. |
-| `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_thermal_resistance_c_per_w` | number | Auto-clock controller telemetry. |
+| `overclock_enabled`, `auto_clock_enabled`, `auto_clock_active`, `auto_domain_reboot_enabled` | boolean | Overclock, auto-clock, and lost-domain watchdog state. |
+| `auto_clock_target_temp_c`, `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_thermal_resistance_c_per_w`, `auto_clock_input_voltage_limited`, `auto_clock_output_current_limited`, `auto_clock_vr_temp_limited` | mixed | Auto-clock target, controller telemetry, and clock-limiting state. |
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power and fault state. |
@@ -192,8 +192,8 @@ Response fields:
 | `pool_port`, `backup_pool_port` | number | 1-65535. |
 | `wifi_password_set`, `pool_password_set` | boolean | Password values are not returned. |
 | `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Pool difficulty settings. |
-| `overclock_enabled`, `auto_clock_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock requires overclocking and a fixed nonzero fan speed. |
-| `asic_frequency_mhz`, `asic_voltage_mv`, `overclock_voltage_offset_mv` | number | ASIC tuning values. |
+| `overclock_enabled`, `auto_clock_enabled`, `auto_domain_reboot_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock is experimental and requires overclocking plus either fixed fan speed or no fan mode, and a high-current stable 5 V power supply with wiring/connectors rated for the configured current limits. Auto clock is capped at 1200 MHz and also blocks preset increases when VIN is at or below 5.01 V or near configured TPS546 output-current and VR-temperature safety limits. Auto domain reboot is off by default; when enabled, the ASIC is power-cycled if a domain remains below 75% of expected per-domain hashrate for at least 60 seconds. |
+| `asic_frequency_mhz`, `asic_voltage_mv`, `overclock_voltage_offset_mv`, `auto_clock_target_temp_c` | number | ASIC tuning values. |
 | `fan_override_enabled`, `fan_override_percent`, `fan_auto_off_allowed`, `fan_target_override_enabled`, `fan_target_temp_c` | mixed | Fan settings. |
 | `display_screensaver_enabled`, `display_sleep_minutes`, `display_sleep_max_minutes` | mixed | OLED sleep settings. |
 | `safety_limits_unrestricted` | boolean | Allows out-of-normal safety limit settings when true. |
@@ -242,6 +242,8 @@ password values:
   "pool_difficulty": 1000,
   "overclock_enabled": false,
   "auto_clock_enabled": false,
+  "auto_domain_reboot_enabled": false,
+  "auto_clock_target_temp_c": 62,
   "asic_frequency_mhz": 525,
   "asic_voltage_mv": 1150,
   "overclock_voltage_offset_mv": 0,
@@ -301,6 +303,7 @@ Request body fields are optional:
 {
   "overclock_enabled": true,
   "auto_clock_enabled": false,
+  "auto_clock_target_temp_c": 62,
   "frequency_mhz": 625,
   "asic_frequency_mhz": 625,
   "voltage_mv": 1200,
