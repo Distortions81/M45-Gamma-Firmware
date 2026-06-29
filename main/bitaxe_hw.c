@@ -642,9 +642,6 @@ static esp_err_t auto_clock_apply_preset(GlobalState *state, const m45_config_t 
         return err;
     }
 
-    state->pool_difficulty = m45_config_effective_pool_difficulty(
-        &next_config, state->DEVICE_CONFIG.family.asic.small_core_count,
-        state->DEVICE_CONFIG.family.asic_count);
     give_asic_transition_lock();
     return ESP_OK;
 }

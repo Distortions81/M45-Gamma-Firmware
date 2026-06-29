@@ -1061,6 +1061,22 @@ static bool active_pool_settings_changed(const m45_config_t *old_config,
            old_config->pool_port != new_config->pool_port;
 }
 
+static bool pool_difficulty_settings_changed(const m45_config_t *old_config,
+                                             const m45_config_t *new_config)
+{
+    if (old_config->pool_difficulty_auto != new_config->pool_difficulty_auto ||
+        old_config->pool_difficulty != new_config->pool_difficulty) {
+        return true;
+    }
+
+    if (!new_config->pool_difficulty_auto) {
+        return false;
+    }
+
+    return suggested_pool_difficulty_for_config(old_config) !=
+           suggested_pool_difficulty_for_config(new_config);
+}
+
 static void runtime_reconnect_flags(const m45_config_t *old_config,
                                     const m45_config_t *new_config,
                                     bool *wifi_reconnect,
@@ -1068,12 +1084,15 @@ static void runtime_reconnect_flags(const m45_config_t *old_config,
 {
     *wifi_reconnect = wifi_credentials_changed(old_config, new_config) ||
                       settings_string_changed(old_config->hostname, new_config->hostname);
-    *pool_reconnect = active_pool_settings_changed(old_config, new_config);
+    *pool_reconnect = active_pool_settings_changed(old_config, new_config) ||
+                      pool_difficulty_settings_changed(old_config, new_config);
 }
 
 static void apply_runtime_state(const m45_config_t *config)
 {
-    g_state->pool_difficulty = suggested_pool_difficulty_for_config(config);
+    if (g_state == NULL || config == NULL) {
+        return;
+    }
     g_state->SYSTEM_MODULE.pool_user = (char *)config->pool_user;
     g_state->SYSTEM_MODULE.pool_pass = (char *)config->pool_pass;
 }
@@ -3804,7 +3823,8 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
         wifi_credentials_changed(&old_config, &config);
     const bool hostname_changed =
         settings_string_changed(old_config.hostname, config.hostname);
-    const bool pool_reconnect = active_pool_settings_changed(&old_config, &config);
+    const bool pool_reconnect = active_pool_settings_changed(&old_config, &config) ||
+                                pool_difficulty_settings_changed(&old_config, &config);
 
     esp_err_t err = m45_config_set_runtime(&config);
     if (err != ESP_OK) {
