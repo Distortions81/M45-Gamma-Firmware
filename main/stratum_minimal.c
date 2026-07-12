@@ -287,6 +287,7 @@ static uint32_t reset_pool_or_single_work_state(uint8_t pool_id,
                                                 bool queue_marker);
 static void set_pool_payout_status(uint8_t pool_id, uint8_t status,
                                    uint16_t percent_x100);
+static uint16_t configured_suggested_difficulty_for_pool(uint8_t pool_id);
 static void stratum_enable_tcp_nodelay(esp_transport_handle_t transport);
 static bool ensure_asic_version_mask(uint8_t pool_id, uint32_t mask);
 static bool ensure_asic_job_difficulty(uint8_t pool_id, double difficulty);
@@ -388,7 +389,10 @@ static double current_pool_difficulty(void)
         difficulty = g_pool_sessions[STRATUM_PRIMARY_POOL_ID].pool_difficulty;
         xSemaphoreGive(g_transport_lock);
     }
-    return difficulty > 0.0 ? difficulty : (double)configured_suggested_difficulty();
+    return difficulty > 0.0
+               ? difficulty
+               : (double)configured_suggested_difficulty_for_pool(
+                     STRATUM_PRIMARY_POOL_ID);
 }
 
 static void copy_pool_host(char *dest, size_t dest_len, const char *host)
@@ -510,6 +514,57 @@ static bool pool_session_configured(const m45_config_t *config, uint8_t pool_id)
         return config != NULL && config->pool_host[0] != '\0' && config->pool_port > 0;
     }
     return aux_pool_configured(config, pool_id);
+}
+
+static uint8_t configured_pool_share_percent(const m45_config_t *config, uint8_t pool_id)
+{
+    if (config == NULL || !config->multi_pool_enabled) {
+        return 100;
+    }
+    if (pool_id_is_aux(pool_id)) {
+        const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
+        if (aux_index >= M45_AUX_POOL_MAX) {
+            return 0;
+        }
+        const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
+        return aux_pool_configured(config, pool_id) ? aux->share_percent : 0;
+    }
+
+    uint16_t aux_total = 0;
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        const m45_aux_pool_t *aux = &config->aux_pools[i];
+        if (aux->enabled && aux->host[0] != '\0' && aux->port > 0) {
+            aux_total += aux->share_percent;
+        }
+    }
+    return aux_total >= 100 ? 0 : (uint8_t)(100 - aux_total);
+}
+
+static uint16_t scale_suggested_difficulty_for_share(uint16_t difficulty,
+                                                     uint8_t share_percent)
+{
+    if (share_percent >= 100) {
+        return difficulty;
+    }
+    uint32_t scaled = ((uint32_t)difficulty * (uint32_t)share_percent + 50U) / 100U;
+    if (scaled < 1U) {
+        scaled = 1U;
+    } else if (scaled > UINT16_MAX) {
+        scaled = UINT16_MAX;
+    }
+    return (uint16_t)scaled;
+}
+
+static uint16_t configured_suggested_difficulty_for_pool(uint8_t pool_id)
+{
+    const uint16_t base_difficulty = configured_suggested_difficulty();
+    const m45_config_t *config = m45_config_get();
+    if (config == NULL || !config->multi_pool_enabled ||
+        !config->pool_difficulty_auto || !pool_id_valid(pool_id)) {
+        return base_difficulty;
+    }
+    return scale_suggested_difficulty_for_share(
+        base_difficulty, configured_pool_share_percent(config, pool_id));
 }
 
 static void copy_session_endpoint_locked(stratum_pool_session_t *session,
@@ -640,7 +695,9 @@ static double pool_current_difficulty(uint8_t pool_id)
         difficulty = g_pool_sessions[pool_id].pool_difficulty;
         xSemaphoreGive(g_transport_lock);
     }
-    return difficulty > 0.0 ? difficulty : (double)configured_suggested_difficulty();
+    return difficulty > 0.0
+               ? difficulty
+               : (double)configured_suggested_difficulty_for_pool(pool_id);
 }
 
 static bool set_pool_session_difficulty(uint8_t pool_id, double difficulty)
@@ -3354,7 +3411,8 @@ static void enqueue_work(uint8_t pool_id, mining_notify *work)
         extranonce_2_len = session->extranonce_2_len;
         pool_difficulty = session->pool_difficulty > 0.0
                               ? session->pool_difficulty
-                              : (double)configured_suggested_difficulty();
+                              : (double)configured_suggested_difficulty_for_pool(
+                                    pool_id);
         version_mask = session->version_mask != 0 ? session->version_mask
                                                   : g_state->version_mask;
         if (extranonce_len > 0) {
@@ -4066,7 +4124,8 @@ static esp_err_t send_setup_messages(uint8_t pool_id, esp_transport_handle_t tra
     char miner_info[64];
     char pool_user[M45_POOL_USER_MAX + 1];
     char pool_pass[M45_POOL_PASS_MAX + 1];
-    const uint16_t suggested_difficulty = configured_suggested_difficulty();
+    const uint16_t suggested_difficulty =
+        configured_suggested_difficulty_for_pool(pool_id);
 
     setup_msg[0] = '\0';
     stratum_build_miner_info(miner_info, sizeof(miner_info));
@@ -5188,14 +5247,14 @@ esp_err_t stratum_minimal_start(GlobalState *state)
     }
     reset_hashrate_window();
     set_active_primary_pool_endpoint();
-    const double default_difficulty = (double)configured_suggested_difficulty();
     const uint32_t default_version_mask = usable_version_mask(g_state->version_mask);
     atomic_store(&g_current_asic_version_mask, default_version_mask);
     taskENTER_CRITICAL(&g_asic_job_diff_mux);
     g_current_asic_job_difficulty = 0.0;
     taskEXIT_CRITICAL(&g_asic_job_diff_mux);
     for (size_t i = 0; i < STRATUM_POOL_SESSION_MAX; ++i) {
-        g_pool_sessions[i].pool_difficulty = default_difficulty;
+        g_pool_sessions[i].pool_difficulty =
+            (double)configured_suggested_difficulty_for_pool((uint8_t)i);
         g_pool_sessions[i].version_mask = default_version_mask;
         g_pool_sessions[i].runtime_disabled = false;
         g_pool_sessions[i].note[0] = '\0';
@@ -5264,18 +5323,7 @@ void stratum_minimal_dismiss_block_alert(void)
 
 static uint8_t configured_primary_share_percent(const m45_config_t *config)
 {
-    if (config == NULL || !config->multi_pool_enabled) {
-        return 100;
-    }
-
-    uint16_t aux_total = 0;
-    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
-        const m45_aux_pool_t *aux = &config->aux_pools[i];
-        if (aux->enabled && aux->host[0] != '\0' && aux->port > 0) {
-            aux_total += aux->share_percent;
-        }
-    }
-    return aux_total >= 100 ? 0 : (uint8_t)(100 - aux_total);
+    return configured_pool_share_percent(config, STRATUM_PRIMARY_POOL_ID);
 }
 
 static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,

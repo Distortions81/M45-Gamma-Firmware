@@ -183,13 +183,13 @@
 <label class=toggle-row for=cfg-backup-pool-tls><input id=cfg-backup-pool-tls type=checkbox><span class=label>Backup TLS</span></label>
 <div class=field><label for=cfg-pool-user>Username (wallet.workername)</label><input id=cfg-pool-user maxlength=128></div>
 <div class=field><label for=cfg-pool-pass>Password (Optional, normally just 'x')</label><input id=cfg-pool-pass type=password maxlength=64 placeholder='unchanged'></div>
+<label class=toggle-row for=cfg-pool-diff-auto><input id=cfg-pool-diff-auto type=checkbox checked><span class=label>Auto Difficulty</span></label>
+<div id=cfg-pool-diff-field class=field><label for=cfg-pool-diff>Difficulty</label><input id=cfg-pool-diff type=number min=1 max=65535></div>
 <div class=field><label for=cfg-pool-mode>Pool Mode</label><select id=cfg-pool-mode>
 <option value=single>Single</option><option value=multi>Multi-pool</option></select></div>
 <div class='aux-pool-toolbar aux-pool-field'><div class=label>Auxiliary Pools</div><button id=cfg-add-aux-pool class=secondary type=button>Add Pool</button></div>
 <div id=cfg-aux-pools class='aux-pools aux-pool-field'></div>
 <div class='formula-note aux-pool-field' id=cfg-main-pool-share>Main/backup share: 100%</div>
-<label class=toggle-row for=cfg-pool-diff-auto><input id=cfg-pool-diff-auto type=checkbox checked><span class=label>Auto Difficulty</span></label>
-<div id=cfg-pool-diff-field class=field><label for=cfg-pool-diff>Difficulty</label><input id=cfg-pool-diff type=number min=1 max=65535></div>
 </div></article>
 <article class='panel wide'><div class=label>Display</div><div class=settings-form>
 <label class=toggle-row for=cfg-display-screensaver><input id=cfg-display-screensaver type=checkbox>
