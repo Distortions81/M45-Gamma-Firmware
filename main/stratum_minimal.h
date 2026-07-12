@@ -112,6 +112,7 @@ enum {
 
 esp_err_t stratum_minimal_start(GlobalState *state);
 void stratum_minimal_reconnect(void);
+void stratum_minimal_reconnect_pools(uint32_t pool_mask);
 void stratum_minimal_pause_work(void);
 void stratum_minimal_resume_work(void);
 bool stratum_minimal_work_paused(void);

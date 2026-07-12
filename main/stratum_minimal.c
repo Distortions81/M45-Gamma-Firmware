@@ -278,6 +278,7 @@ typedef struct {
 
 static bool stratum_runtime_ready(void);
 static bool multi_pool_mode_enabled(void);
+static uint32_t pool_mask_all(void);
 static uint32_t reset_work_state(bool queue_marker);
 static uint32_t reset_pool_work_state(uint8_t pool_id, bool clear_asic_jobs,
                                       bool queue_marker);
@@ -426,6 +427,13 @@ static bool multi_pool_mode_enabled(void)
     return config != NULL && config->multi_pool_enabled;
 }
 
+static uint32_t pool_mask_all(void)
+{
+    return STRATUM_POOL_SESSION_MAX >= 32
+               ? UINT32_MAX
+               : ((1u << STRATUM_POOL_SESSION_MAX) - 1u);
+}
+
 static const char *pool_id_name(uint8_t pool_id)
 {
     if (pool_id == STRATUM_PRIMARY_POOL_ID) {
@@ -567,6 +575,21 @@ static void clear_all_pool_runtime_state(void)
         g_pool_sessions[i].runtime_disabled = false;
         g_pool_sessions[i].note[0] = '\0';
     }
+    if (g_transport_lock != NULL) {
+        xSemaphoreGive(g_transport_lock);
+    }
+}
+
+static void clear_pool_runtime_state(uint8_t pool_id)
+{
+    if (!pool_id_valid(pool_id)) {
+        return;
+    }
+    if (g_transport_lock != NULL) {
+        xSemaphoreTake(g_transport_lock, portMAX_DELAY);
+    }
+    g_pool_sessions[pool_id].runtime_disabled = false;
+    g_pool_sessions[pool_id].note[0] = '\0';
     if (g_transport_lock != NULL) {
         xSemaphoreGive(g_transport_lock);
     }
@@ -1655,6 +1678,32 @@ static void drain_work_queue_for_pool(uint8_t pool_id)
     }
 }
 
+static bool drop_one_queued_work_for_pool(uint8_t pool_id)
+{
+    if (g_work_queue == NULL || !pool_id_valid(pool_id)) {
+        return false;
+    }
+
+    bool dropped = false;
+    const UBaseType_t count = uxQueueMessagesWaiting(g_work_queue);
+    for (UBaseType_t i = 0; i < count; ++i) {
+        queued_work_t old = {0};
+        if (xQueueReceive(g_work_queue, &old, 0) != pdPASS) {
+            break;
+        }
+        if (!dropped && !old.reset_all && old.pool_id == pool_id) {
+            free_queued_work(&old);
+            dropped = true;
+            continue;
+        }
+        if (xQueueSend(g_work_queue, &old, 0) != pdPASS) {
+            free_queued_work(&old);
+            ESP_LOGW(TAG, "dropping preserved work; queue full during enqueue");
+        }
+    }
+    return dropped;
+}
+
 static void queue_work_reset_marker(bool reset_all, uint8_t pool_id, uint32_t epoch,
                                     uint32_t pool_epoch)
 {
@@ -1825,6 +1874,43 @@ void stratum_minimal_reconnect(void)
     ESP_LOGI(TAG, "cleared queued work for reconnect");
 
     request_stratum_transport_close(false);
+}
+
+void stratum_minimal_reconnect_pools(uint32_t pool_mask)
+{
+    if (!stratum_runtime_ready()) {
+        ESP_LOGW(TAG, "pool reconnect ignored before runtime start");
+        return;
+    }
+
+    pool_mask &= pool_mask_all();
+    if (pool_mask == 0) {
+        return;
+    }
+
+    if (!multi_pool_mode_enabled() && (pool_mask & 1u) != 0) {
+        stratum_minimal_reconnect();
+        return;
+    }
+
+    if ((pool_mask & 1u) != 0) {
+        atomic_store(&g_next_using_backup_pool, false);
+        atomic_store(&g_switch_to_primary_requested, false);
+        clear_pool_runtime_state(STRATUM_PRIMARY_POOL_ID);
+        set_active_primary_pool_endpoint();
+        request_pool_transport_close(STRATUM_PRIMARY_POOL_ID, true);
+    }
+
+    for (uint8_t pool_id = STRATUM_AUX_POOL_ID_BASE;
+         pool_id < STRATUM_POOL_SESSION_MAX; ++pool_id) {
+        if ((pool_mask & (1u << pool_id)) == 0) {
+            continue;
+        }
+        clear_pool_runtime_state(pool_id);
+        request_pool_transport_close(pool_id, true);
+    }
+
+    STRATUM_LOGI("reconnected pool mask 0x%08" PRIx32, pool_mask);
 }
 
 void stratum_minimal_pause_work(void)
@@ -3253,10 +3339,7 @@ static void enqueue_work(uint8_t pool_id, mining_notify *work)
         .version_mask = version_mask,
     };
     if (xQueueSend(g_work_queue, &queued, 0) != pdPASS) {
-        queued_work_t old = {0};
-        if (xQueueReceive(g_work_queue, &old, 0) == pdPASS) {
-            free_queued_work(&old);
-        }
+        (void)drop_one_queued_work_for_pool(pool_id);
         if (xQueueSend(g_work_queue, &queued, 0) != pdPASS) {
             free_queued_work(&queued);
             ESP_LOGW(TAG, "dropping work; queue full");
@@ -3418,7 +3501,7 @@ static void handle_mining_notify_work(uint8_t pool_id, mining_notify *work)
         return;
     }
     const bool new_block = block_update == STRATUM_BLOCK_NEW;
-    if (new_block) {
+    if (new_block || work->clean_jobs) {
         reset_pool_or_single_work_state(pool_id, true, true);
     }
 

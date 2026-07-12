@@ -147,8 +147,8 @@ M45-specific additions compared with the stock ESP-Miner-style workflow:
   automatic fallback and return behavior for backup Stratum pools.
 - Weighted multi-pool mining uses per-pool job slices so pools can keep their
   own Stratum version mask without clearing unrelated ASIC work.
-- Auxiliary pools can inherit the primary username or override credentials per
-  pool for different SHA-256 coins.
+- Auxiliary pools can inherit the primary username/password or override
+  credentials per pool for different SHA-256 coins.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes documented in
   [`docs/json-endpoints.md`](docs/json-endpoints.md).
 

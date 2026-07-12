@@ -1007,13 +1007,27 @@ static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POO
         strlcpy(parsed[i].host, host, sizeof(parsed[i].host));
         strlcpy(parsed[i].user, user, sizeof(parsed[i].user));
 
+        bool password_inherit = false;
+        cJSON *password_inherit_item = cJSON_GetObjectItem(item, "password_inherit");
+        if (password_inherit_item == NULL) {
+            password_inherit_item = cJSON_GetObjectItem(item, "pass_inherit");
+        }
+        if (password_inherit_item != NULL) {
+            if (!cJSON_IsBool(password_inherit_item)) {
+                return false;
+            }
+            password_inherit = cJSON_IsTrue(password_inherit_item);
+        }
+
         cJSON *pass = cJSON_GetObjectItem(item, "pass");
         if (pass != NULL &&
             (!cJSON_IsString(pass) || pass->valuestring == NULL ||
              strlen(pass->valuestring) >= sizeof(parsed[i].pass))) {
             return false;
         }
-        if (pass != NULL && pass->valuestring[0] != '\0') {
+        if (password_inherit) {
+            parsed[i].pass[0] = '\0';
+        } else if (pass != NULL && pass->valuestring[0] != '\0') {
             strlcpy(parsed[i].pass, pass->valuestring, sizeof(parsed[i].pass));
         } else {
             strlcpy(parsed[i].pass, aux_pools[i].pass, sizeof(parsed[i].pass));
@@ -1155,13 +1169,46 @@ static uint16_t suggested_pool_difficulty_for_config(const m45_config_t *config)
         g_state->DEVICE_CONFIG.family.asic_count);
 }
 
-static bool active_pool_settings_changed(const m45_config_t *old_config,
-                                         const m45_config_t *new_config)
+static uint32_t pool_reconnect_bit(size_t pool_id)
 {
-    if (settings_string_changed(old_config->pool_user, new_config->pool_user) ||
-        settings_string_changed(old_config->pool_pass, new_config->pool_pass)) {
-        return true;
+    return pool_id < 32 ? (1u << pool_id) : 0;
+}
+
+static bool aux_pool_active_for_config(const m45_config_t *config, size_t aux_index)
+{
+    if (config == NULL || !config->multi_pool_enabled || aux_index >= M45_AUX_POOL_MAX) {
+        return false;
     }
+    const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
+    return aux->enabled && aux->host[0] != '\0' && aux->port > 0 &&
+           aux->share_percent > 0;
+}
+
+static uint32_t configured_pool_reconnect_mask(const m45_config_t *config)
+{
+    if (config == NULL) {
+        return 0;
+    }
+
+    uint32_t mask = config->pool_host[0] != '\0' && config->pool_port > 0
+                        ? pool_reconnect_bit(0)
+                        : 0;
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        if (aux_pool_active_for_config(config, i)) {
+            mask |= pool_reconnect_bit(i + 1U);
+        }
+    }
+    return mask;
+}
+
+static uint32_t active_pool_settings_reconnect_mask(const m45_config_t *old_config,
+                                                    const m45_config_t *new_config)
+{
+    uint32_t mask = 0;
+    const bool primary_user_changed =
+        settings_string_changed(old_config->pool_user, new_config->pool_user);
+    const bool primary_pass_changed =
+        settings_string_changed(old_config->pool_pass, new_config->pool_pass);
 
     if (settings_string_changed(old_config->pool_host, new_config->pool_host) ||
         old_config->pool_port != new_config->pool_port ||
@@ -1170,23 +1217,44 @@ static bool active_pool_settings_changed(const m45_config_t *old_config,
                                 new_config->backup_pool_host) ||
         old_config->backup_pool_port != new_config->backup_pool_port ||
         old_config->backup_pool_tls != new_config->backup_pool_tls ||
-        old_config->multi_pool_enabled != new_config->multi_pool_enabled) {
-        return true;
+        primary_user_changed || primary_pass_changed) {
+        mask |= pool_reconnect_bit(0);
+    }
+
+    if (old_config->multi_pool_enabled != new_config->multi_pool_enabled) {
+        for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+            if (aux_pool_active_for_config(old_config, i) ||
+                aux_pool_active_for_config(new_config, i)) {
+                mask |= pool_reconnect_bit(i + 1U);
+            }
+        }
     }
 
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
         const m45_aux_pool_t *old_aux = &old_config->aux_pools[i];
         const m45_aux_pool_t *new_aux = &new_config->aux_pools[i];
-        if (settings_string_changed(old_aux->host, new_aux->host) ||
-            old_aux->port != new_aux->port ||
-            old_aux->tls != new_aux->tls ||
-            old_aux->enabled != new_aux->enabled ||
-            old_aux->share_percent != new_aux->share_percent) {
-            return true;
+        const bool old_active = aux_pool_active_for_config(old_config, i);
+        const bool new_active = aux_pool_active_for_config(new_config, i);
+        const bool active_state_changed = old_active != new_active;
+        const bool endpoint_changed =
+            settings_string_changed(old_aux->host, new_aux->host) ||
+            old_aux->port != new_aux->port || old_aux->tls != new_aux->tls ||
+            old_aux->enabled != new_aux->enabled;
+        const bool credentials_changed =
+            settings_string_changed(old_aux->user, new_aux->user) ||
+            settings_string_changed(old_aux->pass, new_aux->pass);
+        const bool inherited_primary_credentials_changed =
+            new_active &&
+            ((primary_user_changed && new_aux->user[0] == '\0') ||
+             (primary_pass_changed && new_aux->pass[0] == '\0'));
+        if ((old_active || new_active) &&
+            (active_state_changed || endpoint_changed || credentials_changed ||
+             inherited_primary_credentials_changed)) {
+            mask |= pool_reconnect_bit(i + 1U);
         }
     }
 
-    return false;
+    return mask;
 }
 
 static bool pool_difficulty_settings_changed(const m45_config_t *old_config,
@@ -1208,12 +1276,16 @@ static bool pool_difficulty_settings_changed(const m45_config_t *old_config,
 static void runtime_reconnect_flags(const m45_config_t *old_config,
                                     const m45_config_t *new_config,
                                     bool *wifi_reconnect,
-                                    bool *pool_reconnect)
+                                    uint32_t *pool_reconnect_mask)
 {
     *wifi_reconnect = wifi_credentials_changed(old_config, new_config) ||
                       settings_string_changed(old_config->hostname, new_config->hostname);
-    *pool_reconnect = active_pool_settings_changed(old_config, new_config) ||
-                      pool_difficulty_settings_changed(old_config, new_config);
+    *pool_reconnect_mask =
+        active_pool_settings_reconnect_mask(old_config, new_config);
+    if (pool_difficulty_settings_changed(old_config, new_config)) {
+        *pool_reconnect_mask |= configured_pool_reconnect_mask(old_config) |
+                                configured_pool_reconnect_mask(new_config);
+    }
 }
 
 static void apply_runtime_state(const m45_config_t *config)
@@ -1395,10 +1467,10 @@ static esp_err_t apply_hardware_settings(const m45_config_t *old_config,
     return ESP_OK;
 }
 
-static void apply_runtime_reconnects(bool wifi_reconnect, bool pool_reconnect)
+static void apply_runtime_reconnects(bool wifi_reconnect, uint32_t pool_reconnect_mask)
 {
-    if (pool_reconnect) {
-        stratum_minimal_reconnect();
+    if (pool_reconnect_mask != 0) {
+        stratum_minimal_reconnect_pools(pool_reconnect_mask);
     }
     if (wifi_reconnect) {
         schedule_wifi_reconnect();
@@ -1408,9 +1480,9 @@ static void apply_runtime_reconnects(bool wifi_reconnect, bool pool_reconnect)
 static esp_err_t apply_runtime_settings(const m45_config_t *old_config,
                                         const m45_config_t *new_config,
                                         bool *wifi_reconnect,
-                                        bool *pool_reconnect)
+                                        uint32_t *pool_reconnect_mask)
 {
-    runtime_reconnect_flags(old_config, new_config, wifi_reconnect, pool_reconnect);
+    runtime_reconnect_flags(old_config, new_config, wifi_reconnect, pool_reconnect_mask);
 
     esp_err_t err = apply_hardware_settings(old_config, new_config);
     if (err != ESP_OK) {
@@ -1418,7 +1490,7 @@ static esp_err_t apply_runtime_settings(const m45_config_t *old_config,
     }
 
     apply_runtime_state(new_config);
-    apply_runtime_reconnects(*wifi_reconnect, *pool_reconnect);
+    apply_runtime_reconnects(*wifi_reconnect, *pool_reconnect_mask);
     return ESP_OK;
 }
 
@@ -1956,7 +2028,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     char pool_host[160];
     char backup_pool_host[160];
     char pool_user[200];
-    char aux_pools_json[960];
+    char aux_pools_json[1120];
     json_escape(wifi_ssid, sizeof(wifi_ssid), config->wifi_ssid);
     json_escape(hostname, sizeof(hostname), config->hostname);
     json_escape(pool_host, sizeof(pool_host), config->pool_host);
@@ -1972,12 +2044,14 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         const int written =
             snprintf(aux_pools_json + aux_offset, sizeof(aux_pools_json) - aux_offset,
                      "%s{\"host\":\"%s\",\"port\":%u,\"tls\":%s,\"enabled\":%s,"
-                     "\"share_percent\":%u,\"user\":\"%s\",\"password_set\":%s}",
+                     "\"share_percent\":%u,\"user\":\"%s\",\"password_set\":%s,"
+                     "\"password_inherit\":%s}",
                      i == 0 ? "" : ",", aux_host, config->aux_pools[i].port,
                      config->aux_pools[i].tls ? "true" : "false",
                      config->aux_pools[i].enabled ? "true" : "false",
                      config->aux_pools[i].share_percent, aux_user,
-                     config->aux_pools[i].pass[0] != '\0' ? "true" : "false");
+                     config->aux_pools[i].pass[0] != '\0' ? "true" : "false",
+                     config->aux_pools[i].pass[0] == '\0' ? "true" : "false");
         if (written < 0 || written >= (int)(sizeof(aux_pools_json) - aux_offset)) {
             httpd_resp_set_status(req, "500 Internal Server Error");
             return httpd_resp_sendstr(req, "{\"error\":\"settings too large\"}");
@@ -2670,8 +2744,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"test Wi-Fi connection before saving\"}");
     }
     bool wifi_reconnect = false;
-    bool pool_reconnect = false;
-    runtime_reconnect_flags(&old_config, &config, &wifi_reconnect, &pool_reconnect);
+    uint32_t pool_reconnect_mask = 0;
+    runtime_reconnect_flags(&old_config, &config, &wifi_reconnect,
+                            &pool_reconnect_mask);
 
     esp_err_t err = m45_config_set_runtime(&config);
     if (err != ESP_OK) {
@@ -2714,13 +2789,15 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
 
     apply_runtime_state(m45_config_get());
     started_us = http_now_us();
-    apply_runtime_reconnects(wifi_reconnect, pool_reconnect);
+    apply_runtime_reconnects(wifi_reconnect, pool_reconnect_mask);
     log_http_handler_delay("settings reconnect apply", started_us);
 
-    char response[96];
+    char response[128];
     snprintf(response, sizeof(response),
-             "{\"ok\":true,\"restart\":false,\"wifi_reconnect\":%s,\"pool_reconnect\":%s}",
-             wifi_reconnect ? "true" : "false", pool_reconnect ? "true" : "false");
+             "{\"ok\":true,\"restart\":false,\"wifi_reconnect\":%s,"
+             "\"pool_reconnect\":%s,\"pool_reconnect_mask\":%" PRIu32 "}",
+             wifi_reconnect ? "true" : "false",
+             pool_reconnect_mask != 0 ? "true" : "false", pool_reconnect_mask);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
 }
@@ -2816,9 +2893,10 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     }
 
     bool wifi_reconnect = false;
-    bool pool_reconnect = false;
+    uint32_t pool_reconnect_mask = 0;
     uint64_t started_us = http_now_us();
-    err = apply_runtime_settings(&old_config, m45_config_get(), &wifi_reconnect, &pool_reconnect);
+    err = apply_runtime_settings(&old_config, m45_config_get(), &wifi_reconnect,
+                                 &pool_reconnect_mask);
     log_http_handler_delay("runtime tune apply", started_us);
     if (err != ESP_OK) {
         const m45_config_t applied_config = *m45_config_get();
@@ -2923,7 +3001,8 @@ static esp_err_t settings_factory_reset_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(
         req, "{\"ok\":true,\"restart\":true,\"rebooting\":true,"
-             "\"wifi_reconnect\":false,\"pool_reconnect\":false}");
+             "\"wifi_reconnect\":false,\"pool_reconnect\":false,"
+             "\"pool_reconnect_mask\":0}");
 }
 
 static esp_err_t best_diff_reset_handler(httpd_req_t *req)
@@ -4061,8 +4140,10 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
         wifi_credentials_changed(&old_config, &config);
     const bool hostname_changed =
         settings_string_changed(old_config.hostname, config.hostname);
-    const bool pool_reconnect = active_pool_settings_changed(&old_config, &config) ||
-                                pool_difficulty_settings_changed(&old_config, &config);
+    uint32_t pool_reconnect_mask = 0;
+    bool ignored_wifi_reconnect = false;
+    runtime_reconnect_flags(&old_config, &config, &ignored_wifi_reconnect,
+                            &pool_reconnect_mask);
 
     esp_err_t err = m45_config_set_runtime(&config);
     if (err != ESP_OK) {
@@ -4098,8 +4179,8 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     }
 
     apply_runtime_state(m45_config_get());
-    if (pool_reconnect) {
-        stratum_minimal_reconnect();
+    if (pool_reconnect_mask != 0) {
+        stratum_minimal_reconnect_pools(pool_reconnect_mask);
     }
     if (hostname_changed && !wifi_credentials_changed_now) {
         schedule_wifi_reconnect();
@@ -4109,7 +4190,8 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     if (root != NULL) {
         cJSON_AddBoolToObject(root, "ok", true);
         cJSON_AddBoolToObject(root, "restart", wifi_credentials_changed_now);
-        cJSON_AddBoolToObject(root, "pool_reconnect", pool_reconnect);
+        cJSON_AddBoolToObject(root, "pool_reconnect", pool_reconnect_mask != 0);
+        cJSON_AddNumberToObject(root, "pool_reconnect_mask", pool_reconnect_mask);
     }
     return send_cjson_response(req, root);
 }
