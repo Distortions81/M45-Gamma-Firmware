@@ -136,6 +136,7 @@ static void set_defaults(m45_config_t *config)
     config->backup_pool_port = CONFIG_M45_BITAXE_STRATUM_BACKUP_PORT;
     config->pool_tls = M45_DEFAULT_POOL_TLS;
     config->backup_pool_tls = M45_DEFAULT_BACKUP_POOL_TLS;
+    config->multi_pool_enabled = false;
     config->pool_difficulty = CONFIG_M45_BITAXE_STRATUM_SUGGESTED_DIFFICULTY;
     config->pool_difficulty_auto = M45_DEFAULT_POOL_DIFFICULTY_AUTO;
     config->overclock_enabled = false;
@@ -264,6 +265,37 @@ static void sanitize_config(m45_config_t *config)
     }
     if (config->backup_pool_port < 1) {
         config->backup_pool_port = CONFIG_M45_BITAXE_STRATUM_BACKUP_PORT;
+    }
+    uint16_t aux_percent_total = 0;
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        m45_aux_pool_t *aux = &config->aux_pools[i];
+        aux->host[M45_POOL_HOST_MAX] = '\0';
+        aux->ip[M45_POOL_IP_MAX] = '\0';
+        if (aux->host[0] == '\0') {
+            aux->ip[0] = '\0';
+            aux->port = 0;
+            aux->tls = false;
+            aux->enabled = false;
+            aux->share_percent = 0;
+            continue;
+        }
+        if (aux->port < 1) {
+            aux->port = CONFIG_M45_BITAXE_STRATUM_PORT;
+        }
+        if (!config->multi_pool_enabled || !aux->enabled) {
+            continue;
+        }
+        if (aux->share_percent == 0) {
+            aux->enabled = false;
+            continue;
+        }
+        if (aux_percent_total + aux->share_percent > 100) {
+            aux->share_percent = (uint8_t)(100 - aux_percent_total);
+        }
+        aux_percent_total += aux->share_percent;
+        if (aux->share_percent == 0) {
+            aux->enabled = false;
+        }
     }
     if (config->pool_difficulty < 1) {
         config->pool_difficulty = CONFIG_M45_BITAXE_STRATUM_SUGGESTED_DIFFICULTY;
@@ -446,6 +478,32 @@ esp_err_t m45_config_load(void)
     uint8_t backup_pool_tls = g_config.backup_pool_tls ? 1 : 0;
     load_u8(nvs, "pool_bak_tls", &backup_pool_tls);
     g_config.backup_pool_tls = backup_pool_tls != 0;
+    uint8_t multi_pool_enabled = g_config.multi_pool_enabled ? 1 : 0;
+    load_u8(nvs, "pool_multi", &multi_pool_enabled);
+    g_config.multi_pool_enabled = multi_pool_enabled != 0;
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        char key[16];
+        snprintf(key, sizeof(key), "aux%u_host", (unsigned)i);
+        load_string(nvs, key, g_config.aux_pools[i].host,
+                    sizeof(g_config.aux_pools[i].host));
+        snprintf(key, sizeof(key), "aux%u_ip", (unsigned)i);
+        load_string(nvs, key, g_config.aux_pools[i].ip,
+                    sizeof(g_config.aux_pools[i].ip));
+        snprintf(key, sizeof(key), "aux%u_port", (unsigned)i);
+        load_u16(nvs, key, &g_config.aux_pools[i].port);
+        snprintf(key, sizeof(key), "aux%u_tls", (unsigned)i);
+        uint8_t aux_tls = g_config.aux_pools[i].tls ? 1 : 0;
+        load_u8(nvs, key, &aux_tls);
+        g_config.aux_pools[i].tls = aux_tls != 0;
+        snprintf(key, sizeof(key), "aux%u_en", (unsigned)i);
+        uint8_t aux_enabled = g_config.aux_pools[i].enabled ? 1 : 0;
+        load_u8(nvs, key, &aux_enabled);
+        g_config.aux_pools[i].enabled = aux_enabled != 0;
+        snprintf(key, sizeof(key), "aux%u_pct", (unsigned)i);
+        uint8_t aux_percent = g_config.aux_pools[i].share_percent;
+        load_u8(nvs, key, &aux_percent);
+        g_config.aux_pools[i].share_percent = aux_percent;
+    }
     load_u16(nvs, "pool_diff", &g_config.pool_difficulty);
     uint8_t pool_difficulty_auto = g_config.pool_difficulty_auto ? 1 : 0;
     load_u8(nvs, "pool_diff_auto", &pool_difficulty_auto);
@@ -518,6 +576,11 @@ esp_err_t m45_config_save(const m45_config_t *config)
     if (strcmp(clean.backup_pool_host, g_config.backup_pool_host) != 0) {
         clean.backup_pool_ip[0] = '\0';
     }
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        if (strcmp(clean.aux_pools[i].host, g_config.aux_pools[i].host) != 0) {
+            clean.aux_pools[i].ip[0] = '\0';
+        }
+    }
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(M45_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
@@ -561,6 +624,39 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "pool_bak_tls", clean.backup_pool_tls ? 1 : 0);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "pool_multi", clean.multi_pool_enabled ? 1 : 0);
+    }
+    for (size_t i = 0; err == ESP_OK && i < M45_AUX_POOL_MAX; ++i) {
+        char key[16];
+        snprintf(key, sizeof(key), "aux%u_host", (unsigned)i);
+        err = nvs_set_str(nvs, key, clean.aux_pools[i].host);
+        if (err != ESP_OK) {
+            break;
+        }
+        snprintf(key, sizeof(key), "aux%u_ip", (unsigned)i);
+        err = nvs_set_str(nvs, key, clean.aux_pools[i].ip);
+        if (err != ESP_OK) {
+            break;
+        }
+        snprintf(key, sizeof(key), "aux%u_port", (unsigned)i);
+        err = nvs_set_u16(nvs, key, clean.aux_pools[i].port);
+        if (err != ESP_OK) {
+            break;
+        }
+        snprintf(key, sizeof(key), "aux%u_tls", (unsigned)i);
+        err = nvs_set_u8(nvs, key, clean.aux_pools[i].tls ? 1 : 0);
+        if (err != ESP_OK) {
+            break;
+        }
+        snprintf(key, sizeof(key), "aux%u_en", (unsigned)i);
+        err = nvs_set_u8(nvs, key, clean.aux_pools[i].enabled ? 1 : 0);
+        if (err != ESP_OK) {
+            break;
+        }
+        snprintf(key, sizeof(key), "aux%u_pct", (unsigned)i);
+        err = nvs_set_u8(nvs, key, clean.aux_pools[i].share_percent);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "pool_diff", clean.pool_difficulty);

@@ -33,6 +33,7 @@ typedef struct {
     uint32_t ntime;
     uint32_t target;
     uint32_t starting_nonce;
+    uint8_t pool_id;
     uint8_t header_prefix[76];
     char ntime_hex[9];
     double block_diff;

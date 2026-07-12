@@ -46,11 +46,11 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 11200
+#define STATUS_JSON_BUFFER_SIZE 13200
 #else
-#define STATUS_JSON_BUFFER_SIZE 9900
+#define STATUS_JSON_BUFFER_SIZE 11900
 #endif
-#define SETTINGS_JSON_BUFFER_SIZE 4000
+#define SETTINGS_JSON_BUFFER_SIZE 4600
 #define M45_DEVICE_NAME "M45-Firmware"
 #define HTTP_URI_HANDLER_SLOTS 58
 #define HTTP_HANDLER_WARN_MS 100
@@ -941,6 +941,88 @@ static bool json_get_optional_u16(cJSON *root, const char *name, uint16_t *dst, 
     return true;
 }
 
+static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POOL_MAX])
+{
+    cJSON *array = cJSON_GetObjectItem(root, "aux_pools");
+    if (array == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(array)) {
+        return false;
+    }
+
+    memset(aux_pools, 0, sizeof(m45_aux_pool_t) * M45_AUX_POOL_MAX);
+    const int count = cJSON_GetArraySize(array);
+    if (count > M45_AUX_POOL_MAX) {
+        return false;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        cJSON *item = cJSON_GetArrayItem(array, i);
+        if (!cJSON_IsObject(item)) {
+            return false;
+        }
+
+        char host[M45_POOL_HOST_MAX + 1] = "";
+        uint16_t port = 0;
+        uint16_t percent = 0;
+        bool tls = false;
+        bool enabled = false;
+        if (!json_get_string(item, "host", host, sizeof(host), false) ||
+            !json_get_optional_u16(item, "port", &port, 1, 65535) ||
+            !json_get_optional_bool(item, "tls", &tls) ||
+            !json_get_optional_bool(item, "enabled", &enabled) ||
+            !json_get_optional_u16(item, "share_percent", &percent, 0, 100)) {
+            return false;
+        }
+
+        if (host[0] == '\0') {
+            if (enabled) {
+                return false;
+            }
+            continue;
+        }
+        if (port == 0) {
+            return false;
+        }
+        strlcpy(aux_pools[i].host, host, sizeof(aux_pools[i].host));
+        aux_pools[i].port = port;
+        aux_pools[i].tls = tls;
+        aux_pools[i].enabled = enabled;
+        aux_pools[i].share_percent = (uint8_t)percent;
+    }
+    return true;
+}
+
+static uint16_t aux_pool_share_total(const m45_config_t *config)
+{
+    uint16_t total = 0;
+    if (config == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        if (config->aux_pools[i].enabled) {
+            total += config->aux_pools[i].share_percent;
+        }
+    }
+    return total;
+}
+
+static bool aux_pools_valid_for_mode(const m45_config_t *config)
+{
+    if (config == NULL || !config->multi_pool_enabled) {
+        return true;
+    }
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        const m45_aux_pool_t *aux = &config->aux_pools[i];
+        if (aux->enabled &&
+            (aux->host[0] == '\0' || aux->port < 1 || aux->share_percent == 0)) {
+            return false;
+        }
+    }
+    return aux_pool_share_total(config) <= 100;
+}
+
 static uint64_t logs_since_from_query(httpd_req_t *req)
 {
     char query[48];
@@ -1043,24 +1125,35 @@ static uint16_t suggested_pool_difficulty_for_config(const m45_config_t *config)
 static bool active_pool_settings_changed(const m45_config_t *old_config,
                                          const m45_config_t *new_config)
 {
-    stratum_minimal_stats_t stats;
-    stratum_minimal_get_stats(&stats);
-
     if (settings_string_changed(old_config->pool_user, new_config->pool_user) ||
         settings_string_changed(old_config->pool_pass, new_config->pool_pass)) {
         return true;
     }
 
-    if (stats.using_backup_pool) {
-        return settings_string_changed(old_config->backup_pool_host,
-                                       new_config->backup_pool_host) ||
-               old_config->backup_pool_port != new_config->backup_pool_port ||
-               old_config->backup_pool_tls != new_config->backup_pool_tls;
+    if (settings_string_changed(old_config->pool_host, new_config->pool_host) ||
+        old_config->pool_port != new_config->pool_port ||
+        old_config->pool_tls != new_config->pool_tls ||
+        settings_string_changed(old_config->backup_pool_host,
+                                new_config->backup_pool_host) ||
+        old_config->backup_pool_port != new_config->backup_pool_port ||
+        old_config->backup_pool_tls != new_config->backup_pool_tls ||
+        old_config->multi_pool_enabled != new_config->multi_pool_enabled) {
+        return true;
     }
 
-    return settings_string_changed(old_config->pool_host, new_config->pool_host) ||
-           old_config->pool_port != new_config->pool_port ||
-           old_config->pool_tls != new_config->pool_tls;
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        const m45_aux_pool_t *old_aux = &old_config->aux_pools[i];
+        const m45_aux_pool_t *new_aux = &new_config->aux_pools[i];
+        if (settings_string_changed(old_aux->host, new_aux->host) ||
+            old_aux->port != new_aux->port ||
+            old_aux->tls != new_aux->tls ||
+            old_aux->enabled != new_aux->enabled ||
+            old_aux->share_percent != new_aux->share_percent) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool pool_difficulty_settings_changed(const m45_config_t *old_config,
@@ -1455,6 +1548,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     char auto_clock_hold_reason[128];
     char tps546_model[24];
     char domain_hashrates_json[512];
+    char pool_statuses_json[1800];
 #ifdef M45_ASIC_LOSS_METRICS
     char asic_loss_json[960];
 #endif
@@ -1470,6 +1564,52 @@ static esp_err_t status_handler(httpd_req_t *req)
     format_domain_hashrates_json(&stats, expected_chip_count,
                                   domain_hashrates_json,
                                   sizeof(domain_hashrates_json));
+    size_t pool_status_offset = 0;
+    pool_statuses_json[pool_status_offset++] = '[';
+    bool first_pool_status = true;
+    for (size_t i = 0; i < stats.pool_status_count; ++i) {
+        const stratum_pool_status_t *pool = &stats.pool_statuses[i];
+        if (!pool->configured) {
+            continue;
+        }
+        char status_host[160];
+        char status_label[16];
+        json_escape(status_host, sizeof(status_host), pool->pool_host);
+        if (pool->auxiliary) {
+            snprintf(status_label, sizeof(status_label), "Aux %u", (unsigned)pool->pool_id);
+        } else {
+            strlcpy(status_label, "Main", sizeof(status_label));
+        }
+        const char *role = pool->auxiliary ? "aux" : pool->using_backup_pool ? "backup"
+                                                                             : "primary";
+        const int written = snprintf(
+            pool_statuses_json + pool_status_offset,
+            sizeof(pool_statuses_json) - pool_status_offset,
+            "%s{\"pool_id\":%u,\"label\":\"%s\",\"role\":\"%s\","
+            "\"host\":\"%s\",\"port\":%u,\"connected\":%s,\"using_backup\":%s,"
+            "\"share_percent\":%u,\"connected_seconds\":%lu,\"pool_difficulty\":%.2f,"
+            "\"work_received\":%lu,\"submitted\":%lu,\"accepted\":%lu,\"rejected\":%lu}",
+            first_pool_status ? "" : ",", (unsigned)pool->pool_id, status_label, role,
+            status_host,
+            pool->pool_port, pool->connected ? "true" : "false",
+            pool->using_backup_pool ? "true" : "false", pool->share_percent,
+            (unsigned long)pool->connected_seconds, pool->pool_diff,
+            (unsigned long)pool->work_received, (unsigned long)pool->submitted,
+            (unsigned long)pool->accepted, (unsigned long)pool->rejected);
+        if (written < 0 ||
+            written >= (int)(sizeof(pool_statuses_json) - pool_status_offset)) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"status too large\"}");
+        }
+        pool_status_offset += (size_t)written;
+        first_pool_status = false;
+    }
+    if (pool_status_offset + 2 > sizeof(pool_statuses_json)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"status too large\"}");
+    }
+    pool_statuses_json[pool_status_offset++] = ']';
+    pool_statuses_json[pool_status_offset] = '\0';
 #ifdef M45_ASIC_LOSS_METRICS
     snprintf(asic_loss_json, sizeof(asic_loss_json),
              "{"
@@ -1586,6 +1726,8 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"pool\":\"%s\","
                  "\"pool_port\":%u,"
                  "\"pool_using_backup\":%s,"
+                 "\"multi_pool_enabled\":%s,"
+                 "\"pool_statuses\":%s,"
                  "\"stratum_connected\":%s,"
                  "\"stratum_connected_seconds\":%lu,"
                  "\"stratum_response_ms\":%lu,"
@@ -1685,6 +1827,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  g_state->SYSTEM_MODULE.hardware_fault ? "true" : "false", hardware_fault_msg,
                  pool_host, stats.pool_port > 0 ? stats.pool_port : config->pool_port,
                  stats.using_backup_pool ? "true" : "false",
+                 config->multi_pool_enabled ? "true" : "false", pool_statuses_json,
                  stats.connected ? "true" : "false",
                  (unsigned long)stats.connected_seconds, (unsigned long)stats.response_time_ms,
                  stats.share_submit_us, stats.share_submit_max_us,
@@ -1767,11 +1910,36 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     char pool_host[160];
     char backup_pool_host[160];
     char pool_user[200];
+    char aux_pools_json[640];
     json_escape(wifi_ssid, sizeof(wifi_ssid), config->wifi_ssid);
     json_escape(hostname, sizeof(hostname), config->hostname);
     json_escape(pool_host, sizeof(pool_host), config->pool_host);
     json_escape(backup_pool_host, sizeof(backup_pool_host), config->backup_pool_host);
     json_escape(pool_user, sizeof(pool_user), config->pool_user);
+    size_t aux_offset = 0;
+    aux_pools_json[aux_offset++] = '[';
+    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        char aux_host[160];
+        json_escape(aux_host, sizeof(aux_host), config->aux_pools[i].host);
+        const int written =
+            snprintf(aux_pools_json + aux_offset, sizeof(aux_pools_json) - aux_offset,
+                     "%s{\"host\":\"%s\",\"port\":%u,\"tls\":%s,\"enabled\":%s,\"share_percent\":%u}",
+                     i == 0 ? "" : ",", aux_host, config->aux_pools[i].port,
+                     config->aux_pools[i].tls ? "true" : "false",
+                     config->aux_pools[i].enabled ? "true" : "false",
+                     config->aux_pools[i].share_percent);
+        if (written < 0 || written >= (int)(sizeof(aux_pools_json) - aux_offset)) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"settings too large\"}");
+        }
+        aux_offset += (size_t)written;
+    }
+    if (aux_offset + 2 > sizeof(aux_pools_json)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"settings too large\"}");
+    }
+    aux_pools_json[aux_offset++] = ']';
+    aux_pools_json[aux_offset] = '\0';
     const uint16_t suggested_pool_difficulty =
         suggested_pool_difficulty_for_config(config);
 
@@ -1792,6 +1960,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"backup_pool_host\":\"%s\","
                  "\"backup_pool_port\":%u,"
                  "\"backup_pool_tls\":%s,"
+                 "\"multi_pool_enabled\":%s,"
+                 "\"aux_pools\":%s,"
                  "\"pool_user\":\"%s\","
                  "\"wifi_password_set\":%s,"
                  "\"pool_password_set\":%s,"
@@ -1831,7 +2001,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  wifi_ssid, hostname, pool_host, config->pool_port,
                  config->pool_tls ? "true" : "false", backup_pool_host,
                  config->backup_pool_port,
-                 config->backup_pool_tls ? "true" : "false", pool_user,
+                 config->backup_pool_tls ? "true" : "false",
+                 config->multi_pool_enabled ? "true" : "false", aux_pools_json,
+                 pool_user,
                  config->wifi_password[0] != '\0' ? "true" : "false",
                  config->pool_pass[0] != '\0' ? "true" : "false", config->pool_difficulty,
                  config->pool_difficulty_auto ? "true" : "false",
@@ -2263,7 +2435,6 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "{\"error\":\"test Wi-Fi connection before saving\"}");
     }
-
     const uint64_t save_started_us = http_now_us();
     esp_err_t err = m45_config_save(&config);
     log_http_handler_delay("setup NVS save", save_started_us);
@@ -2334,6 +2505,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         json_get_u16(json, "backup_pool_port", &config.backup_pool_port, 1, 65535) &&
         json_get_optional_bool(json, "pool_tls", &config.pool_tls) &&
         json_get_optional_bool(json, "backup_pool_tls", &config.backup_pool_tls) &&
+        json_get_optional_bool(json, "multi_pool_enabled", &config.multi_pool_enabled) &&
+        json_get_aux_pools(json, config.aux_pools) &&
         json_get_optional_bool(json, "pool_difficulty_auto",
                                &config.pool_difficulty_auto) &&
         json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535) &&
@@ -2434,6 +2607,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||
         config.auto_clock_target_temp_c < M45_AUTO_CLOCK_TARGET_MIN_C ||
         config.auto_clock_target_temp_c > M45_AUTO_CLOCK_TARGET_MAX_C ||
+        !aux_pools_valid_for_mode(&config) ||
         !safety_settings_valid_for_tune(&config)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid settings\"}");
@@ -2445,7 +2619,6 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "{\"error\":\"test Wi-Fi connection before saving\"}");
     }
-
     bool wifi_reconnect = false;
     bool pool_reconnect = false;
     runtime_reconnect_flags(&old_config, &config, &wifi_reconnect, &pool_reconnect);
@@ -4025,7 +4198,6 @@ esp_err_t wifi_http_start(GlobalState *state)
     if (g_wifi_scan_mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
-
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif init failed");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "event loop failed");
     init_setup_identity();

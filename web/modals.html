@@ -6,6 +6,10 @@
 <div class=dialog><h2 id=settings-reset-title>Factory Reset</h2><p>This clears saved Wi-Fi and mining settings, then reboots the device.</p>
 <div class=actions><button id=settings-reset-confirm class=danger type=button>Reset Settings</button>
 <button id=settings-reset-cancel class=primary type=button>Cancel</button></div></div></div>
+<div id=settings-validation-modal class='modal hidden' role=dialog aria-modal=true aria-labelledby=settings-validation-title>
+<div class=dialog><h2 id=settings-validation-title>Settings Check Failed</h2><p id=settings-validation-message>Check the settings and try again.</p>
+<div id=settings-validation-details class=risk-list></div>
+<div class=actions><button id=settings-validation-close class=primary type=button>OK</button></div></div></div>
 <div id=update-privacy-modal class='modal hidden' role=dialog aria-modal=true aria-labelledby=update-privacy-title>
 <div class=dialog><h2 id=update-privacy-title>Check for Updates</h2>
 <p>This contacts github.com from your browser to check for OTA firmware.</p>

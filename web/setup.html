@@ -93,7 +93,8 @@ pool_tls:$('pool-tls').checked,
 pool_user:$('pool-user').value.trim(),pool_difficulty_auto:$('pool-diff-auto').checked,
 pool_difficulty:Number(($('pool-diff-auto').checked?$('pool-diff').dataset.manual:$('pool-diff').value)||1000)};
 if($('pool-pass').value)body.pool_pass=$('pool-pass').value;
-try{const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+try{status('saving...');
+const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
 status('Saved, rebooting...','ok');btn.textContent='Rebooting...'}catch(e){setSaveEnabled();status(`save failed: ${e.message||e}`,'err')}};
 $('scan').onclick=scan;$('wifi-test').onclick=testWifi;$('wifi-ssid').oninput=()=>resetWifiTest('Test connection before saving.');

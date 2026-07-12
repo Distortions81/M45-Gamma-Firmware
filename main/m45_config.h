@@ -12,6 +12,7 @@
 #define M45_POOL_IP_MAX 45
 #define M45_POOL_USER_MAX 128
 #define M45_POOL_PASS_MAX 64
+#define M45_AUX_POOL_MAX 2
 #define M45_WALLET_ADDRESS_MAX 128
 #define M45_FAN_TARGET_DEFAULT_C 62
 #define M45_FAN_TARGET_MIN_C 35
@@ -54,6 +55,15 @@
 #define M45_SAFETY_IOUT_FAULT_MAX_DA 330
 
 typedef struct {
+    char host[M45_POOL_HOST_MAX + 1];
+    char ip[M45_POOL_IP_MAX + 1];
+    uint16_t port;
+    bool tls;
+    bool enabled;
+    uint8_t share_percent;
+} m45_aux_pool_t;
+
+typedef struct {
     char wifi_ssid[M45_WIFI_SSID_MAX + 1];
     char wifi_password[M45_WIFI_PASSWORD_MAX + 1];
     char hostname[M45_HOSTNAME_MAX + 1];
@@ -67,6 +77,8 @@ typedef struct {
     uint16_t backup_pool_port;
     bool pool_tls;
     bool backup_pool_tls;
+    bool multi_pool_enabled;
+    m45_aux_pool_t aux_pools[M45_AUX_POOL_MAX];
     uint16_t pool_difficulty;
     bool pool_difficulty_auto;
     bool overclock_enabled;
