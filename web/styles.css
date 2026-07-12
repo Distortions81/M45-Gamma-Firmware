@@ -126,6 +126,14 @@ color:var(--text);padding:0 10px;font:inherit}.field input:focus,.field select:f
 .field option.stock{color:var(--ok)}.field option.warn{color:var(--warn)}.field option.hot{color:var(--bad)}
 .field input[type=range]{padding:0;height:28px}.range-line{display:flex;align-items:center;gap:10px}.range-line input{flex:1}
 .range-value{min-width:44px;color:var(--muted);font-size:12px;text-align:right}
+.aux-pool-toolbar{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;
+padding-top:14px;border-top:1px solid var(--line)}
+.aux-pool-toolbar .secondary{height:32px}.aux-pools{grid-column:1/-1;display:grid;gap:0}
+.aux-pool-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px 0;border-top:1px solid var(--line)}
+.aux-pool-row:first-child{padding-top:0;border-top:0}.aux-pool-head{grid-column:1/-1;display:flex;
+align-items:center;justify-content:space-between;gap:12px}.aux-pool-title{font-size:14px;font-weight:760;color:var(--text)}
+.aux-pool-delete{height:30px;padding:0 10px}.aux-pool-row .toggle-row{grid-column:auto;padding:0}
+.aux-pool-row .aux-pool-wide{grid-column:1/-1}
 .fan-presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
 .fan-presets button{height:28px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--muted);
 font-size:11px;font-weight:650;padding:0 5px;cursor:pointer;min-width:0;white-space:nowrap}
@@ -218,6 +226,7 @@ font:12px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace}
 .toolbar{gap:6px;padding:8px}.tool{padding:0 7px}
 .grid{grid-template-columns:repeat(2,minmax(0,1fr))}.wide,.full{grid-column:1/-1}.pair{grid-template-columns:1fr}
 h1{font-size:22px}.value{font-size:24px}dl,dl.compact,.settings-form{grid-template-columns:1fr}
+.aux-pool-row{grid-template-columns:1fr}
 .oc-form{grid-template-columns:repeat(2,minmax(0,1fr))}.oc-command-panel{align-items:flex-start}
 .oc-form-actions{width:100%;justify-content:flex-start}.oc-warning-list{grid-template-columns:1fr}
 .oc-limits-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
