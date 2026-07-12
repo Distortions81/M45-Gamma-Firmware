@@ -141,7 +141,8 @@ M45-specific additions compared with the stock ESP-Miner-style workflow:
   values outside the normal ranges when unrestricted mode is enabled.
 - Auto-clock preset selection holds or steps down instead of increasing when
   VIN is at or below `5.01 V`, TPS546 current or VR temperature is close to
-  configured safety limits, and caps automatic increases at `1200 MHz`.
+  configured safety limits, or estimated ASIC watts exceed the enabled watt
+  cap, which defaults to `40 W`. Automatic increases are capped at `1200 MHz`.
 - Coinbase payout detection, block-found alerting, and best-diff reset.
 - Weighted multi-pool mining uses per-pool job slices so pools can keep their
   own Stratum version mask without clearing unrelated ASIC work.

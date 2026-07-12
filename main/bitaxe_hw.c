@@ -990,6 +990,11 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         fmaxf(1.0f, p_now + ((target_temp_c - AUTO_CLOCK_TEMP_SAFETY_MARGIN_C -
                               control_temp_c) /
                              AUTO_CLOCK_THERMAL_R_C_PER_W));
+    const bool max_power_enabled = config->auto_clock_max_watts_enabled;
+    const float max_power_w =
+        max_power_enabled
+            ? (float)m45_config_effective_auto_clock_max_watts(config)
+            : FLT_MAX;
     const uint8_t current_index = auto_clock_index_for_frequency(current_frequency_mhz);
     const float current_ceiling_a = auto_clock_upshift_current_ceiling_a(config);
     const float vr_temp_c = (float)snapshot->read_temp1;
@@ -1003,10 +1008,12 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
                                      snapshot->read_vin <= AUTO_CLOCK_UP_VIN_MIN_V;
     const bool upshift_blocked_by_limits =
         current_near_limit || vr_temp_near_limit || vin_low_for_upshift;
+    const bool current_power_over_limit = max_power_enabled && p_now > max_power_w;
     bool input_voltage_limited = false;
     bool output_current_limited = false;
     bool vr_temp_limited = false;
     bool power_limited = false;
+    bool max_watts_limited = current_power_over_limit;
     bool temperature_limited = false;
     bool have_next_up_candidate = false;
     uint16_t next_up_frequency_mhz = 0;
@@ -1048,7 +1055,10 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
             current_ceiling_a > 0.0f && i_est >= current_ceiling_a;
         const float allowed_power =
             upshift_candidate ? p_target * AUTO_CLOCK_UP_POWER_HEADROOM_RATIO : p_target;
-        const bool power_allowed = p_est <= allowed_power;
+        const bool candidate_cooling_limited = p_est > allowed_power;
+        const bool candidate_max_watts_limited = max_power_enabled && p_est > max_power_w;
+        const bool power_allowed =
+            !candidate_cooling_limited && !candidate_max_watts_limited;
         if (upshift_candidate && !have_next_up_candidate) {
             have_next_up_candidate = true;
             next_up_frequency_mhz = candidate_frequency_mhz;
@@ -1063,8 +1073,11 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
             if (vin_low_for_upshift) {
                 input_voltage_limited = true;
             }
-            if (!power_allowed) {
+            if (candidate_cooling_limited || candidate_max_watts_limited) {
                 power_limited = true;
+            }
+            if (candidate_max_watts_limited) {
+                max_watts_limited = true;
             }
         }
         if (candidate_current_limited) {
@@ -1133,6 +1146,13 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
         output_current_limited = false;
         vr_temp_limited = false;
         power_limited = false;
+    }
+    if (max_watts_limited) {
+        power_limited = true;
+    }
+    if (current_power_over_limit && target_index < control_current_index) {
+        urgent_downshift = true;
+        max_steps_down = AUTO_CLOCK_MAX_STEPS_DOWN_HOT;
     }
     if (target_index < lowest_valid_index) {
         target_index = lowest_valid_index;
@@ -1203,6 +1223,15 @@ static esp_err_t apply_auto_clock_control(GlobalState *state, float asic_temp_c,
             snprintf(hold_reason, sizeof(hold_reason),
                      "VR temp %.0f C is near %.0f C ceiling",
                      vr_temp_c, vr_temp_ceiling_c);
+        } else if (max_watts_limited && max_power_enabled) {
+            if (current_power_over_limit) {
+                snprintf(hold_reason, sizeof(hold_reason),
+                         "max watts %.0f W; now %.1f W", max_power_w, p_now);
+            } else {
+                snprintf(hold_reason, sizeof(hold_reason),
+                         "max watts %.0f W; next %u MHz estimates %.1f W",
+                         max_power_w, next_up_frequency_mhz, next_up_power_w);
+            }
         } else if (power_limited && next_up_power_w > 0.0f) {
             snprintf(hold_reason, sizeof(hold_reason),
                      "cooling target %.1f W; next %u MHz estimates %.1f W",

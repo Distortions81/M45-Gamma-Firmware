@@ -23,6 +23,9 @@
 #define M45_AUTO_CLOCK_TARGET_DEFAULT_C M45_FAN_TARGET_DEFAULT_C
 #define M45_AUTO_CLOCK_TARGET_MIN_C M45_FAN_TARGET_MIN_C
 #define M45_AUTO_CLOCK_TARGET_MAX_C M45_FAN_TARGET_MAX_C
+#define M45_AUTO_CLOCK_MAX_WATTS_DEFAULT 40
+#define M45_AUTO_CLOCK_MAX_WATTS_MIN 1
+#define M45_AUTO_CLOCK_MAX_WATTS_MAX 100
 #define M45_DISPLAY_SLEEP_DEFAULT_MINUTES 0
 #define M45_DISPLAY_SLEEP_MAX_MINUTES UINT16_MAX
 #define M45_ASIC_FREQUENCY_MIN_MHZ 1
@@ -90,6 +93,8 @@ typedef struct {
     bool auto_clock_enabled;
     bool auto_domain_reboot_enabled;
     uint16_t auto_clock_target_temp_c;
+    bool auto_clock_max_watts_enabled;
+    uint16_t auto_clock_max_watts;
     uint16_t asic_frequency_mhz;
     uint16_t asic_voltage_mv;
     int16_t overclock_voltage_offset_mv;
@@ -143,3 +148,4 @@ uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *confi
                                                        float asic_temp_c);
 uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config);
 uint16_t m45_config_effective_auto_clock_target_temp_c(const m45_config_t *config);
+uint16_t m45_config_effective_auto_clock_max_watts(const m45_config_t *config);

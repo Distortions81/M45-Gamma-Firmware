@@ -43,7 +43,7 @@ Response fields:
 | `asic_error_rate_percent`, `expected_hashrate_ghs` | number | Performance estimates. |
 | `voltage_mv`, `voltage_base_mv`, `voltage_temp_compensation_enabled`, `voltage_temp_compensation_mv` | mixed | Effective ASIC voltage target. `voltage_temp_compensation_mv` is signed relative to the base voltage. |
 | `overclock_enabled`, `auto_clock_enabled`, `auto_clock_active`, `auto_domain_reboot_enabled`, `safety_limits_unrestricted` | boolean | Overclock, auto-clock, lost-domain watchdog, and unrestricted safety-limit state. |
-| `auto_clock_target_temp_c`, `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_next_up_frequency_mhz`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_next_up_power_w`, `auto_clock_thermal_resistance_c_per_w`, `auto_clock_output_current_ceiling_a`, `auto_clock_next_up_output_current_a`, `auto_clock_input_voltage_limited`, `auto_clock_output_current_limited`, `auto_clock_vr_temp_limited`, `auto_clock_power_limited`, `auto_clock_temperature_limited`, `auto_clock_hold_reason` | mixed | Auto-clock target, controller telemetry, and clock-limiting state. The `power_*_w` fields are ASIC heat load and estimated cooling target watts derived from temperature headroom, not a configured watt limit. |
+| `auto_clock_target_temp_c`, `auto_clock_max_watts_enabled`, `auto_clock_max_watts`, `auto_clock_target_frequency_mhz`, `auto_clock_target_voltage_mv`, `auto_clock_next_up_frequency_mhz`, `auto_clock_power_now_w`, `auto_clock_power_target_w`, `auto_clock_next_up_power_w`, `auto_clock_thermal_resistance_c_per_w`, `auto_clock_output_current_ceiling_a`, `auto_clock_next_up_output_current_a`, `auto_clock_input_voltage_limited`, `auto_clock_output_current_limited`, `auto_clock_vr_temp_limited`, `auto_clock_power_limited`, `auto_clock_temperature_limited`, `auto_clock_hold_reason` | mixed | Auto-clock target, configured watt cap, controller telemetry, and clock-limiting state. The `power_*_w` fields are ASIC heat load and estimated cooling target watts derived from temperature headroom, not the configured watt cap. |
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `asic_efficiency_j_per_th`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power, efficiency, and fault state. `asic_efficiency_j_per_th` is computed from ASIC watts and measured hashrate. |
@@ -196,8 +196,8 @@ Response fields:
 | `multi_pool_enabled`, `aux_pools` | boolean/array | Enables weighted multi-pool mode. In this mode there are no implicit pools; only enabled `aux_pools` rows are scheduled. Each pool has `host`, `port`, `tls`, `enabled`, `weight`, `user`, and `password_set`. `weight` is 1-99. Empty pool `user` uses the optional default `pool_user`. |
 | `wifi_password_set`, `pool_password_set` | boolean | Password values are not returned. |
 | `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Pool difficulty settings. |
-| `overclock_enabled`, `auto_clock_enabled`, `auto_domain_reboot_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock is experimental and requires overclocking plus either fixed fan speed or no fan mode, and a high-current stable 5 V power supply with wiring/connectors rated for the configured current limits. Auto clock is capped at 1200 MHz and also blocks preset increases when cooling temperature headroom is too low, VIN is at or below 5.01 V, or the board is near configured TPS546 output-current and VR-temperature safety limits. Auto domain reboot is off by default; when enabled, the ASIC is power-cycled if a domain remains below 75% of expected per-domain hashrate for at least 60 seconds, and pending lost-domain recovery can tolerate missing ASIC temperature reads until the reboot runs. |
-| `asic_frequency_mhz`, `asic_voltage_mv`, `overclock_voltage_offset_mv`, `auto_clock_target_temp_c` | number | ASIC tuning values. |
+| `overclock_enabled`, `auto_clock_enabled`, `auto_clock_max_watts_enabled`, `auto_domain_reboot_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock is experimental and requires overclocking plus either fixed fan speed or no fan mode, and a high-current stable 5 V power supply with wiring/connectors rated for the configured current limits. Auto clock is capped at 1200 MHz and also blocks preset increases when cooling temperature headroom is too low, VIN is at or below 5.01 V, estimated ASIC watts exceed the enabled watt cap, or the board is near configured TPS546 output-current and VR-temperature safety limits. Auto domain reboot is off by default; when enabled, the ASIC is power-cycled if a domain remains below 75% of expected per-domain hashrate for at least 60 seconds, and pending lost-domain recovery can tolerate missing ASIC temperature reads until the reboot runs. |
+| `asic_frequency_mhz`, `asic_voltage_mv`, `overclock_voltage_offset_mv`, `auto_clock_target_temp_c`, `auto_clock_max_watts` | number | ASIC tuning values. `auto_clock_max_watts` defaults to 40 and is enforced only when `auto_clock_max_watts_enabled` is true. |
 | `fan_override_enabled`, `fan_override_percent`, `fan_auto_off_allowed`, `fan_target_override_enabled`, `fan_target_temp_c` | mixed | Fan settings. |
 | `display_screensaver_enabled`, `display_sleep_minutes`, `display_sleep_max_minutes` | mixed | OLED sleep settings. |
 | `safety_limits_unrestricted` | boolean | Allows out-of-normal safety limit settings when true. |
@@ -259,6 +259,8 @@ password values:
   "auto_clock_enabled": false,
   "auto_domain_reboot_enabled": false,
   "auto_clock_target_temp_c": 62,
+  "auto_clock_max_watts_enabled": true,
+  "auto_clock_max_watts": 40,
   "asic_frequency_mhz": 525,
   "asic_voltage_mv": 1150,
   "overclock_voltage_offset_mv": 0,
@@ -319,6 +321,8 @@ Request body fields are optional:
   "overclock_enabled": true,
   "auto_clock_enabled": false,
   "auto_clock_target_temp_c": 62,
+  "auto_clock_max_watts_enabled": true,
+  "auto_clock_max_watts": 40,
   "frequency_mhz": 625,
   "asic_frequency_mhz": 625,
   "voltage_mv": 1200,

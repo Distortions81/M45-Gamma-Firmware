@@ -46,11 +46,11 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 13200
+#define STATUS_JSON_BUFFER_SIZE 13350
 #else
-#define STATUS_JSON_BUFFER_SIZE 11900
+#define STATUS_JSON_BUFFER_SIZE 12050
 #endif
-#define SETTINGS_JSON_BUFFER_SIZE 4600
+#define SETTINGS_JSON_BUFFER_SIZE 4700
 #define M45_DEVICE_NAME "M45-Firmware"
 #define HTTP_URI_HANDLER_SLOTS 58
 #define HTTP_HANDLER_WARN_MS 100
@@ -1793,6 +1793,8 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"auto_domain_reboot_enabled\":%s,"
                  "\"safety_limits_unrestricted\":%s,"
                  "\"auto_clock_target_temp_c\":%u,"
+                 "\"auto_clock_max_watts_enabled\":%s,"
+                 "\"auto_clock_max_watts\":%u,"
                  "\"auto_clock_active\":%s,"
                  "\"auto_clock_input_voltage_limited\":%s,"
                  "\"auto_clock_output_current_limited\":%s,"
@@ -1904,6 +1906,8 @@ static esp_err_t status_handler(httpd_req_t *req)
                  config->auto_domain_reboot_enabled ? "true" : "false",
                  config->safety_limits_unrestricted ? "true" : "false",
                  m45_config_effective_auto_clock_target_temp_c(config),
+                 config->auto_clock_max_watts_enabled ? "true" : "false",
+                 m45_config_effective_auto_clock_max_watts(config),
                  auto_clock->active ? "true" : "false",
                  auto_clock->input_voltage_limited ? "true" : "false",
                  auto_clock->output_current_limited ? "true" : "false",
@@ -2086,6 +2090,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"auto_clock_enabled\":%s,"
                  "\"auto_domain_reboot_enabled\":%s,"
                  "\"auto_clock_target_temp_c\":%u,"
+                 "\"auto_clock_max_watts_enabled\":%s,"
+                 "\"auto_clock_max_watts\":%u,"
                  "\"asic_frequency_mhz\":%u,"
                  "\"asic_voltage_mv\":%u,"
                  "\"overclock_voltage_offset_mv\":%d,"
@@ -2125,6 +2131,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  config->auto_clock_enabled ? "true" : "false",
                  config->auto_domain_reboot_enabled ? "true" : "false",
                  config->auto_clock_target_temp_c,
+                 config->auto_clock_max_watts_enabled ? "true" : "false",
+                 config->auto_clock_max_watts,
                  config->asic_frequency_mhz, config->asic_voltage_mv,
                  config->overclock_voltage_offset_mv,
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
@@ -2633,6 +2641,12 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                               &config.auto_clock_target_temp_c,
                               M45_AUTO_CLOCK_TARGET_MIN_C,
                               M45_AUTO_CLOCK_TARGET_MAX_C) &&
+        json_get_optional_bool(json, "auto_clock_max_watts_enabled",
+                               &config.auto_clock_max_watts_enabled) &&
+        json_get_optional_u16(json, "auto_clock_max_watts",
+                              &config.auto_clock_max_watts,
+                              M45_AUTO_CLOCK_MAX_WATTS_MIN,
+                              M45_AUTO_CLOCK_MAX_WATTS_MAX) &&
         json_get_u16(json, "asic_frequency_mhz", &config.asic_frequency_mhz,
                      M45_ASIC_FREQUENCY_MIN_MHZ, M45_ASIC_FREQUENCY_MAX_MHZ) &&
         json_get_u16(json, "asic_voltage_mv", &config.asic_voltage_mv, 500, 1370) &&
@@ -2813,7 +2827,7 @@ static bool json_get_tune_u16(cJSON *root, const char *name, const char *alt_nam
 
 static esp_err_t runtime_tune_handler(httpd_req_t *req)
 {
-    if (req->content_len <= 0 || req->content_len > 640) {
+    if (req->content_len <= 0 || req->content_len > 768) {
         httpd_resp_set_status(req, "413 Payload Too Large");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid size\"}");
     }
@@ -2850,6 +2864,12 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
                               &runtime.auto_clock_target_temp_c,
                               M45_AUTO_CLOCK_TARGET_MIN_C,
                               M45_AUTO_CLOCK_TARGET_MAX_C) &&
+        json_get_optional_bool(json, "auto_clock_max_watts_enabled",
+                               &runtime.auto_clock_max_watts_enabled) &&
+        json_get_optional_u16(json, "auto_clock_max_watts",
+                              &runtime.auto_clock_max_watts,
+                              M45_AUTO_CLOCK_MAX_WATTS_MIN,
+                              M45_AUTO_CLOCK_MAX_WATTS_MAX) &&
         json_get_tune_u16(json, "frequency_mhz", "asic_frequency_mhz",
                           &runtime.asic_frequency_mhz, M45_ASIC_FREQUENCY_MIN_MHZ,
                           M45_ASIC_FREQUENCY_MAX_MHZ) &&

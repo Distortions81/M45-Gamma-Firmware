@@ -143,6 +143,8 @@ static void set_defaults(m45_config_t *config)
     config->auto_clock_enabled = false;
     config->auto_domain_reboot_enabled = false;
     config->auto_clock_target_temp_c = M45_AUTO_CLOCK_TARGET_DEFAULT_C;
+    config->auto_clock_max_watts_enabled = true;
+    config->auto_clock_max_watts = M45_AUTO_CLOCK_MAX_WATTS_DEFAULT;
     config->asic_frequency_mhz = CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
     config->asic_voltage_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
     config->overclock_voltage_offset_mv = 0;
@@ -212,6 +214,8 @@ void m45_config_apply_auto_clock_policy(m45_config_t *config)
         config->auto_clock_enabled = false;
         config->auto_domain_reboot_enabled = false;
         config->auto_clock_target_temp_c = M45_AUTO_CLOCK_TARGET_DEFAULT_C;
+        config->auto_clock_max_watts_enabled = true;
+        config->auto_clock_max_watts = M45_AUTO_CLOCK_MAX_WATTS_DEFAULT;
         config->asic_frequency_mhz = CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
         config->asic_voltage_mv = CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
         config->overclock_voltage_offset_mv = 0;
@@ -326,6 +330,10 @@ static void sanitize_config(m45_config_t *config)
     if (config->auto_clock_target_temp_c < M45_AUTO_CLOCK_TARGET_MIN_C ||
         config->auto_clock_target_temp_c > M45_AUTO_CLOCK_TARGET_MAX_C) {
         config->auto_clock_target_temp_c = M45_AUTO_CLOCK_TARGET_DEFAULT_C;
+    }
+    if (config->auto_clock_max_watts < M45_AUTO_CLOCK_MAX_WATTS_MIN ||
+        config->auto_clock_max_watts > M45_AUTO_CLOCK_MAX_WATTS_MAX) {
+        config->auto_clock_max_watts = M45_AUTO_CLOCK_MAX_WATTS_DEFAULT;
     }
     m45_config_apply_auto_clock_policy(config);
     if (!config->safety_limits_unrestricted) {
@@ -524,6 +532,11 @@ esp_err_t m45_config_load(void)
     load_u8(nvs, "dom_reboot", &auto_domain_reboot_enabled);
     g_config.auto_domain_reboot_enabled = auto_domain_reboot_enabled != 0;
     load_u16(nvs, "auto_clk_tc", &g_config.auto_clock_target_temp_c);
+    uint8_t auto_clock_max_watts_enabled =
+        g_config.auto_clock_max_watts_enabled ? 1 : 0;
+    load_u8(nvs, "auto_clk_wen", &auto_clock_max_watts_enabled);
+    g_config.auto_clock_max_watts_enabled = auto_clock_max_watts_enabled != 0;
+    load_u16(nvs, "auto_clk_w", &g_config.auto_clock_max_watts);
     load_u16(nvs, "asic_freq", &g_config.asic_frequency_mhz);
     load_u16(nvs, "asic_mv", &g_config.asic_voltage_mv);
     load_i16(nvs, "oc_mv_off", &g_config.overclock_voltage_offset_mv);
@@ -692,6 +705,13 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "auto_clk_tc", clean.auto_clock_target_temp_c);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "auto_clk_wen",
+                         clean.auto_clock_max_watts_enabled ? 1 : 0);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u16(nvs, "auto_clk_w", clean.auto_clock_max_watts);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "asic_freq", clean.asic_frequency_mhz);
@@ -1074,4 +1094,16 @@ uint16_t m45_config_effective_auto_clock_target_temp_c(const m45_config_t *confi
         return M45_AUTO_CLOCK_TARGET_MAX_C;
     }
     return active->auto_clock_target_temp_c;
+}
+
+uint16_t m45_config_effective_auto_clock_max_watts(const m45_config_t *config)
+{
+    const m45_config_t *active = config != NULL ? config : &g_config;
+    if (active->auto_clock_max_watts < M45_AUTO_CLOCK_MAX_WATTS_MIN) {
+        return M45_AUTO_CLOCK_MAX_WATTS_MIN;
+    }
+    if (active->auto_clock_max_watts > M45_AUTO_CLOCK_MAX_WATTS_MAX) {
+        return M45_AUTO_CLOCK_MAX_WATTS_MAX;
+    }
+    return active->auto_clock_max_watts;
 }
