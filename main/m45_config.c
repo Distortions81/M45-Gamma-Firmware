@@ -293,8 +293,9 @@ static void sanitize_config(m45_config_t *config)
             aux->enabled = false;
             continue;
         }
-        if (aux_percent_total + aux->share_percent > 100) {
-            aux->share_percent = (uint8_t)(100 - aux_percent_total);
+        if (aux_percent_total + aux->share_percent > M45_AUX_POOL_TOTAL_SHARE_MAX) {
+            aux->share_percent =
+                (uint8_t)(M45_AUX_POOL_TOTAL_SHARE_MAX - aux_percent_total);
         }
         aux_percent_total += aux->share_percent;
         if (aux->share_percent == 0) {

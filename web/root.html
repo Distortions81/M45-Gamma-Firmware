@@ -241,7 +241,7 @@ const CAL_START_MV=1200,CAL_MIN_MV=750,CAL_DOWN_STEP_MV=10,CAL_UP_STEP_MV=5,CAL_
 const CAL_TARGET_TEMP_C=61,CAL_TEMP_MARGIN_C=2;
 const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MIN_SAMPLE_RESULTS=3;
 const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
-const AUX_POOL_COUNT=2;
+const AUX_POOL_COUNT=2,PRIMARY_POOL_MIN_SHARE=1,AUX_POOL_TOTAL_SHARE_MAX=100-PRIMARY_POOL_MIN_SHARE;
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
@@ -446,22 +446,24 @@ else if(input.dataset.manual)input.value=input.dataset.manual;input.disabled=aut
 function auxPoolRows(){return Array.from(document.querySelectorAll('.aux-pool-row'))}
 function auxField(row,name){return row.querySelector(`[data-aux-field="${name}"]`)}
 function auxPoolConfigured(p={}){return !!((p.host||'').trim()||(p.user||'').trim()||p.enabled||Number(p.share_percent)>0||p.password_set)}
+function auxShareValue(v){return clamp(Math.floor(Number(v)||0),0,AUX_POOL_TOTAL_SHARE_MAX)}
+function auxPoolRowShare(row){return auxShareValue(auxField(row,'percent').value.trim())}
 function auxPoolFromRow(row){const inherit=auxField(row,'pass-inherit').checked;
 return{host:auxField(row,'host').value.trim(),port:Number(auxField(row,'port').value.trim()),
 tls:auxField(row,'tls').checked,enabled:auxField(row,'enabled').checked,
-share_percent:Number(auxField(row,'percent').value.trim())||0,user:auxField(row,'user').value.trim(),
+share_percent:auxPoolRowShare(row),user:auxField(row,'user').value.trim(),
 pass:inherit?'':auxField(row,'pass').value.trim(),password_inherit:inherit,password_set:row.dataset.passwordSet==='1'}}
 function auxPools(){return auxPoolRows().map(auxPoolFromRow)}
 function auxPoolPayload(){return auxPools().map(p=>({host:p.host,port:p.port,tls:p.tls,enabled:p.enabled,
 share_percent:p.share_percent,user:p.user,pass:p.pass,password_inherit:p.password_inherit}))}
 function syncAuxPoolPassword(row){const input=auxField(row,'pass'),inherit=auxField(row,'pass-inherit').checked;
 input.disabled=!auxField(row,'enabled').checked||inherit;if(inherit){input.value='';input.placeholder='same as primary'}else if(!input.placeholder||input.placeholder==='same as primary')input.placeholder='unchanged'}
-function auxPoolRemainingShare(row=null){return Math.max(0,100-auxPoolRows().reduce((sum,r)=>r!==row&&auxField(r,'enabled').checked?sum+(Number(auxField(r,'percent').value.trim())||0):sum,0))}
+function auxPoolRemainingShare(row=null){return Math.max(0,AUX_POOL_TOTAL_SHARE_MAX-auxPoolRows().reduce((sum,r)=>r!==row&&auxField(r,'enabled').checked?sum+auxPoolRowShare(r):sum,0))}
 function defaultAuxPoolShare(row=null){const remaining=auxPoolRemainingShare(row);return remaining>=10?10:remaining}
 function syncAuxPoolEnabled(row){const enabled=auxField(row,'enabled').checked,state=row.querySelector('.aux-pool-state');
 if(enabled&&(Number(auxField(row,'percent').value.trim())||0)<=0)auxField(row,'percent').value=defaultAuxPoolShare(row);
 row.classList.toggle('aux-pool-disabled',!enabled);if(state){state.className=`pill aux-pool-state ${enabled?'ok':''}`.trim();state.textContent=enabled?'Enabled':'Disabled'}
-['host','port','tls','percent','user','pass-inherit'].forEach(name=>{auxField(row,name).disabled=!enabled});syncAuxPoolPassword(row)}
+['host','port','tls','percent','user','pass-inherit'].forEach(name=>{auxField(row,name).disabled=!enabled});syncAuxPoolPassword(row);syncAuxPoolShare()}
 function setAuxPoolRow(row,p={}){row.dataset.passwordSet=p.password_set?'1':'0';auxField(row,'enabled').checked=!!p.enabled;
 auxField(row,'host').value=p.host||'';auxField(row,'port').value=p.port||3333;auxField(row,'tls').checked=!!p.tls;
 auxField(row,'percent').value=p.share_percent||0;auxField(row,'user').value=p.user||'';auxField(row,'pass').value=p.pass||'';
@@ -475,7 +477,7 @@ row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title-group><div cla
 <label class=toggle-row for=cfg-aux-pool-${i}-tls><input id=cfg-aux-pool-${i}-tls data-aux-field=tls type=checkbox><span class=label>TLS</span></label>
 <div class=field><label for=cfg-aux-pool-${i}-host>Pool</label><input id=cfg-aux-pool-${i}-host data-aux-field=host maxlength=96></div>
 <div class=field><label for=cfg-aux-pool-${i}-port>Port</label><input id=cfg-aux-pool-${i}-port data-aux-field=port type=number min=1 max=65535></div>
-<div class=field><label for=cfg-aux-pool-${i}-percent>Share %</label><input id=cfg-aux-pool-${i}-percent data-aux-field=percent type=number min=0 max=100></div>
+<div class=field><label for=cfg-aux-pool-${i}-percent>Share %</label><input id=cfg-aux-pool-${i}-percent data-aux-field=percent type=number min=0 max=99></div>
 <div class=field><label for=cfg-aux-pool-${i}-user>Username Override</label><input id=cfg-aux-pool-${i}-user data-aux-field=user maxlength=128 placeholder='same as primary'></div>
 <div class=field><label for=cfg-aux-pool-${i}-pass>Password Override</label><input id=cfg-aux-pool-${i}-pass data-aux-field=pass type=password maxlength=64 placeholder='same as primary'></div>
 <label class='toggle-row aux-pool-wide' for=cfg-aux-pool-${i}-pass-inherit><input id=cfg-aux-pool-${i}-pass-inherit data-aux-field=pass-inherit type=checkbox><span class=label>Use Primary Password</span></label>`;
@@ -486,9 +488,15 @@ auxField(row,'pass-inherit').addEventListener('change',()=>syncAuxPoolPassword(r
 row.querySelector('.aux-pool-delete').onclick=()=>{const pools=auxPools();pools.splice(i,1);renderAuxPools(pools)};
 return row}
 function syncAuxPoolLimit(){const btn=$('cfg-add-aux-pool');if(btn)btn.disabled=auxPools().length>=AUX_POOL_COUNT}
-function syncAuxPoolShare(){const total=auxPools().reduce((sum,p)=>sum+(p.enabled?p.share_percent:0),0),main=100-total;
-const note=$('cfg-main-pool-share');if(!note)return;note.textContent=`Main/backup share: ${Math.max(0,main)}%`;
-note.classList.toggle('bad',total>100);syncAuxPoolLimit()}
+function clampAuxPoolShare(row){if(!row||!auxField(row,'enabled').checked)return;
+const input=auxField(row,'percent'),max=auxPoolRemainingShare(row),share=auxShareValue(input.value),clamped=Math.min(share,max);
+if(Number(input.value)!==clamped)input.value=clamped;
+if(clamped===0){auxField(row,'enabled').checked=false;syncAuxPoolEnabled(row)}}
+function syncAuxPoolShare(e=null){const row=e&&e.currentTarget?e.currentTarget.closest('.aux-pool-row'):null;
+if(row)clampAuxPoolShare(row);else auxPoolRows().forEach(clampAuxPoolShare);
+const total=auxPools().reduce((sum,p)=>sum+(p.enabled?p.share_percent:0),0),main=100-total;
+const note=$('cfg-main-pool-share');if(!note)return;note.textContent=`Main/backup share: ${Math.max(PRIMARY_POOL_MIN_SHARE,main)}%`;
+note.classList.toggle('bad',total>AUX_POOL_TOTAL_SHARE_MAX);syncAuxPoolLimit()}
 function multiPoolEnabled(){return val('cfg-pool-mode')==='multi'}
 function syncPoolMode(){const multi=multiPoolEnabled();document.querySelectorAll('.aux-pool-field').forEach(el=>el.classList.toggle('hidden',!multi));
 syncAuxPoolShare()}
@@ -984,8 +992,8 @@ const live=$('cal-live-state');live.className='pill bad';live.textContent=calibr
 setStatus('calibration-status',`calibration failed: ${e.message||e}`,'err')}finally{calibrationActive=false;calibrationAbort=false;btn.textContent='Calibrate OC Voltage';refresh()}}
 async function saveConfig(statusId,forceRisk=false){if(!cfgWifiReady()){setStatus(statusId,'test Wi-Fi before saving','err');
 setStatus('wifi-test-status','Test Wi-Fi before saving.','err');showSettingsValidationModal('Test Wi-Fi connection before saving.');syncWifiTest();return}
-if(statusId==='settings-status'&&multiPoolEnabled()&&auxPoolTotal()>100){showSettingsValidationModal('Enabled auxiliary pool shares cannot exceed 100%.');
-setStatus(statusId,'save blocked: auxiliary shares exceed 100%','err');return}
+if(statusId==='settings-status'&&multiPoolEnabled()&&auxPoolTotal()>AUX_POOL_TOTAL_SHARE_MAX){showSettingsValidationModal('Enabled auxiliary pool shares cannot exceed 99% so the main pool keeps 1%.');
+setStatus(statusId,'save blocked: auxiliary shares exceed 99%','err');return}
 if(statusId==='overclock-status'&&!forceRisk&&$('cfg-overclock-enabled').checked){const r=overclockRisk();
 if(r.freqBad){showRiskModal(statusId);return}}
 setStatus(statusId,'saving...');

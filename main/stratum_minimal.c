@@ -553,7 +553,10 @@ static uint8_t configured_pool_share_percent(const m45_config_t *config, uint8_t
             aux_total += aux->share_percent;
         }
     }
-    return aux_total >= 100 ? 0 : (uint8_t)(100 - aux_total);
+    if (aux_total >= M45_AUX_POOL_TOTAL_SHARE_MAX) {
+        return M45_PRIMARY_POOL_SHARE_MIN_PERCENT;
+    }
+    return (uint8_t)(100 - aux_total);
 }
 
 static uint16_t scale_suggested_difficulty_for_share(uint16_t difficulty,
@@ -4711,7 +4714,10 @@ static uint8_t configured_pool_weight(uint8_t pool_id, const m45_config_t *confi
                 }
             }
         }
-        return aux_total >= 100 ? 0 : (uint8_t)(100 - aux_total);
+        if (aux_total >= M45_AUX_POOL_TOTAL_SHARE_MAX) {
+            return M45_PRIMARY_POOL_SHARE_MIN_PERCENT;
+        }
+        return (uint8_t)(100 - aux_total);
     }
     if (!config->multi_pool_enabled) {
         return 0;
@@ -4743,7 +4749,9 @@ static uint16_t ready_pool_weights(job_pool_state_t pools[STRATUM_POOL_SESSION_M
     }
     if (ready[STRATUM_PRIMARY_POOL_ID]) {
         effective_weight[STRATUM_PRIMARY_POOL_ID] =
-            ready_aux_total >= 100 ? 0 : (uint8_t)(100 - ready_aux_total);
+            ready_aux_total >= M45_AUX_POOL_TOTAL_SHARE_MAX
+                ? M45_PRIMARY_POOL_SHARE_MIN_PERCENT
+                : (uint8_t)(100 - ready_aux_total);
     }
 
     for (size_t i = 0; i < STRATUM_POOL_SESSION_MAX; ++i) {

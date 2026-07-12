@@ -1067,7 +1067,7 @@ static bool aux_pools_valid_for_mode(const m45_config_t *config)
             return false;
         }
     }
-    return aux_pool_share_total(config) <= 100;
+    return aux_pool_share_total(config) <= M45_AUX_POOL_TOTAL_SHARE_MAX;
 }
 
 static uint64_t logs_since_from_query(httpd_req_t *req)
