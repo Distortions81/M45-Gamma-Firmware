@@ -242,7 +242,7 @@ const CAL_TARGET_TEMP_C=61,CAL_TEMP_MARGIN_C=2;
 const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MIN_SAMPLE_RESULTS=3;
 const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
 const AUX_POOL_COUNT=2;
-let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
+let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
 let currentBuildVersion='',latestRelease=null,latestFactoryAsset=null,releaseCheckInFlight=false,releaseAutoCheckStarted=false;
@@ -318,6 +318,16 @@ const now=Date.now(),last=shareSamples[shareSamples.length-1];if(last&&total<las
 shareSamples.push({t:now,total});shareSamples=shareSamples.filter(x=>now-x.t<=60000);
 const first=shareSamples[0],elapsed=(now-first.t)/60000;if(!first||elapsed<=0)return'--';
 return n((total-first.total)/elapsed,1)}
+function poolSampleKey(p){return String(p.pool_id??`${p.host||''}:${p.port||''}`)}
+function poolSharesPerMinute(p){const key=poolSampleKey(p);
+if(!p.connected){poolShareSamples.delete(key);return'--'}
+const total=num(p.accepted)+num(p.rejected);if(!Number.isFinite(total))return'--';
+const now=Date.now();let samples=poolShareSamples.get(key)||[],last=samples[samples.length-1];
+if(last&&total<last.total)samples=[];
+samples.push({t:now,total});samples=samples.filter(x=>now-x.t<=60000);
+poolShareSamples.set(key,samples);const first=samples[0],elapsed=(now-first.t)/60000;
+if(!first||samples.length<2||elapsed<=0)return'--';return n((total-first.total)/elapsed,1)}
+function responseText(v){v=num(v);return Number.isFinite(v)&&v>0?`${n(v,0)} ms`:'--'}
 function nonceErrorStats(s){const nominal=num(s.hashrate_nominal_ghs),hash=num(s.hashrate_ghs),apiPct=num(s.asic_error_rate_percent);
 let frac=Number.isFinite(apiPct)&&(nominal>0||hash>0)?apiPct/100:NaN;
 if(!Number.isFinite(frac)){const valid=num(s.valid_nonces),errors=num(s.nonce_errors),total=valid+errors;
@@ -606,28 +616,30 @@ txt('set-hardware',s.hardware)}
 function poolStatusMetric(label,value){const box=document.createElement('div');box.className='pool-status-metric';
 const l=document.createElement('span');l.textContent=label;const v=document.createElement('strong');v.textContent=value;
 box.appendChild(l);box.appendChild(v);return box}
+function poolRoleText(p){return p.role==='backup'?'Backup active':p.role==='aux'?'Auxiliary':'Primary lane'}
 function setPoolStatusPanel(s){const panel=$('pool-status-panel'),list=$('pool-status-list'),pill=$('pool-status-count');
 if(!panel||!list)return;const pools=(s.pool_statuses||[]).filter(p=>p&&p.host);
-const show=!!s.multi_pool_enabled&&pools.length>0;panel.classList.toggle('hidden',!show);if(!show){list.textContent='';return}
+const show=!!s.multi_pool_enabled&&pools.length>0;panel.classList.toggle('hidden',!show);if(!show){list.textContent='';poolShareSamples.clear();return}
 const online=pools.filter(p=>p.connected).length;if(pill){pill.className=`pill ${online===pools.length?'ok':online?'warn':'bad'}`;
-pill.textContent=`${online}/${pools.length} online`}list.textContent='';
+pill.textContent=`${online}/${pools.length} online`}list.textContent='';const activeKeys=new Set();
 pools.forEach(p=>{const row=document.createElement('div');row.className='pool-status-row';
+activeKeys.add(poolSampleKey(p));
 const main=document.createElement('div');main.className='pool-status-main';
 const name=document.createElement('div');name.className='pool-status-name';
 const disabled=p.disabled===true,note=(p.note||'').trim();
 const dot=document.createElement('span');dot.className=`status-dot ${disabled?'warn':p.connected?'ok':'bad'}`;
 const label=document.createElement('span');label.textContent=p.label||'Pool';name.appendChild(dot);name.appendChild(label);
 const host=document.createElement('div');host.className='pool-status-host';host.textContent=p.host?`${p.host}:${p.port||'--'}`:'--';
-main.appendChild(name);main.appendChild(host);if(note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
-const role=document.createElement('div');role.className='pool-status-role';role.textContent=disabled?'Disabled':p.role==='backup'?'Backup active':p.role==='aux'?'Auxiliary':'Primary lane';
 const age=shortTime(p.connected_seconds);
-row.appendChild(main);row.appendChild(role);
-row.appendChild(poolStatusMetric('State',disabled?'Disabled':p.connected?`Online${age?` ${age}`:''}`:'Offline'));
-row.appendChild(poolStatusMetric('Share',`${Number(p.share_percent)||0}%`));
-row.appendChild(poolStatusMetric('Shares',`${fmt(p.accepted)}/${fmt(p.rejected)}`));
-row.appendChild(poolStatusMetric('Payout',payoutInfo(p).label));
-row.appendChild(poolStatusMetric('Diff',diffText(p.pool_difficulty)));
-list.appendChild(row)})}
+const state=disabled?'Disabled':p.connected?`Online${age?` ${age}`:''}`:'Offline';
+const role=document.createElement('div');role.className='pool-status-role';role.textContent=`${state} - ${poolRoleText(p)}`;
+main.appendChild(name);main.appendChild(host);main.appendChild(role);if(note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
+const metrics=document.createElement('div');metrics.className='pool-status-metrics';
+[['Weight',`${Number(p.share_percent)||0}%`],['Response',responseText(p.response_ms)],['Shares/min',poolSharesPerMinute(p)],
+['Work',fmt(p.work_received)],['Submitted',fmt(p.submitted)],['Accepted',fmt(p.accepted)],['Rejected',fmt(p.rejected)],
+['Diff',diffText(p.pool_difficulty)],['Payout',payoutInfo(p).label]].forEach(m=>metrics.appendChild(poolStatusMetric(m[0],m[1])));
+row.appendChild(main);row.appendChild(metrics);list.appendChild(row)});
+for(const key of poolShareSamples.keys())if(!activeKeys.has(key))poolShareSamples.delete(key)}
 function setOcCard(id,cls,pill,note){const card=$(id+'-card'),state=$(id+'-state'),sub=$(id+'-note');
 if(card)card.className='panel wide oc-card oc-power-panel';if(state){state.className=`pill ${cls||''}`.trim();state.textContent=pill||'--'}
 if(sub)sub.textContent=note||''}
@@ -1033,6 +1045,7 @@ catch(e){$('logs-state').className='pill warn';$('logs-state').textContent='OFFL
 async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);return}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setFault(s);setBoot(s);
+const summaryPool=$('summary-pool-section');if(summaryPool)summaryPool.classList.toggle('hidden',!!s.multi_pool_enabled);
 const device=s.device_name||'M45-Firmware';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
 txt('firmware-version',s.version||'unknown');
 txt('build-id',s.build_id||'unknown');txt('build-time',s.build_time||'unknown');

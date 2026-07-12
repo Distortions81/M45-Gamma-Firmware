@@ -1692,7 +1692,8 @@ static esp_err_t status_handler(httpd_req_t *req)
             "%s{\"pool_id\":%u,\"label\":\"%s\",\"role\":\"%s\","
             "\"host\":\"%s\",\"port\":%u,\"connected\":%s,\"using_backup\":%s,"
             "\"disabled\":%s,\"note\":\"%s\","
-            "\"share_percent\":%u,\"connected_seconds\":%lu,\"pool_difficulty\":%.2f,"
+            "\"share_percent\":%u,\"connected_seconds\":%lu,\"response_ms\":%lu,"
+            "\"pool_difficulty\":%.2f,"
             "\"work_received\":%lu,\"submitted\":%lu,\"accepted\":%lu,\"rejected\":%lu,"
             "\"payout_status\":\"%s\",\"payout_percent_x100\":%u}",
             first_pool_status ? "" : ",", (unsigned)pool->pool_id, status_label, role,
@@ -1700,7 +1701,8 @@ static esp_err_t status_handler(httpd_req_t *req)
             pool->pool_port, pool->connected ? "true" : "false",
             pool->using_backup_pool ? "true" : "false",
             pool->disabled ? "true" : "false", status_note, pool->share_percent,
-            (unsigned long)pool->connected_seconds, pool->pool_diff,
+            (unsigned long)pool->connected_seconds,
+            (unsigned long)pool->response_time_ms, pool->pool_diff,
             (unsigned long)pool->work_received, (unsigned long)pool->submitted,
             (unsigned long)pool->accepted, (unsigned long)pool->rejected,
             payout_status_name(pool->payout_status), pool->payout_percent_x100);

@@ -133,6 +133,7 @@ static uint8_t g_pending_share_pool_ids[SHARE_ID_SLOTS];
 static size_t g_pending_share_id_next;
 static int g_pending_response_ids[RESPONSE_ID_SLOTS];
 static uint64_t g_pending_response_us[RESPONSE_ID_SLOTS];
+static uint8_t g_pending_response_pool_ids[RESPONSE_ID_SLOTS];
 static size_t g_pending_response_id_next;
 static char *g_rx_buffer[STRATUM_POOL_SESSION_MAX];
 static size_t g_rx_buffer_size[STRATUM_POOL_SESSION_MAX];
@@ -160,6 +161,7 @@ static atomic_uint g_valid_nonces;
 static atomic_uint g_nonce_errors;
 static atomic_uint g_job_sent;
 static atomic_uint g_response_time_ms;
+static atomic_uint g_pool_response_time_ms[STRATUM_POOL_SESSION_MAX];
 static atomic_ullong g_share_submit_us;
 static atomic_ullong g_share_submit_max_us;
 static atomic_ullong g_share_write_us;
@@ -1575,9 +1577,9 @@ static void mark_share_request(int id, uint8_t pool_id)
     taskEXIT_CRITICAL(&g_share_id_mux);
 }
 
-static void mark_response_request(int id)
+static void mark_response_request(uint8_t pool_id, int id)
 {
-    if (id < 0) {
+    if (id < 0 || !pool_id_valid(pool_id)) {
         return;
     }
 
@@ -1586,12 +1588,13 @@ static void mark_response_request(int id)
     const size_t slot = g_pending_response_id_next++ % RESPONSE_ID_SLOTS;
     g_pending_response_ids[slot] = id;
     g_pending_response_us[slot] = sent_us;
+    g_pending_response_pool_ids[slot] = pool_id;
     taskEXIT_CRITICAL(&g_response_id_mux);
 }
 
-static void mark_response_request_at(int id, uint64_t sent_us)
+static void mark_response_request_at(uint8_t pool_id, int id, uint64_t sent_us)
 {
-    if (id < 0) {
+    if (id < 0 || !pool_id_valid(pool_id)) {
         return;
     }
 
@@ -1599,20 +1602,27 @@ static void mark_response_request_at(int id, uint64_t sent_us)
     const size_t slot = g_pending_response_id_next++ % RESPONSE_ID_SLOTS;
     g_pending_response_ids[slot] = id;
     g_pending_response_us[slot] = sent_us;
+    g_pending_response_pool_ids[slot] = pool_id;
     taskEXIT_CRITICAL(&g_response_id_mux);
 }
 
-static bool take_response_request_ms(int id, uint32_t *elapsed_ms)
+static bool take_response_request_ms(uint8_t pool_id, int id, uint32_t *elapsed_ms)
 {
+    if (!pool_id_valid(pool_id)) {
+        return false;
+    }
+
     bool found = false;
     uint64_t sent_us = 0;
 
     taskENTER_CRITICAL(&g_response_id_mux);
     for (size_t i = 0; i < RESPONSE_ID_SLOTS; ++i) {
-        if (g_pending_response_ids[i] == id) {
+        if (g_pending_response_ids[i] == id &&
+            g_pending_response_pool_ids[i] == pool_id) {
             sent_us = g_pending_response_us[i];
             g_pending_response_ids[i] = 0;
             g_pending_response_us[i] = 0;
+            g_pending_response_pool_ids[i] = 0;
             found = true;
             break;
         }
@@ -1629,6 +1639,14 @@ static bool take_response_request_ms(int id, uint32_t *elapsed_ms)
         *elapsed_ms = delta_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)delta_ms;
     }
     return true;
+}
+
+static void record_response_time_ms(uint8_t pool_id, uint32_t response_ms)
+{
+    atomic_store(&g_response_time_ms, response_ms);
+    if (pool_id_valid(pool_id)) {
+        atomic_store(&g_pool_response_time_ms[pool_id], response_ms);
+    }
 }
 
 static bool take_share_request(int id, uint8_t *pool_id)
@@ -1723,6 +1741,7 @@ static void set_session_disconnected(uint8_t pool_id, bool clear_work)
     const bool any_connected = any_session_connected_locked();
     if (!any_connected) {
         atomic_store(&g_connected_since_us, 0);
+        atomic_store(&g_response_time_ms, 0);
     }
     atomic_store(&g_connected, any_connected);
     if (g_transport_lock != NULL) {
@@ -1730,6 +1749,7 @@ static void set_session_disconnected(uint8_t pool_id, bool clear_work)
     }
 
     set_pool_payout_status(pool_id, STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
+    atomic_store(&g_pool_response_time_ms[pool_id], 0);
     if (clear_work || was_connected) {
         reset_pool_or_single_work_state(pool_id, true, true);
     }
@@ -3535,8 +3555,8 @@ static void handle_response(uint8_t pool_id, cJSON *json, int message_id)
 {
     const bool success = response_is_success(json);
     uint32_t response_ms = 0;
-    if (take_response_request_ms(message_id, &response_ms)) {
-        atomic_store(&g_response_time_ms, response_ms);
+    if (take_response_request_ms(pool_id, message_id, &response_ms)) {
+        record_response_time_ms(pool_id, response_ms);
     }
 
     if (message_id == STRATUM_ID_SUBSCRIBE) {
@@ -3835,7 +3855,7 @@ static void fast_log_rejected_share(const char *line)
     }
 }
 
-static bool fast_handle_share_response(const char *line)
+static bool fast_handle_share_response(uint8_t pool_id, const char *line)
 {
     if (fast_json_field_value(line, "\"method\"") != NULL) {
         return false;
@@ -3852,8 +3872,8 @@ static bool fast_handle_share_response(const char *line)
     }
 
     uint32_t response_ms = 0;
-    if (take_response_request_ms(message_id, &response_ms)) {
-        atomic_store(&g_response_time_ms, response_ms);
+    if (take_response_request_ms(pool_id, message_id, &response_ms)) {
+        record_response_time_ms(pool_id, response_ms);
     }
     if (success) {
         atomic_fetch_add(&g_accepted, 1);
@@ -4028,7 +4048,7 @@ static bool fast_handle_set_difficulty(uint8_t pool_id, const char *line)
 
 static bool fast_handle_stratum_line(uint8_t pool_id, const char *line)
 {
-    return fast_handle_share_response(line) ||
+    return fast_handle_share_response(pool_id, line) ||
            fast_handle_mining_notify(pool_id, line) ||
            fast_handle_set_difficulty(pool_id, line);
 }
@@ -4175,11 +4195,11 @@ static esp_err_t send_setup_messages(uint8_t pool_id, esp_transport_handle_t tra
     }
 
     const uint64_t sent_us = (uint64_t)esp_timer_get_time();
-    mark_response_request_at(STRATUM_ID_CONFIGURE, sent_us);
-    mark_response_request_at(STRATUM_ID_SUBSCRIBE, sent_us);
-    mark_response_request_at(STRATUM_ID_SUGGEST_DIFFICULTY, sent_us);
-    mark_response_request_at(STRATUM_ID_AUTHORIZE, sent_us);
-    mark_response_request_at(STRATUM_ID_EXTRANONCE_SUBSCRIBE, sent_us);
+    mark_response_request_at(pool_id, STRATUM_ID_CONFIGURE, sent_us);
+    mark_response_request_at(pool_id, STRATUM_ID_SUBSCRIBE, sent_us);
+    mark_response_request_at(pool_id, STRATUM_ID_SUGGEST_DIFFICULTY, sent_us);
+    mark_response_request_at(pool_id, STRATUM_ID_AUTHORIZE, sent_us);
+    mark_response_request_at(pool_id, STRATUM_ID_EXTRANONCE_SUBSCRIBE, sent_us);
     return ESP_OK;
 }
 
@@ -4284,6 +4304,7 @@ static void stratum_rx_task(void *arg)
         set_session_transport(pool_id, transport);
         set_session_connected(pool_id, &endpoint);
         atomic_store(&g_response_time_ms, 0);
+        atomic_store(&g_pool_response_time_ms[pool_id], 0);
         set_pool_payout_status(pool_id, STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
         if (pool_id == STRATUM_PRIMARY_POOL_ID) {
             g_state->transport = transport;
@@ -5205,7 +5226,7 @@ static void result_task(void *arg)
                 finished_us > nonce_result_us ? finished_us - nonce_result_us : write_us;
             record_share_submit_timing(submit_us, write_us);
             mark_share_request(request_id, job_snapshot.pool_id);
-            mark_response_request(request_id);
+            mark_response_request(job_snapshot.pool_id, request_id);
             atomic_fetch_add(&g_submitted, 1);
             if (pool_id_valid(job_snapshot.pool_id)) {
                 atomic_fetch_add(&g_pool_submitted[job_snapshot.pool_id], 1);
@@ -5242,6 +5263,7 @@ esp_err_t stratum_minimal_start(GlobalState *state)
         atomic_store(&g_pool_submitted[i], 0);
         atomic_store(&g_pool_accepted[i], 0);
         atomic_store(&g_pool_rejected[i], 0);
+        atomic_store(&g_pool_response_time_ms[i], 0);
         atomic_store(&g_pool_payout_status[i], STRATUM_PAYOUT_STATUS_UNCHECKED);
         atomic_store(&g_pool_payout_percent_x100[i], 0);
     }
@@ -5382,6 +5404,7 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
     status->submitted = atomic_load(&g_pool_submitted[pool_id]);
     status->accepted = atomic_load(&g_pool_accepted[pool_id]);
     status->rejected = atomic_load(&g_pool_rejected[pool_id]);
+    status->response_time_ms = atomic_load(&g_pool_response_time_ms[pool_id]);
     status->payout_status = pool_payout_status(pool_id);
     status->payout_percent_x100 = pool_payout_percent_x100(pool_id);
 }

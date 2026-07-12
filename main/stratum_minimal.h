@@ -53,6 +53,7 @@ typedef struct {
     uint32_t accepted;
     uint32_t rejected;
     uint32_t connected_seconds;
+    uint32_t response_time_ms;
     uint16_t payout_percent_x100;
     uint8_t payout_status;
 } stratum_pool_status_t;
