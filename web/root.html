@@ -21,7 +21,7 @@
 <section id=dashboard-view><section class=grid>
 {{STATS_SUMMARY}}
 {{PAYOUT_PANEL}}
-<article id=pool-status-panel class='panel full pool-status-panel hidden'><div class=metric-head><div class=label>Pool Status</div>
+<article id=pool-status-panel class='panel full pool-status-panel hidden'><div class=metric-head><div class=label>Multi-pool Status</div>
 <span id=pool-status-count class=pill>--</span></div><div id=pool-status-list class=pool-status-list></div></article>
 </section></section>
 <section id=logs-view class=hidden>
@@ -1045,7 +1045,7 @@ catch(e){$('logs-state').className='pill warn';$('logs-state').textContent='OFFL
 async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);return}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setFault(s);setBoot(s);
-const summaryPool=$('summary-pool-section');if(summaryPool)summaryPool.classList.toggle('hidden',!!s.multi_pool_enabled);
+const multiPool=!!s.multi_pool_enabled;
 const device=s.device_name||'M45-Firmware';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
 txt('firmware-version',s.version||'unknown');
 txt('build-id',s.build_id||'unknown');txt('build-time',s.build_time||'unknown');
@@ -1057,11 +1057,11 @@ txt('asic-clock',s.asic_ready?`${n(s.frequency_mhz,0)} MHz`:s.booting?s.hardware
 setRanges(s);
 const hr=rate(s.hashrate_ghs);txt('hashrate',hr[0]);txt('hashrate-unit',hr[1]);
 txt('best',human(s.best_diff));txt('accepted',fmt(s.shares_accepted));updateCalibrationButton(s);
-txt('rejected',fmt(s.shares_rejected));txt('difficulty',diffText(s.pool_difficulty));
+txt('rejected',fmt(s.shares_rejected));txt('difficulty',multiPool?'Per-pool':diffText(s.pool_difficulty));
 txt('shares-min',sharesPerMinute(s));
-const rt=num(s.stratum_response_ms);txt('stratum-response',rt>0?`${n(rt,0)} ms`:'--');
+const rt=num(s.stratum_response_ms);txt('stratum-response',multiPool?'Per-pool':rt>0?`${n(rt,0)} ms`:'--');
 txt('job-latency',jobLatencyText(s));
-const pi=s.multi_pool_enabled?{label:'Multi-pool',cls:''}:payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
+const pi=multiPool?{label:'Per-pool',cls:''}:payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
 setPayoutPanel(s);
 const ns=nonceErrorStats(s);txt('nonce-error-rate',ns.pct);txt('hash-lost',ns.lost);
 txt('expected-hashrate',expectedHashValue(s));
@@ -1072,8 +1072,8 @@ setDomainGrid(s);
 const w=s.wifi_connected?wifiQuality(s.wifi_rssi_dbm):s.setup_mode?{label:'Setup AP',cls:'warn'}:{label:'Offline',cls:'bad'};
 txt('wifi-state',w.label);$('wifi-state').className=`signal-state ${w.cls}`;txt('wifi-rssi',s.wifi_connected?`${n(s.wifi_rssi_dbm,0)} dBm`:s.setup_mode?`${s.setup_ssid} ${s.setup_ip}`:'');
 const sc=s.stratum_connected?'ok':'warn';$('stratum-dot').className=`status-dot ${sc}`;$('stratum-state').className=sc;
-const poolLine=s.multi_pool_enabled?'multi-pool':s.pool?`${s.pool}:${s.pool_port}`:'';
-txt('stratum-state',s.multi_pool_enabled?'Multi-pool':s.stratum_connected?'Online':'Offline');txt('stratum-time',s.stratum_connected?shortTime(s.stratum_connected_seconds):'');txt('stratum-pool',poolLine);
+const poolLine=multiPool?'multi-pool mode':s.pool?`${s.pool}:${s.pool_port}`:'';
+txt('stratum-state',multiPool?'Multi-pool mode':s.stratum_connected?'Online':'Offline');txt('stratum-time',s.stratum_connected?shortTime(s.stratum_connected_seconds):'');txt('stratum-pool',poolLine);
 $('block-banner').classList.toggle('hidden',!s.block_alert_active);txt('block-banner-detail',`Best candidate diff ${human(s.block_alert_diff)}`);
 setPoolStatusPanel(s);setIssue(s);setSettings(s);setOverclock(s);}
 catch(e){updateRefreshWarning();txt('wifi-state','API error');txt('wifi-rssi','');$('wifi-state').className='signal-state bad';
