@@ -277,9 +277,13 @@ typedef struct {
 } coinbase_reader_t;
 
 static bool stratum_runtime_ready(void);
+static bool multi_pool_mode_enabled(void);
 static uint32_t reset_work_state(bool queue_marker);
 static uint32_t reset_pool_work_state(uint8_t pool_id, bool clear_asic_jobs,
                                       bool queue_marker);
+static uint32_t reset_pool_or_single_work_state(uint8_t pool_id,
+                                                bool clear_asic_jobs,
+                                                bool queue_marker);
 static void set_pool_payout_status(uint8_t pool_id, uint8_t status,
                                    uint16_t percent_x100);
 static void stratum_enable_tcp_nodelay(esp_transport_handle_t transport);
@@ -414,6 +418,12 @@ static bool pool_id_valid(uint8_t pool_id)
 static bool pool_id_is_aux(uint8_t pool_id)
 {
     return pool_id >= STRATUM_AUX_POOL_ID_BASE && pool_id < STRATUM_POOL_SESSION_MAX;
+}
+
+static bool multi_pool_mode_enabled(void)
+{
+    const m45_config_t *config = m45_config_get();
+    return config != NULL && config->multi_pool_enabled;
 }
 
 static const char *pool_id_name(uint8_t pool_id)
@@ -597,7 +607,14 @@ static bool set_pool_session_difficulty(uint8_t pool_id, double difficulty)
         xSemaphoreTake(g_transport_lock, portMAX_DELAY);
         raised = difficulty > g_pool_sessions[pool_id].pool_difficulty;
         g_pool_sessions[pool_id].pool_difficulty = difficulty;
+        if (pool_id == STRATUM_PRIMARY_POOL_ID && !multi_pool_mode_enabled() &&
+            g_state != NULL) {
+            g_state->pool_difficulty = difficulty;
+        }
         xSemaphoreGive(g_transport_lock);
+    }
+    if (pool_id == STRATUM_PRIMARY_POOL_ID && !multi_pool_mode_enabled()) {
+        (void)ensure_asic_job_difficulty(pool_id, difficulty);
     }
     return raised;
 }
@@ -858,7 +875,7 @@ static void request_pool_transport_close(uint8_t pool_id, bool clear_work)
         return;
     }
     if (clear_work) {
-        reset_pool_work_state(pool_id, true, true);
+        reset_pool_or_single_work_state(pool_id, true, true);
     }
 
     if (g_transport_lock == NULL) {
@@ -1584,7 +1601,7 @@ static void set_session_disconnected(uint8_t pool_id, bool clear_work)
 
     set_pool_payout_status(pool_id, STRATUM_PAYOUT_STATUS_UNCHECKED, 0);
     if (clear_work || was_connected) {
-        reset_pool_work_state(pool_id, true, true);
+        reset_pool_or_single_work_state(pool_id, true, true);
     }
 }
 
@@ -1708,6 +1725,17 @@ static uint32_t reset_pool_work_state(uint8_t pool_id, bool clear_asic_jobs,
     }
 
     return pool_epoch;
+}
+
+static uint32_t reset_pool_or_single_work_state(uint8_t pool_id,
+                                                bool clear_asic_jobs,
+                                                bool queue_marker)
+{
+    if (pool_id == STRATUM_PRIMARY_POOL_ID && !multi_pool_mode_enabled()) {
+        (void)clear_asic_jobs;
+        return reset_work_state(queue_marker);
+    }
+    return reset_pool_work_state(pool_id, clear_asic_jobs, queue_marker);
 }
 
 typedef enum {
@@ -3087,8 +3115,11 @@ static void update_version_mask(uint8_t pool_id, uint32_t mask)
         xSemaphoreGive(g_transport_lock);
     }
 
+    if (pool_id == STRATUM_PRIMARY_POOL_ID && !multi_pool_mode_enabled()) {
+        (void)ensure_asic_version_mask(pool_id, usable_mask);
+    }
     if (changed) {
-        reset_pool_work_state(pool_id, true, true);
+        reset_pool_or_single_work_state(pool_id, true, true);
     }
     clear_pool_note(pool_id);
     STRATUM_LOGI("%s pool version mask 0x%08" PRIx32 "%s", pool_id_name(pool_id),
@@ -3366,7 +3397,7 @@ static void handle_set_extranonce(uint8_t pool_id, cJSON *params)
     cJSON *extranonce = cJSON_GetArrayItem(params, 0);
     cJSON *extranonce_2_len = cJSON_GetArrayItem(params, 1);
     if (cJSON_IsString(extranonce) && cJSON_IsNumber(extranonce_2_len)) {
-        reset_pool_work_state(pool_id, true, true);
+        reset_pool_or_single_work_state(pool_id, true, true);
         update_extranonce_values(pool_id, extranonce->valuestring,
                                  extranonce_2_len->valueint);
     }
@@ -3388,7 +3419,7 @@ static void handle_mining_notify_work(uint8_t pool_id, mining_notify *work)
     }
     const bool new_block = block_update == STRATUM_BLOCK_NEW;
     if (new_block) {
-        reset_pool_work_state(pool_id, true, true);
+        reset_pool_or_single_work_state(pool_id, true, true);
     }
 
     uint8_t *payout_coinbase = NULL;
@@ -3793,7 +3824,7 @@ static bool fast_handle_set_difficulty(uint8_t pool_id, const char *line)
 
     const bool raised = set_pool_session_difficulty(pool_id, pool_difficulty);
     if (raised) {
-        reset_pool_work_state(pool_id, true, true);
+        reset_pool_or_single_work_state(pool_id, true, true);
         ESP_LOGI(TAG, "cleared %s pool work for raised difficulty %.2f",
                  pool_id_name(pool_id),
                  pool_current_difficulty(pool_id));
@@ -3827,7 +3858,7 @@ static void handle_stratum_method(uint8_t pool_id, cJSON *json, const char *meth
             const double pool_difficulty = difficulty->valuedouble;
             const bool raised = set_pool_session_difficulty(pool_id, pool_difficulty);
             if (raised) {
-                reset_pool_work_state(pool_id, true, true);
+                reset_pool_or_single_work_state(pool_id, true, true);
                 ESP_LOGI(TAG, "cleared %s pool work for raised difficulty %.2f",
                          pool_id_name(pool_id),
                          pool_current_difficulty(pool_id));
@@ -3996,7 +4027,7 @@ static void stratum_rx_task(void *arg)
                  endpoint.using_backup ? " (backup)" : "");
         bool rotate_endpoint = false;
         if (pool_id == STRATUM_PRIMARY_POOL_ID) {
-            reset_pool_work_state(pool_id, true, true);
+            reset_pool_or_single_work_state(pool_id, true, true);
             g_state->extranonce_2_len = 0;
         }
         const int ret = esp_transport_connect(transport, connect_host, endpoint.port, 10000);
@@ -4210,7 +4241,9 @@ static bool generate_and_send_work(job_pool_state_t *pool_work, uint32_t work_ep
     if (g_work_reset_lock != NULL) {
         xSemaphoreTake(g_work_reset_lock, portMAX_DELAY);
     }
-    if (work_epoch == atomic_load(&g_work_epoch) && !atomic_load(&g_work_paused)) {
+    if (work_epoch == atomic_load(&g_work_epoch) &&
+        pool_work->pool_epoch == atomic_load(&g_pool_work_epoch[pool_work->pool_id]) &&
+        !atomic_load(&g_work_paused)) {
 #ifdef M45_ASIC_LOSS_METRICS
         const uint64_t send_started_us = (uint64_t)esp_timer_get_time();
 #endif
@@ -4609,6 +4642,9 @@ static bool pool_slice_scheduler_next(
 static bool any_job_pool_ready(job_pool_state_t pools[STRATUM_POOL_SESSION_MAX])
 {
     const m45_config_t *config = m45_config_get();
+    if (config == NULL || !config->multi_pool_enabled) {
+        return job_pool_ready(&pools[STRATUM_PRIMARY_POOL_ID], config);
+    }
     for (size_t i = 0; i < STRATUM_POOL_SESSION_MAX; ++i) {
         if (job_pool_ready(&pools[i], config)) {
             return true;
@@ -4661,26 +4697,41 @@ static void job_task(void *arg)
         if (!atomic_load(&g_work_paused) && any_job_pool_ready(pools)) {
             const uint64_t now_us = (uint64_t)esp_timer_get_time();
             if (next_dispatch_us == 0 || now_us >= next_dispatch_us) {
-                if (active_pool >= 0 &&
-                    !job_pool_ready(&pools[active_pool], m45_config_get())) {
+                const m45_config_t *config = m45_config_get();
+                const bool multi_pool_mode =
+                    config != NULL && config->multi_pool_enabled;
+                int selected = -1;
+
+                if (!multi_pool_mode) {
+                    memset(&scheduler, 0, sizeof(scheduler));
                     active_pool = -1;
                     active_slice_jobs = 0;
-                }
-                if (active_slice_jobs == 0) {
-                    uint8_t selected_pool = 0;
-                    uint8_t selected_jobs = 0;
-                    if (!pool_slice_scheduler_next(&scheduler, pools, &selected_pool,
-                                                   &selected_jobs)) {
+                    if (job_pool_ready(&pools[STRATUM_PRIMARY_POOL_ID], config)) {
+                        selected = STRATUM_PRIMARY_POOL_ID;
+                    }
+                } else {
+                    if (active_pool >= 0 &&
+                        !job_pool_ready(&pools[active_pool], config)) {
                         active_pool = -1;
                         active_slice_jobs = 0;
-                        next_dispatch_us = 0;
-                        continue;
                     }
-                    active_pool = selected_pool;
-                    active_slice_jobs = selected_jobs;
+                    if (active_slice_jobs == 0) {
+                        uint8_t selected_pool = 0;
+                        uint8_t selected_jobs = 0;
+                        if (!pool_slice_scheduler_next(&scheduler, pools, &selected_pool,
+                                                       &selected_jobs)) {
+                            active_pool = -1;
+                            active_slice_jobs = 0;
+                            next_dispatch_us = 0;
+                            continue;
+                        }
+                        active_pool = selected_pool;
+                        active_slice_jobs = selected_jobs;
+                    }
+                    selected = active_pool;
                 }
-                const int selected = active_pool;
-                if (selected < 0 || !job_pool_ready(&pools[selected], m45_config_get())) {
+
+                if (selected < 0 || !job_pool_ready(&pools[selected], config)) {
                     active_pool = -1;
                     active_slice_jobs = 0;
                     next_dispatch_us = 0;

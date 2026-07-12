@@ -58,6 +58,23 @@
 #define OTA_UPLOAD_BUFFER_SIZE 4096
 #define OTA_FACTORY_TABLE_OFFSET 0x8000
 #define OTA_FACTORY_TABLE_SIZE 0xC00
+
+typedef struct {
+    stratum_minimal_stats_t stats;
+    bitaxe_gamma602_power_snapshot_t power;
+    bitaxe_gamma602_safety_limits_t limits;
+    bitaxe_gamma602_auto_clock_status_t auto_clock;
+    char wifi_ssid[80];
+    char pool_host[160];
+    char hardware_fault_msg[96];
+    char auto_clock_hold_reason[128];
+    char tps546_model[24];
+    char domain_hashrates_json[512];
+    char pool_statuses_json[3000];
+#ifdef M45_ASIC_LOSS_METRICS
+    char asic_loss_json[960];
+#endif
+} status_handler_scratch_t;
 #define OTA_PARTITION_ENTRY_SIZE 32
 #define OTA_FACTORY_IMAGE_MAGIC 0xE9
 #define SETUP_SCAN_MAX_APS 12
@@ -1510,20 +1527,26 @@ static esp_err_t status_handler(httpd_req_t *req)
         return send_page_token_reload(req);
     }
 
+    status_handler_scratch_t *scratch = calloc(1, sizeof(*scratch));
+    if (scratch == NULL) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+
     const m45_config_t *config = m45_config_get();
-    stratum_minimal_stats_t stats;
-    bitaxe_gamma602_power_snapshot_t power;
-    bitaxe_gamma602_safety_limits_t limits;
-    bitaxe_gamma602_auto_clock_status_t auto_clock;
-    stratum_minimal_get_stats(&stats);
-    const bool have_power = bitaxe_gamma602_power_snapshot(&power);
-    const float asic_power_watts = have_power ? power.read_vout * power.read_iout : 0.0f;
+    stratum_minimal_stats_t *stats = &scratch->stats;
+    bitaxe_gamma602_power_snapshot_t *power = &scratch->power;
+    bitaxe_gamma602_safety_limits_t *limits = &scratch->limits;
+    bitaxe_gamma602_auto_clock_status_t *auto_clock = &scratch->auto_clock;
+    stratum_minimal_get_stats(stats);
+    const bool have_power = bitaxe_gamma602_power_snapshot(power);
+    const float asic_power_watts = have_power ? power->read_vout * power->read_iout : 0.0f;
     const double asic_efficiency_j_per_th =
-        asic_power_watts > 0.0f && stats.measured_hashrate_ghs > 0.0
-            ? ((double)asic_power_watts * 1000.0) / stats.measured_hashrate_ghs
+        asic_power_watts > 0.0f && stats->measured_hashrate_ghs > 0.0
+            ? ((double)asic_power_watts * 1000.0) / stats->measured_hashrate_ghs
             : 0.0;
-    bitaxe_gamma602_safety_limits(&limits);
-    bitaxe_gamma602_auto_clock_status(&auto_clock);
+    bitaxe_gamma602_safety_limits(limits);
+    bitaxe_gamma602_auto_clock_status(auto_clock);
     wifi_ap_record_t ap_info = {0};
     const int wifi_rssi = g_connected && esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK
                               ? ap_info.rssi
@@ -1558,33 +1581,24 @@ static esp_err_t status_handler(httpd_req_t *req)
     const uint16_t voltage_target_mv =
         m45_config_effective_asic_voltage_mv_for_temp(config, asic_temp_c);
 
-    char wifi_ssid[80];
-    char pool_host[160];
-    char hardware_fault_msg[96];
-    char auto_clock_hold_reason[128];
-    char tps546_model[24];
-    char domain_hashrates_json[512];
-    char pool_statuses_json[3000];
-#ifdef M45_ASIC_LOSS_METRICS
-    char asic_loss_json[960];
-#endif
-    json_escape(wifi_ssid, sizeof(wifi_ssid), config->wifi_ssid);
-    json_escape(pool_host, sizeof(pool_host),
-                stats.pool_host[0] != '\0' ? stats.pool_host : config->pool_host);
-    json_escape(hardware_fault_msg, sizeof(hardware_fault_msg),
+    json_escape(scratch->wifi_ssid, sizeof(scratch->wifi_ssid), config->wifi_ssid);
+    json_escape(scratch->pool_host, sizeof(scratch->pool_host),
+                stats->pool_host[0] != '\0' ? stats->pool_host : config->pool_host);
+    json_escape(scratch->hardware_fault_msg, sizeof(scratch->hardware_fault_msg),
                 g_state->SYSTEM_MODULE.hardware_fault ? g_state->SYSTEM_MODULE.hardware_fault_msg
                                                        : "");
-    json_escape(auto_clock_hold_reason, sizeof(auto_clock_hold_reason),
-                auto_clock.hold_reason);
-    json_escape(tps546_model, sizeof(tps546_model), bitaxe_gamma602_tps_model());
-    format_domain_hashrates_json(&stats, expected_chip_count,
-                                  domain_hashrates_json,
-                                  sizeof(domain_hashrates_json));
+    json_escape(scratch->auto_clock_hold_reason, sizeof(scratch->auto_clock_hold_reason),
+                auto_clock->hold_reason);
+    json_escape(scratch->tps546_model, sizeof(scratch->tps546_model),
+                bitaxe_gamma602_tps_model());
+    format_domain_hashrates_json(stats, expected_chip_count,
+                                  scratch->domain_hashrates_json,
+                                  sizeof(scratch->domain_hashrates_json));
     size_t pool_status_offset = 0;
-    pool_statuses_json[pool_status_offset++] = '[';
+    scratch->pool_statuses_json[pool_status_offset++] = '[';
     bool first_pool_status = true;
-    for (size_t i = 0; i < stats.pool_status_count; ++i) {
-        const stratum_pool_status_t *pool = &stats.pool_statuses[i];
+    for (size_t i = 0; i < stats->pool_status_count; ++i) {
+        const stratum_pool_status_t *pool = &stats->pool_statuses[i];
         if (!pool->configured) {
             continue;
         }
@@ -1601,8 +1615,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         const char *role = pool->auxiliary ? "aux" : pool->using_backup_pool ? "backup"
                                                                              : "primary";
         const int written = snprintf(
-            pool_statuses_json + pool_status_offset,
-            sizeof(pool_statuses_json) - pool_status_offset,
+            scratch->pool_statuses_json + pool_status_offset,
+            sizeof(scratch->pool_statuses_json) - pool_status_offset,
             "%s{\"pool_id\":%u,\"label\":\"%s\",\"role\":\"%s\","
             "\"host\":\"%s\",\"port\":%u,\"connected\":%s,\"using_backup\":%s,"
             "\"disabled\":%s,\"note\":\"%s\","
@@ -1619,21 +1633,23 @@ static esp_err_t status_handler(httpd_req_t *req)
             (unsigned long)pool->accepted, (unsigned long)pool->rejected,
             payout_status_name(pool->payout_status), pool->payout_percent_x100);
         if (written < 0 ||
-            written >= (int)(sizeof(pool_statuses_json) - pool_status_offset)) {
+            written >= (int)(sizeof(scratch->pool_statuses_json) - pool_status_offset)) {
+            free(scratch);
             httpd_resp_set_status(req, "500 Internal Server Error");
             return httpd_resp_sendstr(req, "{\"error\":\"status too large\"}");
         }
         pool_status_offset += (size_t)written;
         first_pool_status = false;
     }
-    if (pool_status_offset + 2 > sizeof(pool_statuses_json)) {
+    if (pool_status_offset + 2 > sizeof(scratch->pool_statuses_json)) {
+        free(scratch);
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"status too large\"}");
     }
-    pool_statuses_json[pool_status_offset++] = ']';
-    pool_statuses_json[pool_status_offset] = '\0';
+    scratch->pool_statuses_json[pool_status_offset++] = ']';
+    scratch->pool_statuses_json[pool_status_offset] = '\0';
 #ifdef M45_ASIC_LOSS_METRICS
-    snprintf(asic_loss_json, sizeof(asic_loss_json),
+    snprintf(scratch->asic_loss_json, sizeof(scratch->asic_loss_json),
              "{"
              "\"job_sent\":%" PRIu64 ","
              "\"job_send_skipped\":%" PRIu64 ","
@@ -1655,20 +1671,21 @@ static esp_err_t status_handler(httpd_req_t *req)
              "\"rx_register_results\":%" PRIu64 ","
              "\"invalid_job_nonces\":%" PRIu64
              "}",
-             stats.asic_loss.job_sent, stats.asic_loss.job_send_skipped,
-             stats.asic_loss.job_alloc_failed, stats.asic_loss.job_build_total_us,
-             stats.asic_loss.job_build_max_us, stats.asic_loss.job_send_total_us,
-             stats.asic_loss.job_send_max_us, stats.asic_loss.dispatch_late_count,
-             stats.asic_loss.dispatch_late_total_us, stats.asic_loss.dispatch_late_max_us,
-             stats.asic_loss.dispatch_missed_slots, stats.asic_loss.rx_calls,
-             stats.asic_loss.rx_null, stats.asic_loss.rx_timeouts,
-             stats.asic_loss.rx_wait_total_us, stats.asic_loss.rx_wait_max_us,
-             stats.asic_loss.rx_nonce_results, stats.asic_loss.rx_register_results,
-             stats.asic_loss.invalid_job_nonces);
+             stats->asic_loss.job_sent, stats->asic_loss.job_send_skipped,
+             stats->asic_loss.job_alloc_failed, stats->asic_loss.job_build_total_us,
+             stats->asic_loss.job_build_max_us, stats->asic_loss.job_send_total_us,
+             stats->asic_loss.job_send_max_us, stats->asic_loss.dispatch_late_count,
+             stats->asic_loss.dispatch_late_total_us, stats->asic_loss.dispatch_late_max_us,
+             stats->asic_loss.dispatch_missed_slots, stats->asic_loss.rx_calls,
+             stats->asic_loss.rx_null, stats->asic_loss.rx_timeouts,
+             stats->asic_loss.rx_wait_total_us, stats->asic_loss.rx_wait_max_us,
+             stats->asic_loss.rx_nonce_results, stats->asic_loss.rx_register_results,
+             stats->asic_loss.invalid_job_nonces);
 #endif
 
     char *body = malloc(STATUS_JSON_BUFFER_SIZE);
     if (body == NULL) {
+        free(scratch);
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
     }
@@ -1811,10 +1828,10 @@ static esp_err_t status_handler(httpd_req_t *req)
                  g_state->DEVICE_CONFIG.family.name, g_state->DEVICE_CONFIG.board_version,
                  g_state->DEVICE_CONFIG.family.asic.name, chip_count,
                  g_state->POWER_MANAGEMENT_MODULE.actual_frequency,
-                 stats.measured_hashrate_ghs, stats.nominal_hashrate_ghs,
-                 stats.domain_hashrate_ghs, domain_hashrates_json,
-                 stats.asic_error_rate_percent,
-                 expected_hashrate_ghs, wifi_ssid,
+                 stats->measured_hashrate_ghs, stats->nominal_hashrate_ghs,
+                 stats->domain_hashrate_ghs, scratch->domain_hashrates_json,
+                 stats->asic_error_rate_percent,
+                 expected_hashrate_ghs, scratch->wifi_ssid,
                  voltage_target_mv, voltage_base_mv,
                  config->asic_voltage_temp_compensation_enabled ? "true" : "false",
                  voltage_compensation_mv,
@@ -1823,62 +1840,68 @@ static esp_err_t status_handler(httpd_req_t *req)
                  config->auto_domain_reboot_enabled ? "true" : "false",
                  config->safety_limits_unrestricted ? "true" : "false",
                  m45_config_effective_auto_clock_target_temp_c(config),
-                 auto_clock.active ? "true" : "false",
-                 auto_clock.input_voltage_limited ? "true" : "false",
-                 auto_clock.output_current_limited ? "true" : "false",
-                 auto_clock.vr_temp_limited ? "true" : "false",
-                 auto_clock.power_limited ? "true" : "false",
-                 auto_clock.temperature_limited ? "true" : "false",
-                 auto_clock_hold_reason,
-                 auto_clock.target_frequency_mhz, auto_clock.target_voltage_mv,
-                 auto_clock.next_up_frequency_mhz,
-                 auto_clock.power_now_w, auto_clock.power_target_w,
-                 auto_clock.next_up_power_w,
-                 auto_clock.thermal_resistance_c_per_w,
-                 auto_clock.output_current_ceiling_a,
-                 auto_clock.next_up_output_current_a,
+                 auto_clock->active ? "true" : "false",
+                 auto_clock->input_voltage_limited ? "true" : "false",
+                 auto_clock->output_current_limited ? "true" : "false",
+                 auto_clock->vr_temp_limited ? "true" : "false",
+                 auto_clock->power_limited ? "true" : "false",
+                 auto_clock->temperature_limited ? "true" : "false",
+                 scratch->auto_clock_hold_reason,
+                 auto_clock->target_frequency_mhz, auto_clock->target_voltage_mv,
+                 auto_clock->next_up_frequency_mhz,
+                 auto_clock->power_now_w, auto_clock->power_target_w,
+                 auto_clock->next_up_power_w,
+                 auto_clock->thermal_resistance_c_per_w,
+                 auto_clock->output_current_ceiling_a,
+                 auto_clock->next_up_output_current_a,
                  asic_temp_c,
                  g_state->POWER_MANAGEMENT_MODULE.fan_perc,
                  g_state->POWER_MANAGEMENT_MODULE.fan_rpm,
                  fan_auto ? "true" : "false",
                  config->fan_auto_off_allowed ? "true" : "false", asic_temp_target_c,
-                 have_power ? "true" : "false", have_power ? power.read_vout : 0.0f,
-                 have_power ? power.read_vin : 0.0f, have_power ? power.read_iout : 0.0f,
-                 have_power ? power.read_temp_c : 0, tps546_model, asic_power_watts,
+                 have_power ? "true" : "false", have_power ? power->read_vout : 0.0f,
+                 have_power ? power->read_vin : 0.0f, have_power ? power->read_iout : 0.0f,
+                 have_power ? power->read_temp_c : 0, scratch->tps546_model,
+                 asic_power_watts,
                  asic_efficiency_j_per_th, g_state->SYSTEM_MODULE.power_fault,
-                 g_state->SYSTEM_MODULE.hardware_fault ? "true" : "false", hardware_fault_msg,
-                 pool_host, stats.pool_port > 0 ? stats.pool_port : config->pool_port,
-                 stats.using_backup_pool ? "true" : "false",
-                 config->multi_pool_enabled ? "true" : "false", pool_statuses_json,
-                 stats.connected ? "true" : "false",
-                 (unsigned long)stats.connected_seconds, (unsigned long)stats.response_time_ms,
-                 stats.share_submit_us, stats.share_submit_max_us,
-                 stats.share_write_us, stats.share_write_max_us,
-                 stats.line_handle_us, stats.line_handle_max_us,
-                 stats.job_queue_wait_us, stats.job_queue_wait_max_us,
-                 stats.job_dispatch_us, stats.job_dispatch_max_us,
-                 (unsigned long)stats.work_received,
-                 (unsigned long)stats.accepted, (unsigned long)stats.rejected,
-                 (unsigned long)stats.valid_nonces, (unsigned long)stats.nonce_errors,
-                 stats.best_diff, stats.pool_diff,
+                 g_state->SYSTEM_MODULE.hardware_fault ? "true" : "false",
+                 scratch->hardware_fault_msg,
+                 scratch->pool_host,
+                 stats->pool_port > 0 ? stats->pool_port : config->pool_port,
+                 stats->using_backup_pool ? "true" : "false",
+                 config->multi_pool_enabled ? "true" : "false",
+                 scratch->pool_statuses_json,
+                 stats->connected ? "true" : "false",
+                 (unsigned long)stats->connected_seconds,
+                 (unsigned long)stats->response_time_ms,
+                 stats->share_submit_us, stats->share_submit_max_us,
+                 stats->share_write_us, stats->share_write_max_us,
+                 stats->line_handle_us, stats->line_handle_max_us,
+                 stats->job_queue_wait_us, stats->job_queue_wait_max_us,
+                 stats->job_dispatch_us, stats->job_dispatch_max_us,
+                 (unsigned long)stats->work_received,
+                 (unsigned long)stats->accepted, (unsigned long)stats->rejected,
+                 (unsigned long)stats->valid_nonces, (unsigned long)stats->nonce_errors,
+                 stats->best_diff, stats->pool_diff,
                  config->pool_difficulty_auto ? "true" : "false",
-                 suggested_pool_difficulty, payout_status_name(stats.payout_status),
-                 stats.payout_percent_x100,
-                 stats.block_alert_active ? "true" : "false", stats.block_alert_diff,
+                 suggested_pool_difficulty, payout_status_name(stats->payout_status),
+                 stats->payout_percent_x100,
+                 stats->block_alert_active ? "true" : "false", stats->block_alert_diff,
 #ifdef M45_ASIC_LOSS_METRICS
-                 asic_loss_json,
+                 scratch->asic_loss_json,
 #endif
-                 limits.input_voltage_min_v,
-                 limits.input_voltage_expected_min_v, limits.input_voltage_expected_max_v,
-                 limits.input_voltage_max_v, limits.asic_voltage_min_v,
-                 limits.asic_voltage_expected_min_v, limits.asic_voltage_expected_max_v,
-                 limits.asic_voltage_max_v, limits.asic_voltage_target_v,
-                 limits.asic_temp_expected_max_c, limits.asic_temp_max_c,
-                 limits.tps546_temp_expected_max_c, limits.tps546_temp_max_c,
-                 limits.iout_warn_a, limits.iout_fault_a, limits.power_warn_w,
-                 limits.power_fault_w, limits.fan_expected_percent);
+                 limits->input_voltage_min_v,
+                 limits->input_voltage_expected_min_v, limits->input_voltage_expected_max_v,
+                 limits->input_voltage_max_v, limits->asic_voltage_min_v,
+                 limits->asic_voltage_expected_min_v, limits->asic_voltage_expected_max_v,
+                 limits->asic_voltage_max_v, limits->asic_voltage_target_v,
+                 limits->asic_temp_expected_max_c, limits->asic_temp_max_c,
+                 limits->tps546_temp_expected_max_c, limits->tps546_temp_max_c,
+                 limits->iout_warn_a, limits->iout_fault_a, limits->power_warn_w,
+                 limits->power_fault_w, limits->fan_expected_percent);
     if (body_len < 0 || body_len >= STATUS_JSON_BUFFER_SIZE) {
         free(body);
+        free(scratch);
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"status too large\"}");
     }
@@ -1887,6 +1910,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     set_no_store_headers(req);
     const esp_err_t err = httpd_resp_send(req, body, body_len);
     free(body);
+    free(scratch);
     return err;
 }
 
