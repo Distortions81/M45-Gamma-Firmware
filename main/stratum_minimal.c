@@ -11,14 +11,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 
 #include "bitaxe_hw.h"
 #include "bm1370.h"
 #include "build_info.h"
 #include "cJSON.h"
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "esp_transport.h"
+#include "esp_transport_ssl.h"
 #include "esp_transport_tcp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -39,6 +43,8 @@
 #define STRATUM_RECONNECT_MS 5000
 #define STRATUM_PRIMARY_PROBE_INTERVAL_MS 60000
 #define STRATUM_DNS_PREFETCH_INTERVAL_MS 60000
+#define STRATUM_NTP_SYNC_TIMEOUT_MS 15000
+#define STRATUM_NTP_REFRESH_US (3ULL * 24ULL * 60ULL * 60ULL * 1000000ULL)
 #define STRATUM_IDLE_TIMEOUT_MS 120000
 #define TRANSPORT_TIMEOUT_MS 5000
 #define STRATUM_SHARE_WRITE_TIMEOUT_MS 1000
@@ -120,6 +126,8 @@ static atomic_bool g_switch_to_primary_requested;
 static atomic_bool g_primary_probe_in_progress;
 static atomic_ullong g_last_primary_probe_us;
 static atomic_ullong g_last_dns_prefetch_us;
+static atomic_ullong g_last_ntp_attempt_us;
+static atomic_ullong g_last_ntp_sync_us;
 static atomic_uint g_work_epoch;
 static atomic_uint g_work_received;
 static atomic_uint g_submitted;
@@ -198,6 +206,7 @@ static uint64_t g_domain_hashrate_updated_us;
 static char g_current_block_hash[80];
 static char g_active_pool_host[M45_POOL_HOST_MAX + 1];
 static uint16_t g_active_pool_port;
+static bool g_active_pool_tls;
 static bool g_active_using_backup_pool;
 static float g_job_interval_frequency_mhz;
 static int g_job_interval_ms;
@@ -208,6 +217,7 @@ typedef struct {
     char host[M45_POOL_HOST_MAX + 1];
     char cached_ip[M45_POOL_IP_MAX + 1];
     uint16_t port;
+    bool tls;
     bool using_backup;
 } stratum_endpoint_t;
 
@@ -221,6 +231,70 @@ static bool stratum_runtime_ready(void);
 static uint32_t reset_work_state(bool queue_marker);
 static void set_payout_status(uint8_t status, uint16_t percent_x100);
 static void stratum_enable_tcp_nodelay(esp_transport_handle_t transport);
+
+static bool stratum_wall_time_needs_sync(void)
+{
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    const uint64_t last_attempt_us = atomic_load(&g_last_ntp_attempt_us);
+    if (last_attempt_us != 0 && now_us >= last_attempt_us &&
+        now_us - last_attempt_us < STRATUM_NTP_REFRESH_US) {
+        return false;
+    }
+
+    const uint64_t last_sync_us = atomic_load(&g_last_ntp_sync_us);
+    if (last_sync_us == 0 || now_us < last_sync_us ||
+        now_us - last_sync_us >= STRATUM_NTP_REFRESH_US) {
+        return true;
+    }
+
+    time_t wall_time = 0;
+    time(&wall_time);
+    return wall_time < 1704067200;
+}
+
+static void stratum_sync_time_for_tls_if_needed(void)
+{
+    if (!stratum_wall_time_needs_sync()) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "syncing time before TLS stratum connect");
+    atomic_store(&g_last_ntp_attempt_us, (uint64_t)esp_timer_get_time());
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_err_t err = esp_netif_sntp_init(&config);
+    if (err == ESP_ERR_INVALID_STATE) {
+        esp_netif_sntp_deinit();
+        err = esp_netif_sntp_init(&config);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP init failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(STRATUM_NTP_SYNC_TIMEOUT_MS));
+    esp_netif_sntp_deinit();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP sync failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    atomic_store(&g_last_ntp_sync_us, (uint64_t)esp_timer_get_time());
+    ESP_LOGI(TAG, "SNTP time sync complete");
+}
+
+static esp_transport_handle_t stratum_transport_init_for_endpoint(
+    const stratum_endpoint_t *endpoint)
+{
+    if (endpoint != NULL && endpoint->tls) {
+        stratum_sync_time_for_tls_if_needed();
+        esp_transport_handle_t transport = esp_transport_ssl_init();
+        if (transport != NULL) {
+            esp_transport_ssl_crt_bundle_attach(transport, esp_crt_bundle_attach);
+        }
+        return transport;
+    }
+    return esp_transport_tcp_init();
+}
 
 static double nominal_hashrate_hs(void)
 {
@@ -305,6 +379,7 @@ static void set_active_pool_endpoint(const stratum_endpoint_t *endpoint)
     taskENTER_CRITICAL(&g_pool_endpoint_mux);
     copy_pool_host(g_active_pool_host, sizeof(g_active_pool_host), endpoint->host);
     g_active_pool_port = endpoint->port;
+    g_active_pool_tls = endpoint->tls;
     g_active_using_backup_pool = endpoint->using_backup;
     if (g_state != NULL) {
         g_state->SYSTEM_MODULE.pool_url = g_active_pool_host;
@@ -318,6 +393,7 @@ static void set_active_primary_pool_endpoint(void)
     const m45_config_t *config = m45_config_get();
     const stratum_endpoint_t endpoint = {
         .port = config->pool_port,
+        .tls = config->pool_tls,
         .using_backup = false,
     };
     stratum_endpoint_t copy = endpoint;
@@ -335,6 +411,7 @@ static void get_active_pool_endpoint(stratum_endpoint_t *endpoint)
     copy_pool_host(endpoint->host, sizeof(endpoint->host), g_active_pool_host);
     endpoint->cached_ip[0] = '\0';
     endpoint->port = g_active_pool_port;
+    endpoint->tls = g_active_pool_tls;
     endpoint->using_backup = g_active_using_backup_pool;
     taskEXIT_CRITICAL(&g_pool_endpoint_mux);
 }
@@ -350,6 +427,7 @@ static void select_next_pool_endpoint(stratum_endpoint_t *endpoint)
     copy_pool_ip(endpoint->cached_ip, sizeof(endpoint->cached_ip),
                  using_backup ? config->backup_pool_ip : config->pool_ip);
     endpoint->port = using_backup ? config->backup_pool_port : config->pool_port;
+    endpoint->tls = using_backup ? config->backup_pool_tls : config->pool_tls;
     endpoint->using_backup = using_backup;
 }
 
@@ -421,6 +499,11 @@ static bool stratum_resolve_endpoint_ip4(const stratum_endpoint_t *endpoint,
 static void stratum_connect_host_for_endpoint(const stratum_endpoint_t *endpoint,
                                               char *host, size_t host_size)
 {
+    if (endpoint != NULL && endpoint->tls) {
+        copy_pool_host(host, host_size, endpoint->host);
+        return;
+    }
+
     char resolved_ip[M45_POOL_IP_MAX + 1];
     if (stratum_resolve_endpoint_ip4(endpoint, resolved_ip, sizeof(resolved_ip))) {
         copy_pool_ip(host, host_size, resolved_ip);
@@ -455,6 +538,7 @@ static void stratum_maybe_prefetch_backup_pool_dns(const stratum_endpoint_t *cur
 
     stratum_endpoint_t backup = {
         .port = config->backup_pool_port,
+        .tls = config->backup_pool_tls,
         .using_backup = true,
     };
     copy_pool_host(backup.host, sizeof(backup.host), config->backup_pool_host);
@@ -1293,7 +1377,7 @@ static void stratum_primary_probe_task(void *arg)
     memcpy(&probe, arg, sizeof(probe));
 
     bool reachable = false;
-    esp_transport_handle_t transport = esp_transport_tcp_init();
+    esp_transport_handle_t transport = stratum_transport_init_for_endpoint(&probe);
     if (transport != NULL) {
         char connect_host[M45_POOL_HOST_MAX + 1];
         stratum_connect_host_for_endpoint(&probe, connect_host, sizeof(connect_host));
@@ -1350,6 +1434,7 @@ static void stratum_maybe_probe_primary_pool(void)
     copy_pool_ip(g_primary_probe_args.cached_ip, sizeof(g_primary_probe_args.cached_ip),
                  config->pool_ip);
     g_primary_probe_args.port = config->pool_port;
+    g_primary_probe_args.tls = config->pool_tls;
     g_primary_probe_args.using_backup = false;
     atomic_store(&g_primary_probe_in_progress, true);
     if (xTaskCreate(stratum_primary_probe_task, "stratum_probe", 3072,
@@ -3152,22 +3237,23 @@ static void stratum_rx_task(void *arg)
             continue;
         }
 
-        esp_transport_handle_t transport = esp_transport_tcp_init();
-        if (transport == NULL) {
-            vTaskDelay(pdMS_TO_TICKS(STRATUM_RECONNECT_MS));
-            continue;
-        }
-
         stratum_endpoint_t endpoint = {0};
         select_next_pool_endpoint(&endpoint);
         set_active_pool_endpoint(&endpoint);
         stratum_maybe_prefetch_backup_pool_dns(&endpoint);
 
+        esp_transport_handle_t transport = stratum_transport_init_for_endpoint(&endpoint);
+        if (transport == NULL) {
+            vTaskDelay(pdMS_TO_TICKS(STRATUM_RECONNECT_MS));
+            continue;
+        }
+
         char connect_host[M45_POOL_HOST_MAX + 1];
         stratum_connect_host_for_endpoint(&endpoint, connect_host, sizeof(connect_host));
 
-        ESP_LOGI(TAG, "connecting to %s:%d via %s%s", endpoint.host, endpoint.port,
+        ESP_LOGI(TAG, "connecting to %s:%d via %s%s%s", endpoint.host, endpoint.port,
                  connect_host,
+                 endpoint.tls ? " tls" : "",
                  endpoint.using_backup ? " (backup)" : "");
         bool rotate_endpoint = false;
         reset_work_state(true);

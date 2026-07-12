@@ -90,7 +90,7 @@ Response fields:
 
 | Field | Type |
 | --- | --- |
-| `setup_mode`, `pool_password_set`, `pool_difficulty_auto` | boolean |
+| `setup_mode`, `pool_password_set`, `pool_difficulty_auto`, `pool_tls` | boolean |
 | `setup_ssid`, `setup_ip`, `wifi_ssid`, `pool_host`, `pool_user` | string |
 | `pool_port`, `pool_difficulty`, `pool_suggested_difficulty` | number |
 
@@ -109,6 +109,7 @@ Request body:
   "wifi_password": "password",
   "pool_host": "public-pool.io",
   "pool_port": 3333,
+  "pool_tls": false,
   "pool_user": "wallet.worker",
   "pool_pass": "x",
   "pool_difficulty_auto": true,
@@ -190,6 +191,7 @@ Response fields:
 | --- | --- | --- |
 | `wifi_ssid`, `hostname`, `pool_host`, `backup_pool_host`, `pool_user` | string | Saved string settings. |
 | `pool_port`, `backup_pool_port` | number | 1-65535. |
+| `pool_tls`, `backup_pool_tls` | boolean | Enables verified TLS for the primary or backup Stratum pool. |
 | `wifi_password_set`, `pool_password_set` | boolean | Password values are not returned. |
 | `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Pool difficulty settings. |
 | `overclock_enabled`, `auto_clock_enabled`, `auto_domain_reboot_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock is experimental and requires overclocking plus either fixed fan speed or no fan mode, and a high-current stable 5 V power supply with wiring/connectors rated for the configured current limits. Auto clock is capped at 1200 MHz and also blocks preset increases when cooling temperature headroom is too low, VIN is at or below 5.01 V, or the board is near configured TPS546 output-current and VR-temperature safety limits. Auto domain reboot is off by default; when enabled, the ASIC is power-cycled if a domain remains below 75% of expected per-domain hashrate for at least 60 seconds, and pending lost-domain recovery can tolerate missing ASIC temperature reads until the reboot runs. |
@@ -234,8 +236,10 @@ password values:
   "hostname": "M45-Firmware-aabbcc",
   "pool_host": "public-pool.io",
   "pool_port": 3333,
+  "pool_tls": false,
   "backup_pool_host": "public-pool.io",
   "backup_pool_port": 3333,
+  "backup_pool_tls": false,
   "pool_user": "wallet.worker",
   "pool_pass": "x",
   "pool_difficulty_auto": true,

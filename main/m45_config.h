@@ -65,6 +65,8 @@ typedef struct {
     char pool_pass[M45_POOL_PASS_MAX + 1];
     uint16_t pool_port;
     uint16_t backup_pool_port;
+    bool pool_tls;
+    bool backup_pool_tls;
     uint16_t pool_difficulty;
     bool pool_difficulty_auto;
     bool overclock_enabled;

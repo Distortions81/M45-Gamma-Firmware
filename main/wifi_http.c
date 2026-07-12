@@ -1054,11 +1054,13 @@ static bool active_pool_settings_changed(const m45_config_t *old_config,
     if (stats.using_backup_pool) {
         return settings_string_changed(old_config->backup_pool_host,
                                        new_config->backup_pool_host) ||
-               old_config->backup_pool_port != new_config->backup_pool_port;
+               old_config->backup_pool_port != new_config->backup_pool_port ||
+               old_config->backup_pool_tls != new_config->backup_pool_tls;
     }
 
     return settings_string_changed(old_config->pool_host, new_config->pool_host) ||
-           old_config->pool_port != new_config->pool_port;
+           old_config->pool_port != new_config->pool_port ||
+           old_config->pool_tls != new_config->pool_tls;
 }
 
 static bool pool_difficulty_settings_changed(const m45_config_t *old_config,
@@ -1786,8 +1788,10 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"hostname\":\"%s\","
                  "\"pool_host\":\"%s\","
                  "\"pool_port\":%u,"
+                 "\"pool_tls\":%s,"
                  "\"backup_pool_host\":\"%s\","
                  "\"backup_pool_port\":%u,"
+                 "\"backup_pool_tls\":%s,"
                  "\"pool_user\":\"%s\","
                  "\"wifi_password_set\":%s,"
                  "\"pool_password_set\":%s,"
@@ -1824,8 +1828,10 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
                  "\"limit_iout_warn_deciamps\":%u,"
                  "\"limit_iout_fault_deciamps\":%u"
                  "}",
-                 wifi_ssid, hostname, pool_host, config->pool_port, backup_pool_host,
-                 config->backup_pool_port, pool_user,
+                 wifi_ssid, hostname, pool_host, config->pool_port,
+                 config->pool_tls ? "true" : "false", backup_pool_host,
+                 config->backup_pool_port,
+                 config->backup_pool_tls ? "true" : "false", pool_user,
                  config->wifi_password[0] != '\0' ? "true" : "false",
                  config->pool_pass[0] != '\0' ? "true" : "false", config->pool_difficulty,
                  config->pool_difficulty_auto ? "true" : "false",
@@ -1892,6 +1898,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
                  "\"wifi_ssid\":\"%s\","
                  "\"pool_host\":\"%s\","
                  "\"pool_port\":%u,"
+                 "\"pool_tls\":%s,"
                  "\"pool_user\":\"%s\","
                  "\"pool_password_set\":%s,"
                  "\"pool_difficulty\":%u,"
@@ -1899,7 +1906,8 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
                  "\"pool_suggested_difficulty\":%u"
                  "}",
                  g_setup_ap_active ? "true" : "false", g_setup_ssid, g_setup_ip,
-                 wifi_ssid, pool_host, config->pool_port, pool_user,
+                 wifi_ssid, pool_host, config->pool_port,
+                 config->pool_tls ? "true" : "false", pool_user,
                  config->pool_pass[0] != '\0' ? "true" : "false",
                  config->pool_difficulty,
                  config->pool_difficulty_auto ? "true" : "false",
@@ -2240,6 +2248,7 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         json_get_string(json, "pool_user", config.pool_user, sizeof(config.pool_user), true) &&
         json_get_string(json, "pool_pass", config.pool_pass, sizeof(config.pool_pass), false) &&
         json_get_u16(json, "pool_port", &config.pool_port, 1, 65535) &&
+        json_get_optional_bool(json, "pool_tls", &config.pool_tls) &&
         json_get_optional_bool(json, "pool_difficulty_auto",
                                &config.pool_difficulty_auto) &&
         json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535);
@@ -2323,6 +2332,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         json_get_string(json, "pool_pass", config.pool_pass, sizeof(config.pool_pass), false) &&
         json_get_u16(json, "pool_port", &config.pool_port, 1, 65535) &&
         json_get_u16(json, "backup_pool_port", &config.backup_pool_port, 1, 65535) &&
+        json_get_optional_bool(json, "pool_tls", &config.pool_tls) &&
+        json_get_optional_bool(json, "backup_pool_tls", &config.backup_pool_tls) &&
         json_get_optional_bool(json, "pool_difficulty_auto",
                                &config.pool_difficulty_auto) &&
         json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535) &&
@@ -3270,7 +3281,7 @@ static esp_err_t espminer_system_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "stratumSuggestedDifficulty",
                             suggested_pool_difficulty);
     cJSON_AddBoolToObject(root, "stratumExtranonceSubscribe", true);
-    cJSON_AddNumberToObject(root, "stratumTLS", 0);
+    cJSON_AddNumberToObject(root, "stratumTLS", config->pool_tls ? 1 : 0);
     cJSON_AddStringToObject(root, "stratumCert", "");
     cJSON_AddBoolToObject(root, "stratumDecodeCoinbase", true);
     cJSON_AddStringToObject(root, "fallbackStratumURL", config->backup_pool_host);
@@ -3279,7 +3290,8 @@ static esp_err_t espminer_system_info_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "fallbackStratumSuggestedDifficulty",
                             suggested_pool_difficulty);
     cJSON_AddBoolToObject(root, "fallbackStratumExtranonceSubscribe", true);
-    cJSON_AddNumberToObject(root, "fallbackStratumTLS", 0);
+    cJSON_AddNumberToObject(root, "fallbackStratumTLS",
+                            config->backup_pool_tls ? 1 : 0);
     cJSON_AddStringToObject(root, "fallbackStratumCert", "");
     cJSON_AddBoolToObject(root, "fallbackStratumDecodeCoinbase", true);
     cJSON_AddStringToObject(root, "stratumProtocol", "SV1");
@@ -3728,6 +3740,9 @@ static bool espminer_apply_patch_json(cJSON *json, m45_config_t *config)
                                        65535) &&
         espminer_json_get_optional_u16(json, "fallbackStratumPort",
                                        &config->backup_pool_port, 1, 65535) &&
+        espminer_json_get_optional_bool(json, "stratumTLS", &config->pool_tls) &&
+        espminer_json_get_optional_bool(json, "fallbackStratumTLS",
+                                        &config->backup_pool_tls) &&
         espminer_json_get_optional_bool(json, "overclockEnabled",
                                         &config->overclock_enabled) &&
         espminer_json_get_optional_u16(json, "frequency",

@@ -27,6 +27,10 @@ menu "M45 Firmware"
         range 1 65535
         default 3333
 
+    config M45_BITAXE_STRATUM_TLS
+        bool "Use TLS for primary Stratum pool"
+        default n
+
     config M45_BITAXE_STRATUM_BACKUP_HOST
         string "Backup Stratum host"
         default "public-pool.io"
@@ -35,6 +39,10 @@ menu "M45 Firmware"
         int "Backup Stratum port"
         range 1 65535
         default 3333
+
+    config M45_BITAXE_STRATUM_BACKUP_TLS
+        bool "Use TLS for backup Stratum pool"
+        default n
 
     config M45_BITAXE_STRATUM_USER
         string "Stratum user"

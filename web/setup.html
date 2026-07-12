@@ -13,6 +13,7 @@
 <span id=status class=status></span></div></section><details class=panel><summary>Mining Pool</summary><div class=inside><div class=fields>
 <div class=field><label for=pool-host>Pool</label><input id=pool-host required></div>
 <div class=field><label for=pool-port>Port</label><input id=pool-port type=number min=1 max=65535 required></div>
+<label class=toggle-row for=pool-tls><input id=pool-tls type=checkbox><span class=label>TLS</span></label>
 <div class='field full'><label for=pool-user>Username (wallet.workername)</label><input id=pool-user required></div>
 <div class=field><label for=pool-pass>Password (Optional, normally just 'x')</label><input id=pool-pass type=password></div>
 <label class=toggle-row for=pool-diff-auto><input id=pool-diff-auto type=checkbox checked><span class=label>Auto Difficulty</span></label>
@@ -77,6 +78,7 @@ async function load(){try{const r=await fetch('/api/setup',{cache:'no-store'});
 const s=await r.json();if(!r.ok)throw new Error(s.error||r.status);
 $('setup-meta').textContent=`Network ${s.setup_ssid||'--'} | Address ${s.setup_ip||'--'}`;
 set('wifi-ssid',s.wifi_ssid);set('pool-host',s.pool_host);set('pool-port',s.pool_port||3333);
+$('pool-tls').checked=!!s.pool_tls;
 set('pool-user',s.pool_user);$('pool-diff').dataset.manual=s.pool_difficulty||1000;
 $('pool-diff').dataset.auto=s.pool_suggested_difficulty||s.pool_difficulty||1000;set('pool-diff',s.pool_difficulty||1000);
 $('pool-diff-auto').checked=s.pool_difficulty_auto!==false;syncPoolDiff();
@@ -87,6 +89,7 @@ $('setup-form').onsubmit=async e=>{e.preventDefault();if(!wifiReady()){status('t
 const btn=$('save');btn.disabled=true;status('saving...');
 const body={wifi_ssid:$('wifi-ssid').value.trim(),wifi_password:$('wifi-pass').value,
 pool_host:$('pool-host').value.trim(),pool_port:Number($('pool-port').value),
+pool_tls:$('pool-tls').checked,
 pool_user:$('pool-user').value.trim(),pool_difficulty_auto:$('pool-diff-auto').checked,
 pool_difficulty:Number(($('pool-diff-auto').checked?$('pool-diff').dataset.manual:$('pool-diff').value)||1000)};
 if($('pool-pass').value)body.pool_pass=$('pool-pass').value;

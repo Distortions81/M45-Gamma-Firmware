@@ -175,8 +175,10 @@
 <article class='panel wide'><div class=label>Pool</div><div class=settings-form>
 <div class=field><label for=cfg-pool-host>Primary Pool</label><input id=cfg-pool-host maxlength=96></div>
 <div class=field><label for=cfg-pool-port>Port</label><input id=cfg-pool-port type=number min=1 max=65535></div>
+<label class=toggle-row for=cfg-pool-tls><input id=cfg-pool-tls type=checkbox><span class=label>Primary TLS</span></label>
 <div class=field><label for=cfg-backup-pool-host>Backup Pool</label><input id=cfg-backup-pool-host maxlength=96></div>
 <div class=field><label for=cfg-backup-pool-port>Port</label><input id=cfg-backup-pool-port type=number min=1 max=65535></div>
+<label class=toggle-row for=cfg-backup-pool-tls><input id=cfg-backup-pool-tls type=checkbox><span class=label>Backup TLS</span></label>
 <div class=field><label for=cfg-pool-user>Username (wallet.workername)</label><input id=cfg-pool-user maxlength=128></div>
 <div class=field><label for=cfg-pool-pass>Password (Optional, normally just 'x')</label><input id=cfg-pool-pass type=password maxlength=64 placeholder='unchanged'></div>
 <label class=toggle-row for=cfg-pool-diff-auto><input id=cfg-pool-diff-auto type=checkbox checked><span class=label>Auto Difficulty</span></label>
@@ -590,6 +592,7 @@ async function loadSettings(){try{const r=await fetch('/api/settings',{cache:'no
 if(!r.ok)throw new Error(r.status);const c=await r.json();setVal('cfg-wifi-ssid',c.wifi_ssid);
 setVal('cfg-hostname',c.hostname);setVal('cfg-pool-host',c.pool_host);setVal('cfg-pool-port',c.pool_port);
 setVal('cfg-backup-pool-host',c.backup_pool_host);setVal('cfg-backup-pool-port',c.backup_pool_port);
+$('cfg-pool-tls').checked=!!c.pool_tls;$('cfg-backup-pool-tls').checked=!!c.backup_pool_tls;
 setVal('cfg-pool-user',c.pool_user);$('cfg-pool-diff').dataset.manual=c.pool_difficulty||1000;
 $('cfg-pool-diff').dataset.auto=c.pool_suggested_difficulty||c.pool_difficulty||1000;setVal('cfg-pool-diff',c.pool_difficulty);
 $('cfg-pool-diff-auto').checked=c.pool_difficulty_auto!==false;syncPoolDifficulty();
@@ -649,6 +652,7 @@ const sleepMax=Number($('cfg-display-sleep-minutes').max)||65535;
 const sleepMinutes=clamp(Number(val('cfg-display-sleep-minutes'))||15,1,sleepMax);
 const body={wifi_ssid:val('cfg-wifi-ssid'),hostname:val('cfg-hostname'),pool_host:val('cfg-pool-host'),
 pool_port:Number(val('cfg-pool-port')),backup_pool_host:val('cfg-backup-pool-host'),backup_pool_port:Number(val('cfg-backup-pool-port')),
+pool_tls:$('cfg-pool-tls').checked,backup_pool_tls:$('cfg-backup-pool-tls').checked,
 pool_user:val('cfg-pool-user'),pool_difficulty_auto:$('cfg-pool-diff-auto').checked,
 pool_difficulty:Number(($('cfg-pool-diff-auto').checked?$('cfg-pool-diff').dataset.manual:val('cfg-pool-diff'))||1000),
 display_screensaver_enabled:$('cfg-display-screensaver').checked,display_sleep_minutes:sleepMode==='off'?0:sleepMinutes,

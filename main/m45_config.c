@@ -31,6 +31,16 @@
 #ifndef CONFIG_M45_BITAXE_STRATUM_BACKUP_PORT
 #define CONFIG_M45_BITAXE_STRATUM_BACKUP_PORT 3333
 #endif
+#ifdef CONFIG_M45_BITAXE_STRATUM_TLS
+#define M45_DEFAULT_POOL_TLS true
+#else
+#define M45_DEFAULT_POOL_TLS false
+#endif
+#ifdef CONFIG_M45_BITAXE_STRATUM_BACKUP_TLS
+#define M45_DEFAULT_BACKUP_POOL_TLS true
+#else
+#define M45_DEFAULT_BACKUP_POOL_TLS false
+#endif
 #ifdef CONFIG_M45_BITAXE_STRATUM_DIFFICULTY_AUTO
 #define M45_DEFAULT_POOL_DIFFICULTY_AUTO true
 #else
@@ -124,6 +134,8 @@ static void set_defaults(m45_config_t *config)
     strlcpy(config->pool_pass, CONFIG_M45_BITAXE_STRATUM_PASS, sizeof(config->pool_pass));
     config->pool_port = CONFIG_M45_BITAXE_STRATUM_PORT;
     config->backup_pool_port = CONFIG_M45_BITAXE_STRATUM_BACKUP_PORT;
+    config->pool_tls = M45_DEFAULT_POOL_TLS;
+    config->backup_pool_tls = M45_DEFAULT_BACKUP_POOL_TLS;
     config->pool_difficulty = CONFIG_M45_BITAXE_STRATUM_SUGGESTED_DIFFICULTY;
     config->pool_difficulty_auto = M45_DEFAULT_POOL_DIFFICULTY_AUTO;
     config->overclock_enabled = false;
@@ -428,6 +440,12 @@ esp_err_t m45_config_load(void)
     load_string(nvs, "pool_pass", g_config.pool_pass, sizeof(g_config.pool_pass));
     load_u16(nvs, "pool_port", &g_config.pool_port);
     load_u16(nvs, "pool_bak_port", &g_config.backup_pool_port);
+    uint8_t pool_tls = g_config.pool_tls ? 1 : 0;
+    load_u8(nvs, "pool_tls", &pool_tls);
+    g_config.pool_tls = pool_tls != 0;
+    uint8_t backup_pool_tls = g_config.backup_pool_tls ? 1 : 0;
+    load_u8(nvs, "pool_bak_tls", &backup_pool_tls);
+    g_config.backup_pool_tls = backup_pool_tls != 0;
     load_u16(nvs, "pool_diff", &g_config.pool_difficulty);
     uint8_t pool_difficulty_auto = g_config.pool_difficulty_auto ? 1 : 0;
     load_u8(nvs, "pool_diff_auto", &pool_difficulty_auto);
@@ -537,6 +555,12 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "pool_bak_port", clean.backup_pool_port);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "pool_tls", clean.pool_tls ? 1 : 0);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "pool_bak_tls", clean.backup_pool_tls ? 1 : 0);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "pool_diff", clean.pool_difficulty);
