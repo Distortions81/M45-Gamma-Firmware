@@ -445,18 +445,23 @@ function auxPools(){return auxPoolRows().map(auxPoolFromRow)}
 function auxPoolPayload(){return auxPools().map(p=>({host:p.host,port:p.port,tls:p.tls,enabled:p.enabled,
 share_percent:p.share_percent,user:p.user,pass:p.pass,password_inherit:p.password_inherit}))}
 function syncAuxPoolPassword(row){const input=auxField(row,'pass'),inherit=auxField(row,'pass-inherit').checked;
-input.disabled=inherit;if(inherit){input.value='';input.placeholder='same as primary'}else if(!input.placeholder||input.placeholder==='same as primary')input.placeholder='unchanged'}
+input.disabled=!auxField(row,'enabled').checked||inherit;if(inherit){input.value='';input.placeholder='same as primary'}else if(!input.placeholder||input.placeholder==='same as primary')input.placeholder='unchanged'}
+function auxPoolRemainingShare(row=null){return Math.max(0,100-auxPoolRows().reduce((sum,r)=>r!==row&&auxField(r,'enabled').checked?sum+(Number(auxField(r,'percent').value.trim())||0):sum,0))}
+function defaultAuxPoolShare(row=null){const remaining=auxPoolRemainingShare(row);return remaining>=10?10:remaining}
+function syncAuxPoolEnabled(row){const enabled=auxField(row,'enabled').checked,state=row.querySelector('.aux-pool-state');
+if(enabled&&(Number(auxField(row,'percent').value.trim())||0)<=0)auxField(row,'percent').value=defaultAuxPoolShare(row);
+row.classList.toggle('aux-pool-disabled',!enabled);if(state){state.className=`pill aux-pool-state ${enabled?'ok':''}`.trim();state.textContent=enabled?'Enabled':'Disabled'}
+['host','port','tls','percent','user','pass-inherit'].forEach(name=>{auxField(row,name).disabled=!enabled});syncAuxPoolPassword(row)}
 function setAuxPoolRow(row,p={}){row.dataset.passwordSet=p.password_set?'1':'0';auxField(row,'enabled').checked=!!p.enabled;
 auxField(row,'host').value=p.host||'';auxField(row,'port').value=p.port||3333;auxField(row,'tls').checked=!!p.tls;
 auxField(row,'percent').value=p.share_percent||0;auxField(row,'user').value=p.user||'';auxField(row,'pass').value=p.pass||'';
 const inherit=p.password_inherit!==undefined?!!p.password_inherit:!p.password_set;auxField(row,'pass-inherit').checked=inherit;
-auxField(row,'pass').placeholder=p.password_set?'Saved password':'same as primary';syncAuxPoolPassword(row)}
+auxField(row,'pass').placeholder=p.password_set?'Saved password':'same as primary';syncAuxPoolEnabled(row)}
 function renderAuxPools(pools=[]){const list=$('cfg-aux-pools');list.textContent='';
 pools.slice(0,AUX_POOL_COUNT).forEach((p,i)=>list.appendChild(createAuxPoolRow(p,i)));syncPoolMode()}
 function setAuxPools(pools=[]){renderAuxPools(pools.filter(auxPoolConfigured))}
 function createAuxPoolRow(p={},i=0){const row=document.createElement('div');row.className='aux-pool-row';
-row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title>Auxiliary Pool ${i+1}</div><button class='danger aux-pool-delete' type=button>Delete</button></div>
-<label class=toggle-row for=cfg-aux-pool-${i}-enabled><input id=cfg-aux-pool-${i}-enabled data-aux-field=enabled type=checkbox><span class=label>Enabled</span></label>
+row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title-group><div class=aux-pool-title>Auxiliary Pool ${i+1}</div><span class='pill aux-pool-state'>Disabled</span></div><label class=aux-pool-enable for=cfg-aux-pool-${i}-enabled><input id=cfg-aux-pool-${i}-enabled data-aux-field=enabled type=checkbox><span>Enabled</span></label><button class='danger aux-pool-delete' type=button>Delete</button></div>
 <label class=toggle-row for=cfg-aux-pool-${i}-tls><input id=cfg-aux-pool-${i}-tls data-aux-field=tls type=checkbox><span class=label>TLS</span></label>
 <div class=field><label for=cfg-aux-pool-${i}-host>Pool</label><input id=cfg-aux-pool-${i}-host data-aux-field=host maxlength=96></div>
 <div class=field><label for=cfg-aux-pool-${i}-port>Port</label><input id=cfg-aux-pool-${i}-port data-aux-field=port type=number min=1 max=65535></div>
@@ -466,6 +471,7 @@ row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title>Auxiliary Pool
 <label class='toggle-row aux-pool-wide' for=cfg-aux-pool-${i}-pass-inherit><input id=cfg-aux-pool-${i}-pass-inherit data-aux-field=pass-inherit type=checkbox><span class=label>Use Primary Password</span></label>`;
 setAuxPoolRow(row,p);['enabled','host','port','tls','percent'].forEach(name=>{
 const el=auxField(row,name);el.addEventListener('input',syncAuxPoolShare);el.addEventListener('change',syncAuxPoolShare)});
+auxField(row,'enabled').addEventListener('change',()=>syncAuxPoolEnabled(row));
 auxField(row,'pass-inherit').addEventListener('change',()=>syncAuxPoolPassword(row));
 row.querySelector('.aux-pool-delete').onclick=()=>{const pools=auxPools();pools.splice(i,1);renderAuxPools(pools)};
 return row}
@@ -709,7 +715,8 @@ $('cfg-display-sleep-mode').onchange=syncDisplaySleep;$('cfg-display-sleep-minut
 $('cfg-pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.value};
 $('cfg-pool-diff-auto').onchange=syncPoolDifficulty;
 $('cfg-pool-mode').onchange=syncPoolMode;
-$('cfg-add-aux-pool').onclick=()=>{if(auxPools().length<AUX_POOL_COUNT)renderAuxPools([...auxPools(),{port:3333,password_inherit:true}])};
+$('cfg-add-aux-pool').onclick=()=>{const share=defaultAuxPoolShare();
+if(auxPools().length<AUX_POOL_COUNT)renderAuxPools([...auxPools(),{port:3333,enabled:share>0,share_percent:share,password_inherit:true}])};
 $('oc-limits-defaults').onclick=setDefaultLimits;
 $('limit-unrestricted').onchange=e=>setLimitRangeMode(e.currentTarget.checked,true);
 $('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){$('cfg-overclock-enabled').checked=false;

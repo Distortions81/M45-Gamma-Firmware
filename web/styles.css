@@ -131,8 +131,11 @@ padding-top:14px;border-top:1px solid var(--line)}
 .aux-pool-toolbar .secondary{height:32px}.aux-pools{grid-column:1/-1;display:grid;gap:0}
 .aux-pool-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px 0;border-top:1px solid var(--line)}
 .aux-pool-row:first-child{padding-top:0;border-top:0}.aux-pool-head{grid-column:1/-1;display:flex;
-align-items:center;justify-content:space-between;gap:12px}.aux-pool-title{font-size:14px;font-weight:760;color:var(--text)}
-.aux-pool-delete{height:30px;padding:0 10px}.aux-pool-row .toggle-row{grid-column:auto;padding:0}
+align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.aux-pool-title-group{display:flex;align-items:center;gap:8px;min-width:0}
+.aux-pool-title{font-size:14px;font-weight:760;color:var(--text)}.aux-pool-state{font-size:10px}
+.aux-pool-enable{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
+.aux-pool-enable input{width:18px;height:18px;margin:0}.aux-pool-delete{height:30px;padding:0 10px}
+.aux-pool-row .toggle-row{grid-column:auto;padding:0}.aux-pool-disabled .field,.aux-pool-disabled .toggle-row{opacity:.48}
 .aux-pool-row .aux-pool-wide{grid-column:1/-1}
 .fan-presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
 .fan-presets button{height:28px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--muted);

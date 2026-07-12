@@ -411,6 +411,15 @@ static void copy_pool_ip(char *dest, size_t dest_len, const char *ip)
     copy_pool_host(dest, dest_len, ip);
 }
 
+static bool pool_ip4_usable_addr(const struct in_addr *addr)
+{
+    if (addr == NULL) {
+        return false;
+    }
+    return addr->s_addr != htonl(INADDR_ANY) &&
+           addr->s_addr != htonl(INADDR_BROADCAST);
+}
+
 static bool pool_id_valid(uint8_t pool_id)
 {
     return pool_id < STRATUM_POOL_SESSION_MAX;
@@ -440,6 +449,21 @@ static const char *pool_id_name(uint8_t pool_id)
         return "main";
     }
     return pool_id_is_aux(pool_id) ? "aux" : "unknown";
+}
+
+static void pool_id_label(uint8_t pool_id, char *dest, size_t dest_len)
+{
+    if (dest_len == 0) {
+        return;
+    }
+    if (pool_id == STRATUM_PRIMARY_POOL_ID) {
+        strlcpy(dest, "main", dest_len);
+    } else if (pool_id_is_aux(pool_id)) {
+        snprintf(dest, dest_len, "aux %u",
+                 (unsigned)(pool_id - STRATUM_AUX_POOL_ID_BASE + 1U));
+    } else {
+        strlcpy(dest, "unknown", dest_len);
+    }
 }
 
 static void pool_credentials(uint8_t pool_id, char *user, size_t user_len,
@@ -738,7 +762,8 @@ static bool select_next_pool_endpoint(uint8_t pool_id, stratum_endpoint_t *endpo
 static bool stratum_host_is_ip4(const char *host, char *ip, size_t ip_size)
 {
     struct in_addr addr;
-    if (host == NULL || inet_pton(AF_INET, host, &addr) != 1) {
+    if (host == NULL || inet_pton(AF_INET, host, &addr) != 1 ||
+        !pool_ip4_usable_addr(&addr)) {
         return false;
     }
     copy_pool_ip(ip, ip_size, host);
@@ -746,10 +771,14 @@ static bool stratum_host_is_ip4(const char *host, char *ip, size_t ip_size)
 }
 
 static bool stratum_resolve_endpoint_ip4(const stratum_endpoint_t *endpoint,
-                                         char *ip, size_t ip_size)
+                                         char *ip, size_t ip_size,
+                                         bool *unusable_result)
 {
     if (endpoint == NULL || endpoint->host[0] == '\0' || ip == NULL || ip_size == 0) {
         return false;
+    }
+    if (unusable_result != NULL) {
+        *unusable_result = false;
     }
 
     if (stratum_host_is_ip4(endpoint->host, ip, ip_size)) {
@@ -779,14 +808,21 @@ static bool stratum_resolve_endpoint_ip4(const stratum_endpoint_t *endpoint,
     }
 
     bool resolved = false;
+    char unusable_ip[M45_POOL_IP_MAX + 1] = "";
     for (struct addrinfo *entry = result; entry != NULL; entry = entry->ai_next) {
         if (entry->ai_family != AF_INET || entry->ai_addr == NULL) {
             continue;
         }
         const struct sockaddr_in *addr = (const struct sockaddr_in *)entry->ai_addr;
-        if (inet_ntop(AF_INET, &addr->sin_addr, ip, ip_size) != NULL) {
+        char candidate[M45_POOL_IP_MAX + 1] = "";
+        if (inet_ntop(AF_INET, &addr->sin_addr, candidate, sizeof(candidate)) != NULL &&
+            pool_ip4_usable_addr(&addr->sin_addr)) {
+            copy_pool_ip(ip, ip_size, candidate);
             resolved = true;
             break;
+        }
+        if (candidate[0] != '\0' && unusable_ip[0] == '\0') {
+            copy_pool_ip(unusable_ip, sizeof(unusable_ip), candidate);
         }
     }
     freeaddrinfo(result);
@@ -806,32 +842,46 @@ static bool stratum_resolve_endpoint_ip4(const stratum_endpoint_t *endpoint,
         } else {
             STRATUM_LOGI("DNS %s -> %s", endpoint->host, ip);
         }
+    } else if (unusable_ip[0] != '\0') {
+        if (unusable_result != NULL) {
+            *unusable_result = true;
+        }
+        set_pool_note(endpoint->pool_id, "DNS returned unusable IP %s for %s",
+                      unusable_ip, endpoint->host);
+        ESP_LOGW(TAG, "DNS returned unusable IP %s for %s", unusable_ip,
+                 endpoint->host);
     }
     return resolved;
 }
 
-static void stratum_connect_host_for_endpoint(const stratum_endpoint_t *endpoint,
+static bool stratum_connect_host_for_endpoint(const stratum_endpoint_t *endpoint,
                                               char *host, size_t host_size)
 {
     if (endpoint != NULL && endpoint->tls) {
         copy_pool_host(host, host_size, endpoint->host);
-        return;
+        return true;
     }
 
     char resolved_ip[M45_POOL_IP_MAX + 1];
-    if (stratum_resolve_endpoint_ip4(endpoint, resolved_ip, sizeof(resolved_ip))) {
+    bool unusable_result = false;
+    if (stratum_resolve_endpoint_ip4(endpoint, resolved_ip, sizeof(resolved_ip),
+                                     &unusable_result)) {
         copy_pool_ip(host, host_size, resolved_ip);
-        return;
+        return true;
     }
 
-    if (endpoint != NULL && endpoint->cached_ip[0] != '\0') {
+    if (endpoint != NULL && stratum_host_is_ip4(endpoint->cached_ip, host, host_size)) {
         ESP_LOGW(TAG, "DNS failed for %s; using cached IP %s", endpoint->host,
                  endpoint->cached_ip);
-        copy_pool_ip(host, host_size, endpoint->cached_ip);
-        return;
+        return true;
+    }
+    if (unusable_result) {
+        host[0] = '\0';
+        return false;
     }
 
     copy_pool_host(host, host_size, endpoint != NULL ? endpoint->host : "");
+    return true;
 }
 
 static void stratum_maybe_prefetch_backup_pool_dns(const stratum_endpoint_t *current)
@@ -859,7 +909,7 @@ static void stratum_maybe_prefetch_backup_pool_dns(const stratum_endpoint_t *cur
     copy_pool_ip(backup.cached_ip, sizeof(backup.cached_ip), config->backup_pool_ip);
 
     char resolved_ip[M45_POOL_IP_MAX + 1];
-    (void)stratum_resolve_endpoint_ip4(&backup, resolved_ip, sizeof(resolved_ip));
+    (void)stratum_resolve_endpoint_ip4(&backup, resolved_ip, sizeof(resolved_ip), NULL);
 }
 
 static void rotate_next_pool_endpoint(void)
@@ -1986,8 +2036,9 @@ static void stratum_primary_probe_task(void *arg)
     esp_transport_handle_t transport = stratum_transport_init_for_endpoint(&probe);
     if (transport != NULL) {
         char connect_host[M45_POOL_HOST_MAX + 1];
-        stratum_connect_host_for_endpoint(&probe, connect_host, sizeof(connect_host));
-        if (esp_transport_connect(transport, connect_host, probe.port,
+        if (stratum_connect_host_for_endpoint(&probe, connect_host,
+                                              sizeof(connect_host)) &&
+            esp_transport_connect(transport, connect_host, probe.port,
                                   TRANSPORT_TIMEOUT_MS) >= 0) {
             stratum_enable_tcp_nodelay(transport);
             reachable = true;
@@ -4097,18 +4148,37 @@ static void stratum_rx_task(void *arg)
 
         esp_transport_handle_t transport = stratum_transport_init_for_endpoint(&endpoint);
         if (transport == NULL) {
+            set_pool_note(pool_id, "transport init failed: %s:%u", endpoint.host,
+                          endpoint.port);
             vTaskDelay(pdMS_TO_TICKS(STRATUM_RECONNECT_MS));
             continue;
         }
 
         char connect_host[M45_POOL_HOST_MAX + 1];
-        stratum_connect_host_for_endpoint(&endpoint, connect_host, sizeof(connect_host));
-
-        ESP_LOGI(TAG, "connecting to %s:%d via %s%s%s", endpoint.host, endpoint.port,
-                 connect_host,
+        char pool_label[16];
+        pool_id_label(pool_id, pool_label, sizeof(pool_label));
+        bool rotate_endpoint = false;
+        if (!stratum_connect_host_for_endpoint(&endpoint, connect_host,
+                                               sizeof(connect_host))) {
+            ESP_LOGW(TAG, "%s pool DNS unusable for %s", pool_label,
+                     endpoint.host);
+            esp_transport_destroy(transport);
+            set_session_disconnected(pool_id, pool_id == STRATUM_PRIMARY_POOL_ID);
+            rotate_endpoint = true;
+            if (pool_id == STRATUM_PRIMARY_POOL_ID) {
+                if (atomic_exchange(&g_switch_to_primary_requested, false)) {
+                    atomic_store(&g_next_using_backup_pool, false);
+                } else if (rotate_endpoint) {
+                    rotate_next_pool_endpoint();
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(STRATUM_RECONNECT_MS));
+            continue;
+        }
+        ESP_LOGI(TAG, "connecting %s pool to %s:%d via %s%s%s", pool_label,
+                 endpoint.host, endpoint.port, connect_host,
                  endpoint.tls ? " tls" : "",
                  endpoint.using_backup ? " (backup)" : "");
-        bool rotate_endpoint = false;
         if (pool_id == STRATUM_PRIMARY_POOL_ID) {
             reset_pool_or_single_work_state(pool_id, true, true);
             g_state->extranonce_2_len = 0;
@@ -4117,8 +4187,27 @@ static void stratum_rx_task(void *arg)
         if (ret >= 0) {
             stratum_enable_tcp_nodelay(transport);
         }
-        if (ret < 0 || send_setup_messages(pool_id, transport) != ESP_OK) {
-            ESP_LOGW(TAG, "%s pool connect/setup failed", pool_id_name(pool_id));
+        if (ret < 0) {
+            set_pool_note(pool_id, "connect failed: %s:%u via %s", endpoint.host,
+                          endpoint.port, connect_host);
+            ESP_LOGW(TAG, "%s pool connect failed", pool_label);
+            esp_transport_destroy(transport);
+            set_session_disconnected(pool_id, pool_id == STRATUM_PRIMARY_POOL_ID);
+            rotate_endpoint = true;
+            if (pool_id == STRATUM_PRIMARY_POOL_ID) {
+                if (atomic_exchange(&g_switch_to_primary_requested, false)) {
+                    atomic_store(&g_next_using_backup_pool, false);
+                } else if (rotate_endpoint) {
+                    rotate_next_pool_endpoint();
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(STRATUM_RECONNECT_MS));
+            continue;
+        }
+        if (send_setup_messages(pool_id, transport) != ESP_OK) {
+            set_pool_note(pool_id, "setup failed: %s:%u", endpoint.host,
+                          endpoint.port);
+            ESP_LOGW(TAG, "%s pool setup failed", pool_label);
             esp_transport_destroy(transport);
             set_session_disconnected(pool_id, pool_id == STRATUM_PRIMARY_POOL_ID);
             rotate_endpoint = true;
