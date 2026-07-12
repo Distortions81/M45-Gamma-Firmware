@@ -363,9 +363,9 @@ if(st==='low')return'Warning: wallet receives less than 97% of coinbase outputs.
 if(st==='unsupported')return'Coinbase payout check unavailable for this wallet address.';
 if(st==='parse_error')return'Coinbase payout check could not parse the coinbase transaction.';
 if(st==='ok')return'Coinbase payout matches wallet.';return'Coinbase payout has not been checked yet.'}
-function setPayoutPanel(s){const st=s.payout_status||'unchecked',pct=payoutPercent(s),panel=$('payout-panel');
+function setPayoutPanel(s){const st=s.payout_status||'unchecked',pct=payoutPercent(s),panel=$('payout-panel'),hidden=!!s.multi_pool_enabled;
 const cls=st==='ok'?'ok':st==='missing'||st==='low'?'bad':st==='unchecked'?'':'warn';
-panel.className=`panel full payout-panel ${cls}`.trim();txt('payout-warning',payoutStatusText(st));
+panel.className=`panel full payout-panel ${hidden?'hidden ':''}${cls}`.trim();txt('payout-warning',payoutStatusText(st));
 txt('payout-percent',st!=='unchecked'&&pct?`${pct} to configured wallet`:'');$('payout-percent').classList.toggle('hidden',!(st!=='unchecked'&&pct))}
 function expectedHashValue(s){const er=rate(s.expected_hashrate_ghs);return er[0]==='--'?'--':`${er[0]} ${er[1]}`.trim()}
 function syncFanPresetButtons(){const group=$('cfg-fan-presets');if(!group)return;
@@ -1048,7 +1048,7 @@ txt('rejected',fmt(s.shares_rejected));txt('difficulty',diffText(s.pool_difficul
 txt('shares-min',sharesPerMinute(s));
 const rt=num(s.stratum_response_ms);txt('stratum-response',rt>0?`${n(rt,0)} ms`:'--');
 txt('job-latency',jobLatencyText(s));
-const pi=payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
+const pi=s.multi_pool_enabled?{label:'Multi-pool',cls:''}:payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
 setPayoutPanel(s);
 const ns=nonceErrorStats(s);txt('nonce-error-rate',ns.pct);txt('hash-lost',ns.lost);
 txt('expected-hashrate',expectedHashValue(s));
