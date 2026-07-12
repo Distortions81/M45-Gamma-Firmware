@@ -518,6 +518,20 @@ static bool pool_session_configured(const m45_config_t *config, uint8_t pool_id)
     return aux_pool_configured(config, pool_id);
 }
 
+static bool pool_status_configured(const m45_config_t *config, uint8_t pool_id)
+{
+    if (pool_id == STRATUM_PRIMARY_POOL_ID) {
+        return pool_session_configured(config, pool_id);
+    }
+    if (config == NULL || !config->multi_pool_enabled || !pool_id_is_aux(pool_id)) {
+        return false;
+    }
+
+    const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
+    const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
+    return aux->host[0] != '\0' && aux->port > 0;
+}
+
 static uint8_t configured_pool_share_percent(const m45_config_t *config, uint8_t pool_id)
 {
     if (config == NULL || !config->multi_pool_enabled) {
@@ -2424,6 +2438,7 @@ static char *receive_jsonrpc_line(uint8_t pool_id, esp_transport_handle_t transp
                                   size_t *consumed_len)
 {
     if (rx_buffer_reserve(pool_id, STRATUM_BUFFER_SIZE) != ESP_OK) {
+        set_pool_note(pool_id, "rx buffer init failed");
         return NULL;
     }
     if (consumed_len != NULL) {
@@ -2433,10 +2448,23 @@ static char *receive_jsonrpc_line(uint8_t pool_id, esp_transport_handle_t transp
     uint64_t last_activity_us = (uint64_t)esp_timer_get_time();
     while (memchr(g_rx_buffer[pool_id], '\n', g_rx_buffer_len[pool_id]) == NULL) {
         char recv_buffer[STRATUM_BUFFER_SIZE];
+        errno = 0;
         const int nbytes = esp_transport_read(transport, recv_buffer, sizeof(recv_buffer),
                                               TRANSPORT_TIMEOUT_MS);
         if (nbytes < 0) {
-            ESP_LOGE(TAG, "stratum read failed: %d", nbytes);
+            const int read_errno = errno;
+            char pool_label[16];
+            pool_id_label(pool_id, pool_label, sizeof(pool_label));
+            if (read_errno != 0) {
+                ESP_LOGE(TAG, "%s pool stratum read failed: %d errno=%d",
+                         pool_label, nbytes, read_errno);
+                set_pool_note(pool_id, "read failed: %d errno=%d", nbytes,
+                              read_errno);
+            } else {
+                ESP_LOGE(TAG, "%s pool stratum read failed: %d", pool_label,
+                         nbytes);
+                set_pool_note(pool_id, "read failed: %d", nbytes);
+            }
             g_rx_buffer_len[pool_id] = 0;
             return NULL;
         }
@@ -2452,7 +2480,11 @@ static char *receive_jsonrpc_line(uint8_t pool_id, esp_transport_handle_t transp
             const uint64_t now_us = (uint64_t)esp_timer_get_time();
             if (now_us - last_activity_us >
                 (uint64_t)STRATUM_IDLE_TIMEOUT_MS * 1000ULL) {
-                ESP_LOGW(TAG, "stratum idle timeout");
+                char pool_label[16];
+                pool_id_label(pool_id, pool_label, sizeof(pool_label));
+                ESP_LOGW(TAG, "%s pool stratum idle timeout", pool_label);
+                set_pool_note(pool_id, "idle timeout after %u sec",
+                              (unsigned)(STRATUM_IDLE_TIMEOUT_MS / 1000));
                 g_rx_buffer_len[pool_id] = 0;
                 return NULL;
             }
@@ -2464,6 +2496,8 @@ static char *receive_jsonrpc_line(uint8_t pool_id, esp_transport_handle_t transp
             rx_buffer_reserve(pool_id, g_rx_buffer_len[pool_id] + (size_t)nbytes + 1);
         if (reserve_err != ESP_OK) {
             ESP_LOGE(TAG, "stratum rx buffer failed: %s", esp_err_to_name(reserve_err));
+            set_pool_note(pool_id, "rx buffer failed: %s",
+                          esp_err_to_name(reserve_err));
             g_rx_buffer_len[pool_id] = 0;
             return NULL;
         }
@@ -4309,7 +4343,7 @@ static void stratum_rx_task(void *arg)
         if (pool_id == STRATUM_PRIMARY_POOL_ID) {
             g_state->transport = transport;
         }
-        ESP_LOGI(TAG, "%s pool connected", pool_id_name(pool_id));
+        ESP_LOGI(TAG, "%s pool connected", pool_label);
 
         while (wifi_http_connected()) {
             if (pool_id == STRATUM_PRIMARY_POOL_ID) {
@@ -4338,7 +4372,7 @@ static void stratum_rx_task(void *arg)
         }
         set_session_disconnected(pool_id, pool_id == STRATUM_PRIMARY_POOL_ID);
         esp_transport_destroy(transport);
-        ESP_LOGW(TAG, "%s pool disconnected", pool_id_name(pool_id));
+        ESP_LOGW(TAG, "%s pool disconnected", pool_label);
         if (pool_id == STRATUM_PRIMARY_POOL_ID) {
             if (atomic_exchange(&g_switch_to_primary_requested, false)) {
                 atomic_store(&g_next_using_backup_pool, false);
@@ -5358,7 +5392,8 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
     memset(status, 0, sizeof(*status));
     status->pool_id = pool_id;
     status->auxiliary = pool_id_is_aux(pool_id);
-    status->configured = pool_session_configured(config, pool_id);
+    const bool session_configured = pool_session_configured(config, pool_id);
+    status->configured = pool_status_configured(config, pool_id);
     if (!status->configured) {
         return;
     }
@@ -5391,6 +5426,24 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
             status->pool_port = session->endpoint.port;
         }
         xSemaphoreGive(g_transport_lock);
+    }
+    if (!session_configured) {
+        status->connected = false;
+        status->disabled = true;
+        if (pool_id_is_aux(pool_id)) {
+            const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
+            const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
+            if (!aux->enabled) {
+                copy_pool_host(status->note, sizeof(status->note),
+                               "disabled in settings");
+            } else if (aux->share_percent == 0) {
+                copy_pool_host(status->note, sizeof(status->note),
+                               "share is 0%");
+            } else {
+                copy_pool_host(status->note, sizeof(status->note),
+                               "not active");
+            }
+        }
     }
 
     if (status->connected && connected_since_us > 0) {
