@@ -1,4 +1,4 @@
-# M45 Gamma Firmware [ALPHA]
+# M45 Gamma Firmware
 
 ![M45 Bitaxe web dashboard](docs/screenshots/dashboard.png)
 
