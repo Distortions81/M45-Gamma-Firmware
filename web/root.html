@@ -181,13 +181,13 @@
 <div class=field><label for=cfg-backup-pool-host>Backup Pool</label><input id=cfg-backup-pool-host maxlength=96></div>
 <div class=field><label for=cfg-backup-pool-port>Port</label><input id=cfg-backup-pool-port type=number min=1 max=65535></div>
 <label class=toggle-row for=cfg-backup-pool-tls><input id=cfg-backup-pool-tls type=checkbox><span class=label>Backup TLS</span></label>
+<div class=field><label for=cfg-pool-user>Username (wallet.workername)</label><input id=cfg-pool-user maxlength=128></div>
+<div class=field><label for=cfg-pool-pass>Password (Optional, normally just 'x')</label><input id=cfg-pool-pass type=password maxlength=64 placeholder='unchanged'></div>
 <div class=field><label for=cfg-pool-mode>Pool Mode</label><select id=cfg-pool-mode>
 <option value=single>Single</option><option value=multi>Multi-pool</option></select></div>
 <div class='aux-pool-toolbar aux-pool-field'><div class=label>Auxiliary Pools</div><button id=cfg-add-aux-pool class=secondary type=button>Add Pool</button></div>
 <div id=cfg-aux-pools class='aux-pools aux-pool-field'></div>
 <div class='formula-note aux-pool-field' id=cfg-main-pool-share>Main/backup share: 100%</div>
-<div class=field><label for=cfg-pool-user>Username (wallet.workername)</label><input id=cfg-pool-user maxlength=128></div>
-<div class=field><label for=cfg-pool-pass>Password (Optional, normally just 'x')</label><input id=cfg-pool-pass type=password maxlength=64 placeholder='unchanged'></div>
 <label class=toggle-row for=cfg-pool-diff-auto><input id=cfg-pool-diff-auto type=checkbox checked><span class=label>Auto Difficulty</span></label>
 <div id=cfg-pool-diff-field class=field><label for=cfg-pool-diff>Difficulty</label><input id=cfg-pool-diff type=number min=1 max=65535></div>
 </div></article>
@@ -461,8 +461,8 @@ row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title>Auxiliary Pool
 <div class=field><label for=cfg-aux-pool-${i}-host>Pool</label><input id=cfg-aux-pool-${i}-host data-aux-field=host maxlength=96></div>
 <div class=field><label for=cfg-aux-pool-${i}-port>Port</label><input id=cfg-aux-pool-${i}-port data-aux-field=port type=number min=1 max=65535></div>
 <div class=field><label for=cfg-aux-pool-${i}-percent>Share %</label><input id=cfg-aux-pool-${i}-percent data-aux-field=percent type=number min=0 max=100></div>
-<div class=field><label for=cfg-aux-pool-${i}-user>Username</label><input id=cfg-aux-pool-${i}-user data-aux-field=user maxlength=128 placeholder='same as primary'></div>
-<div class=field><label for=cfg-aux-pool-${i}-pass>Password</label><input id=cfg-aux-pool-${i}-pass data-aux-field=pass type=password maxlength=64 placeholder='same as primary'></div>
+<div class=field><label for=cfg-aux-pool-${i}-user>Username Override</label><input id=cfg-aux-pool-${i}-user data-aux-field=user maxlength=128 placeholder='same as primary'></div>
+<div class=field><label for=cfg-aux-pool-${i}-pass>Password Override</label><input id=cfg-aux-pool-${i}-pass data-aux-field=pass type=password maxlength=64 placeholder='same as primary'></div>
 <label class='toggle-row aux-pool-wide' for=cfg-aux-pool-${i}-pass-inherit><input id=cfg-aux-pool-${i}-pass-inherit data-aux-field=pass-inherit type=checkbox><span class=label>Use Primary Password</span></label>`;
 setAuxPoolRow(row,p);['enabled','host','port','tls','percent'].forEach(name=>{
 const el=auxField(row,name);el.addEventListener('input',syncAuxPoolShare);el.addEventListener('change',syncAuxPoolShare)});
