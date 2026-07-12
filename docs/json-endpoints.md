@@ -48,7 +48,7 @@ Response fields:
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `asic_efficiency_j_per_th`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power, efficiency, and fault state. `asic_efficiency_j_per_th` is computed from ASIC watts and measured hashrate. |
 | `pool`, `pool_port`, `pool_using_backup`, `stratum_connected`, `stratum_connected_seconds`, `stratum_response_ms` | mixed | Pool connection state. |
-| `multi_pool_enabled`, `pool_statuses` | boolean/array | Multi-pool mode and per-pool status. Each pool status includes `pool_id`, `label`, `role`, `host`, `port`, `connected`, `using_backup`, `disabled`, `note`, `share_percent`, `connected_seconds`, `response_ms`, `pool_difficulty`, `work_received`, `submitted`, `accepted`, `rejected`, `payout_status`, and `payout_percent_x100`. Runtime-disabled, settings-inactive, or recently failed pools include a short `note` such as an unsupported version mask, disabled settings, zero share, read failure, or idle timeout. |
+| `multi_pool_enabled`, `pool_statuses` | boolean/array | Multi-pool mode and per-pool status. Each pool status includes `pool_id`, `label`, `role`, `host`, `port`, `connected`, `using_backup`, `disabled`, `note`, `weight`, `share_percent`, `connected_seconds`, `response_ms`, `pool_difficulty`, `work_received`, `submitted`, `accepted`, `rejected`, `payout_status`, and `payout_percent_x100`. `weight` is the configured 1-99 scheduling weight. `share_percent` is derived from configured weights. Runtime-disabled, settings-inactive, or recently failed pools include a short `note` such as an unsupported version mask, disabled settings, weight zero, read failure, or idle timeout. |
 | `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us`, `stratum_line_handle_us`, `stratum_line_handle_max_us`, `stratum_job_queue_wait_us`, `stratum_job_queue_wait_max_us`, `stratum_job_dispatch_us`, `stratum_job_dispatch_max_us` | number | Native M45 Stratum timing in microseconds. Share submit tracks nonce-result-to-submit timing and socket write time. Line handle tracks JSON handling time after a Stratum line is received. Job queue wait tracks pool work waiting for the ASIC job task, and job dispatch tracks received pool work to first ASIC send. |
 | `work_received`, `shares_accepted`, `shares_rejected`, `valid_nonces`, `nonce_errors` | number | Mining counters. |
 | `best_diff`, `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Difficulty state. |
@@ -97,7 +97,7 @@ Response fields:
 
 ### `POST /api/setup`
 
-Saves first-boot Wi-Fi and primary pool settings, then reboots.
+Saves first-boot Wi-Fi and single-pool settings, then reboots.
 
 The request is rejected with `409 Conflict` unless the same Wi-Fi credentials
 have passed `POST /api/wifi-test`.
@@ -190,10 +190,10 @@ Response fields:
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `wifi_ssid`, `hostname`, `pool_host`, `backup_pool_host`, `pool_user` | string | Saved string settings. |
-| `pool_port`, `backup_pool_port` | number | 1-65535. |
-| `pool_tls`, `backup_pool_tls` | boolean | Enables verified TLS for the primary or backup Stratum pool. |
-| `multi_pool_enabled`, `aux_pools` | boolean/array | Enables weighted auxiliary pools. Each aux pool has `host`, `port`, `tls`, `enabled`, `share_percent`, `user`, `password_set`, and `password_inherit`; the primary/backup lane receives the remaining share and is kept at 1% minimum. Empty aux `user` means use the primary pool username. `password_inherit` clears the aux password override and uses the primary pool password. |
+| `wifi_ssid`, `hostname`, `pool_host`, `backup_pool_host`, `pool_user` | string | Saved string settings. In weighted multi-pool mode, `pool_user` is an optional default username for added pools. |
+| `pool_port`, `backup_pool_port` | number | 1-65535. Backup fields are retained for compatibility and are not used by native weighted multi-pool mode. |
+| `pool_tls`, `backup_pool_tls` | boolean | Enables verified TLS for the single Stratum pool. Backup fields are retained for compatibility. |
+| `multi_pool_enabled`, `aux_pools` | boolean/array | Enables weighted multi-pool mode. In this mode there are no implicit pools; only enabled `aux_pools` rows are scheduled. Each pool has `host`, `port`, `tls`, `enabled`, `weight`, `user`, and `password_set`. `weight` is 1-99. Empty pool `user` uses the optional default `pool_user`. |
 | `wifi_password_set`, `pool_password_set` | boolean | Password values are not returned. |
 | `pool_difficulty`, `pool_difficulty_auto`, `pool_suggested_difficulty` | mixed | Pool difficulty settings. |
 | `overclock_enabled`, `auto_clock_enabled`, `auto_domain_reboot_enabled`, `asic_voltage_temp_compensation_enabled` | boolean | ASIC tuning flags. Auto clock is experimental and requires overclocking plus either fixed fan speed or no fan mode, and a high-current stable 5 V power supply with wiring/connectors rated for the configured current limits. Auto clock is capped at 1200 MHz and also blocks preset increases when cooling temperature headroom is too low, VIN is at or below 5.01 V, or the board is near configured TPS546 output-current and VR-temperature safety limits. Auto domain reboot is off by default; when enabled, the ASIC is power-cycled if a domain remains below 75% of expected per-domain hashrate for at least 60 seconds, and pending lost-domain recovery can tolerate missing ASIC temperature reads until the reboot runs. |
@@ -225,9 +225,9 @@ limit_iout_fault_deciamps
 Saves and applies full runtime settings.
 
 Passwords are optional. Omit them, or omit masked UI values, to keep existing
-passwords. For auxiliary pools, set `password_inherit` to `true` to clear the
-auxiliary password override and use the primary pool password. If Wi-Fi
-credentials change, the same credentials must first pass `POST /api/wifi-test`.
+passwords. Weighted pool passwords default to `x` when no saved or submitted
+password exists. If Wi-Fi credentials change, the same credentials must first
+pass `POST /api/wifi-test`.
 
 Request body includes the fields returned by `GET /api/settings`, plus optional
 password values:
@@ -240,9 +240,6 @@ password values:
   "pool_host": "public-pool.io",
   "pool_port": 3333,
   "pool_tls": false,
-  "backup_pool_host": "public-pool.io",
-  "backup_pool_port": 3333,
-  "backup_pool_tls": false,
   "multi_pool_enabled": true,
   "aux_pools": [
     {
@@ -250,9 +247,8 @@ password values:
       "port": 3333,
       "tls": false,
       "enabled": true,
-      "share_percent": 10,
-      "user": "",
-      "password_inherit": true
+      "weight": 50,
+      "user": ""
     }
   ],
   "pool_user": "wallet.worker",

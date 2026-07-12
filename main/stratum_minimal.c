@@ -452,9 +452,9 @@ static uint32_t pool_mask_all(void)
 static const char *pool_id_name(uint8_t pool_id)
 {
     if (pool_id == STRATUM_PRIMARY_POOL_ID) {
-        return "main";
+        return "pool";
     }
-    return pool_id_is_aux(pool_id) ? "aux" : "unknown";
+    return pool_id_is_aux(pool_id) ? "pool" : "unknown";
 }
 
 static void pool_id_label(uint8_t pool_id, char *dest, size_t dest_len)
@@ -463,9 +463,9 @@ static void pool_id_label(uint8_t pool_id, char *dest, size_t dest_len)
         return;
     }
     if (pool_id == STRATUM_PRIMARY_POOL_ID) {
-        strlcpy(dest, "main", dest_len);
+        strlcpy(dest, "pool", dest_len);
     } else if (pool_id_is_aux(pool_id)) {
-        snprintf(dest, dest_len, "aux %u",
+        snprintf(dest, dest_len, "pool %u",
                  (unsigned)(pool_id - STRATUM_AUX_POOL_ID_BASE + 1U));
     } else {
         strlcpy(dest, "unknown", dest_len);
@@ -483,7 +483,7 @@ static void pool_credentials(uint8_t pool_id, char *user, size_t user_len,
         const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
         const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
         pool_user = aux->user[0] != '\0' ? aux->user : pool_user;
-        pool_pass = aux->pass[0] != '\0' ? aux->pass : pool_pass;
+        pool_pass = aux->pass[0] != '\0' ? aux->pass : "x";
     }
 
     copy_pool_host(user, user_len, pool_user);
@@ -495,8 +495,8 @@ static void pool_credentials(uint8_t pool_id, char *user, size_t user_len,
 
 static bool backup_pool_configured(const m45_config_t *config)
 {
-    return config != NULL && config->backup_pool_host[0] != '\0' &&
-           config->backup_pool_port > 0;
+    (void)config;
+    return false;
 }
 
 static bool aux_pool_configured(const m45_config_t *config, uint8_t pool_id)
@@ -507,13 +507,16 @@ static bool aux_pool_configured(const m45_config_t *config, uint8_t pool_id)
     const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
     const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
     return aux->enabled && aux->host[0] != '\0' && aux->port > 0 &&
-           aux->share_percent > 0;
+           (aux->user[0] != '\0' || config->pool_user[0] != '\0') &&
+           aux->share_percent >= M45_POOL_WEIGHT_MIN &&
+           aux->share_percent <= M45_POOL_WEIGHT_MAX;
 }
 
 static bool pool_session_configured(const m45_config_t *config, uint8_t pool_id)
 {
     if (pool_id == STRATUM_PRIMARY_POOL_ID) {
-        return config != NULL && config->pool_host[0] != '\0' && config->pool_port > 0;
+        return config != NULL && !config->multi_pool_enabled &&
+               config->pool_host[0] != '\0' && config->pool_port > 0;
     }
     return aux_pool_configured(config, pool_id);
 }
@@ -534,29 +537,38 @@ static bool pool_status_configured(const m45_config_t *config, uint8_t pool_id)
 
 static uint8_t configured_pool_share_percent(const m45_config_t *config, uint8_t pool_id)
 {
-    if (config == NULL || !config->multi_pool_enabled) {
-        return 100;
+    if (config == NULL) {
+        return pool_id == STRATUM_PRIMARY_POOL_ID ? 100 : 0;
     }
-    if (pool_id_is_aux(pool_id)) {
-        const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
-        if (aux_index >= M45_AUX_POOL_MAX) {
-            return 0;
-        }
-        const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
-        return aux_pool_configured(config, pool_id) ? aux->share_percent : 0;
+    if (!config->multi_pool_enabled) {
+        return pool_id == STRATUM_PRIMARY_POOL_ID ? 100 : 0;
     }
 
-    uint16_t aux_total = 0;
+    uint16_t total_weight = 0;
+    uint8_t pool_weight = 0;
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+        const uint8_t aux_pool_id = (uint8_t)(STRATUM_AUX_POOL_ID_BASE + i);
+        if (!aux_pool_configured(config, aux_pool_id)) {
+            continue;
+        }
         const m45_aux_pool_t *aux = &config->aux_pools[i];
-        if (aux->enabled && aux->host[0] != '\0' && aux->port > 0) {
-            aux_total += aux->share_percent;
+        total_weight += aux->share_percent;
+        if (pool_id == aux_pool_id) {
+            pool_weight = aux->share_percent;
         }
     }
-    if (aux_total >= M45_AUX_POOL_TOTAL_SHARE_MAX) {
-        return M45_PRIMARY_POOL_SHARE_MIN_PERCENT;
+    if (pool_weight == 0 || total_weight == 0) {
+        return 0;
     }
-    return (uint8_t)(100 - aux_total);
+    uint32_t share =
+        ((uint32_t)pool_weight * 100U + (uint32_t)(total_weight / 2U)) /
+        (uint32_t)total_weight;
+    if (share == 0) {
+        share = 1;
+    } else if (share > 100U) {
+        share = 100U;
+    }
+    return (uint8_t)share;
 }
 
 static uint16_t scale_suggested_difficulty_for_share(uint16_t difficulty,
@@ -763,6 +775,12 @@ static void set_active_pool_endpoint(const stratum_endpoint_t *endpoint)
 static void set_active_primary_pool_endpoint(void)
 {
     const m45_config_t *config = m45_config_get();
+    if (config == NULL || config->multi_pool_enabled) {
+        stratum_endpoint_t empty = {0};
+        empty.pool_id = STRATUM_PRIMARY_POOL_ID;
+        set_active_pool_endpoint(&empty);
+        return;
+    }
     const stratum_endpoint_t endpoint = {
         .port = config->pool_port,
         .pool_id = STRATUM_PRIMARY_POOL_ID,
@@ -4702,22 +4720,10 @@ static bool job_pool_ready(const job_pool_state_t *pool_work, const m45_config_t
 static uint8_t configured_pool_weight(uint8_t pool_id, const m45_config_t *config)
 {
     if (config == NULL) {
-        return pool_id == STRATUM_PRIMARY_POOL_ID ? 100 : 0;
+        return pool_id == STRATUM_PRIMARY_POOL_ID ? M45_POOL_WEIGHT_MAX : 0;
     }
     if (pool_id == STRATUM_PRIMARY_POOL_ID) {
-        uint16_t aux_total = 0;
-        if (config->multi_pool_enabled) {
-            for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
-                const m45_aux_pool_t *aux = &config->aux_pools[i];
-                if (aux->enabled && aux->host[0] != '\0' && aux->port > 0) {
-                    aux_total += aux->share_percent;
-                }
-            }
-        }
-        if (aux_total >= M45_AUX_POOL_TOTAL_SHARE_MAX) {
-            return M45_PRIMARY_POOL_SHARE_MIN_PERCENT;
-        }
-        return (uint8_t)(100 - aux_total);
+        return config->multi_pool_enabled ? 0 : M45_POOL_WEIGHT_MAX;
     }
     if (!config->multi_pool_enabled) {
         return 0;
@@ -4735,34 +4741,21 @@ static uint16_t ready_pool_weights(job_pool_state_t pools[STRATUM_POOL_SESSION_M
                                    bool ready[STRATUM_POOL_SESSION_MAX],
                                    uint8_t effective_weight[STRATUM_POOL_SESSION_MAX])
 {
-    uint16_t ready_aux_total = 0;
     uint16_t total = 0;
 
     for (size_t i = 0; i < STRATUM_POOL_SESSION_MAX; ++i) {
         ready[i] = job_pool_ready(&pools[i], config);
         effective_weight[i] = 0;
-        if (!ready[i] || i == STRATUM_PRIMARY_POOL_ID) {
+        if (!ready[i]) {
             continue;
         }
         effective_weight[i] = configured_pool_weight((uint8_t)i, config);
-        ready_aux_total += effective_weight[i];
-    }
-    if (ready[STRATUM_PRIMARY_POOL_ID]) {
-        effective_weight[STRATUM_PRIMARY_POOL_ID] =
-            ready_aux_total >= M45_AUX_POOL_TOTAL_SHARE_MAX
-                ? M45_PRIMARY_POOL_SHARE_MIN_PERCENT
-                : (uint8_t)(100 - ready_aux_total);
-    }
-
-    for (size_t i = 0; i < STRATUM_POOL_SESSION_MAX; ++i) {
-        if (ready[i]) {
-            total += effective_weight[i];
-        }
+        total += effective_weight[i];
     }
 
     if (total == 0 && ready[STRATUM_PRIMARY_POOL_ID]) {
-        effective_weight[STRATUM_PRIMARY_POOL_ID] = 100;
-        total = 100;
+        effective_weight[STRATUM_PRIMARY_POOL_ID] = M45_POOL_WEIGHT_MAX;
+        total = M45_POOL_WEIGHT_MAX;
     }
 
     return total;
@@ -5407,13 +5400,15 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
     }
 
     if (pool_id == STRATUM_PRIMARY_POOL_ID) {
+        status->weight = configured_pool_weight(pool_id, config);
         status->share_percent = configured_primary_share_percent(config);
         status->pool_port = config->pool_port;
         copy_pool_host(status->pool_host, sizeof(status->pool_host), config->pool_host);
     } else {
         const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
         const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
-        status->share_percent = aux->share_percent;
+        status->weight = aux->share_percent;
+        status->share_percent = configured_pool_share_percent(config, pool_id);
         status->pool_port = aux->port;
         copy_pool_host(status->pool_host, sizeof(status->pool_host), aux->host);
     }
@@ -5446,7 +5441,7 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
                                "disabled in settings");
             } else if (aux->share_percent == 0) {
                 copy_pool_host(status->note, sizeof(status->note),
-                               "share is 0%");
+                               "weight is 0");
             } else {
                 copy_pool_host(status->note, sizeof(status->note),
                                "not active");

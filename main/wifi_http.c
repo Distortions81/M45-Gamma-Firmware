@@ -983,16 +983,26 @@ static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POO
         char host[M45_POOL_HOST_MAX + 1] = "";
         char user[M45_POOL_USER_MAX + 1] = "";
         uint16_t port = 0;
-        uint16_t percent = 0;
+        uint16_t weight = 0;
         bool tls = false;
         bool enabled = false;
         if (!json_get_string(item, "host", host, sizeof(host), false) ||
             !json_get_string(item, "user", user, sizeof(user), false) ||
             !json_get_optional_u16(item, "port", &port, 1, 65535) ||
             !json_get_optional_bool(item, "tls", &tls) ||
-            !json_get_optional_bool(item, "enabled", &enabled) ||
-            !json_get_optional_u16(item, "share_percent", &percent, 0, 100)) {
+            !json_get_optional_bool(item, "enabled", &enabled)) {
             return false;
+        }
+
+        cJSON *weight_item = cJSON_GetObjectItem(item, "weight");
+        if (weight_item != NULL &&
+            (!cJSON_IsNumber(weight_item) ||
+             weight_item->valuedouble < M45_POOL_WEIGHT_MIN ||
+             weight_item->valuedouble > M45_POOL_WEIGHT_MAX)) {
+            return false;
+        }
+        if (weight_item != NULL) {
+            weight = (uint16_t)weight_item->valueint;
         }
 
         if (host[0] == '\0') {
@@ -1007,27 +1017,13 @@ static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POO
         strlcpy(parsed[i].host, host, sizeof(parsed[i].host));
         strlcpy(parsed[i].user, user, sizeof(parsed[i].user));
 
-        bool password_inherit = false;
-        cJSON *password_inherit_item = cJSON_GetObjectItem(item, "password_inherit");
-        if (password_inherit_item == NULL) {
-            password_inherit_item = cJSON_GetObjectItem(item, "pass_inherit");
-        }
-        if (password_inherit_item != NULL) {
-            if (!cJSON_IsBool(password_inherit_item)) {
-                return false;
-            }
-            password_inherit = cJSON_IsTrue(password_inherit_item);
-        }
-
         cJSON *pass = cJSON_GetObjectItem(item, "pass");
         if (pass != NULL &&
             (!cJSON_IsString(pass) || pass->valuestring == NULL ||
              strlen(pass->valuestring) >= sizeof(parsed[i].pass))) {
             return false;
         }
-        if (password_inherit) {
-            parsed[i].pass[0] = '\0';
-        } else if (pass != NULL && pass->valuestring[0] != '\0') {
+        if (pass != NULL && pass->valuestring[0] != '\0') {
             strlcpy(parsed[i].pass, pass->valuestring, sizeof(parsed[i].pass));
         } else {
             strlcpy(parsed[i].pass, aux_pools[i].pass, sizeof(parsed[i].pass));
@@ -1035,24 +1031,10 @@ static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POO
         parsed[i].port = port;
         parsed[i].tls = tls;
         parsed[i].enabled = enabled;
-        parsed[i].share_percent = (uint8_t)percent;
+        parsed[i].share_percent = (uint8_t)weight;
     }
     memcpy(aux_pools, parsed, sizeof(parsed));
     return true;
-}
-
-static uint16_t aux_pool_share_total(const m45_config_t *config)
-{
-    uint16_t total = 0;
-    if (config == NULL) {
-        return 0;
-    }
-    for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
-        if (config->aux_pools[i].enabled) {
-            total += config->aux_pools[i].share_percent;
-        }
-    }
-    return total;
 }
 
 static bool aux_pools_valid_for_mode(const m45_config_t *config)
@@ -1063,11 +1045,14 @@ static bool aux_pools_valid_for_mode(const m45_config_t *config)
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
         const m45_aux_pool_t *aux = &config->aux_pools[i];
         if (aux->enabled &&
-            (aux->host[0] == '\0' || aux->port < 1 || aux->share_percent == 0)) {
+            (aux->host[0] == '\0' || aux->port < 1 ||
+             (aux->user[0] == '\0' && config->pool_user[0] == '\0') ||
+             aux->share_percent < M45_POOL_WEIGHT_MIN ||
+             aux->share_percent > M45_POOL_WEIGHT_MAX)) {
             return false;
         }
     }
-    return aux_pool_share_total(config) <= M45_AUX_POOL_TOTAL_SHARE_MAX;
+    return true;
 }
 
 static uint64_t logs_since_from_query(httpd_req_t *req)
@@ -1181,7 +1166,9 @@ static bool aux_pool_active_for_config(const m45_config_t *config, size_t aux_in
     }
     const m45_aux_pool_t *aux = &config->aux_pools[aux_index];
     return aux->enabled && aux->host[0] != '\0' && aux->port > 0 &&
-           aux->share_percent > 0;
+           (aux->user[0] != '\0' || config->pool_user[0] != '\0') &&
+           aux->share_percent >= M45_POOL_WEIGHT_MIN &&
+           aux->share_percent <= M45_POOL_WEIGHT_MAX;
 }
 
 static uint32_t configured_pool_reconnect_mask(const m45_config_t *config)
@@ -1190,7 +1177,8 @@ static uint32_t configured_pool_reconnect_mask(const m45_config_t *config)
         return 0;
     }
 
-    uint32_t mask = config->pool_host[0] != '\0' && config->pool_port > 0
+    uint32_t mask = !config->multi_pool_enabled && config->pool_host[0] != '\0' &&
+                            config->pool_port > 0
                         ? pool_reconnect_bit(0)
                         : 0;
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
@@ -1213,15 +1201,17 @@ static uint32_t active_pool_settings_reconnect_mask(const m45_config_t *old_conf
     if (settings_string_changed(old_config->pool_host, new_config->pool_host) ||
         old_config->pool_port != new_config->pool_port ||
         old_config->pool_tls != new_config->pool_tls ||
-        settings_string_changed(old_config->backup_pool_host,
-                                new_config->backup_pool_host) ||
-        old_config->backup_pool_port != new_config->backup_pool_port ||
-        old_config->backup_pool_tls != new_config->backup_pool_tls ||
         primary_user_changed || primary_pass_changed) {
         mask |= pool_reconnect_bit(0);
     }
 
     if (old_config->multi_pool_enabled != new_config->multi_pool_enabled) {
+        if ((!old_config->multi_pool_enabled && old_config->pool_host[0] != '\0' &&
+             old_config->pool_port > 0) ||
+            (!new_config->multi_pool_enabled && new_config->pool_host[0] != '\0' &&
+             new_config->pool_port > 0)) {
+            mask |= pool_reconnect_bit(0);
+        }
         for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
             if (aux_pool_active_for_config(old_config, i) ||
                 aux_pool_active_for_config(new_config, i)) {
@@ -1243,13 +1233,11 @@ static uint32_t active_pool_settings_reconnect_mask(const m45_config_t *old_conf
         const bool credentials_changed =
             settings_string_changed(old_aux->user, new_aux->user) ||
             settings_string_changed(old_aux->pass, new_aux->pass);
-        const bool inherited_primary_credentials_changed =
-            new_active &&
-            ((primary_user_changed && new_aux->user[0] == '\0') ||
-             (primary_pass_changed && new_aux->pass[0] == '\0'));
+        const bool default_user_changed =
+            new_active && primary_user_changed && new_aux->user[0] == '\0';
         if ((old_active || new_active) &&
             (active_state_changed || endpoint_changed || credentials_changed ||
-             inherited_primary_credentials_changed)) {
+             default_user_changed || old_aux->share_percent != new_aux->share_percent)) {
             mask |= pool_reconnect_bit(i + 1U);
         }
     }
@@ -1680,19 +1668,20 @@ static esp_err_t status_handler(httpd_req_t *req)
         json_escape(status_host, sizeof(status_host), pool->pool_host);
         json_escape(status_note, sizeof(status_note), pool->note);
         if (pool->auxiliary) {
-            snprintf(status_label, sizeof(status_label), "Aux %u", (unsigned)pool->pool_id);
+            snprintf(status_label, sizeof(status_label), "Pool %u",
+                     (unsigned)pool->pool_id);
         } else {
-            strlcpy(status_label, "Main", sizeof(status_label));
+            strlcpy(status_label, "Pool", sizeof(status_label));
         }
-        const char *role = pool->auxiliary ? "aux" : pool->using_backup_pool ? "backup"
-                                                                             : "primary";
+        const char *role = "pool";
         const int written = snprintf(
             scratch->pool_statuses_json + pool_status_offset,
             sizeof(scratch->pool_statuses_json) - pool_status_offset,
             "%s{\"pool_id\":%u,\"label\":\"%s\",\"role\":\"%s\","
             "\"host\":\"%s\",\"port\":%u,\"connected\":%s,\"using_backup\":%s,"
             "\"disabled\":%s,\"note\":\"%s\","
-            "\"share_percent\":%u,\"connected_seconds\":%lu,\"response_ms\":%lu,"
+            "\"weight\":%u,\"share_percent\":%u,"
+            "\"connected_seconds\":%lu,\"response_ms\":%lu,"
             "\"pool_difficulty\":%.2f,"
             "\"work_received\":%lu,\"submitted\":%lu,\"accepted\":%lu,\"rejected\":%lu,"
             "\"payout_status\":\"%s\",\"payout_percent_x100\":%u}",
@@ -1700,7 +1689,8 @@ static esp_err_t status_handler(httpd_req_t *req)
             status_host,
             pool->pool_port, pool->connected ? "true" : "false",
             pool->using_backup_pool ? "true" : "false",
-            pool->disabled ? "true" : "false", status_note, pool->share_percent,
+            pool->disabled ? "true" : "false", status_note, pool->weight,
+            pool->share_percent,
             (unsigned long)pool->connected_seconds,
             (unsigned long)pool->response_time_ms, pool->pool_diff,
             (unsigned long)pool->work_received, (unsigned long)pool->submitted,
@@ -2046,14 +2036,12 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         const int written =
             snprintf(aux_pools_json + aux_offset, sizeof(aux_pools_json) - aux_offset,
                      "%s{\"host\":\"%s\",\"port\":%u,\"tls\":%s,\"enabled\":%s,"
-                     "\"share_percent\":%u,\"user\":\"%s\",\"password_set\":%s,"
-                     "\"password_inherit\":%s}",
+                     "\"weight\":%u,\"user\":\"%s\",\"password_set\":%s}",
                      i == 0 ? "" : ",", aux_host, config->aux_pools[i].port,
                      config->aux_pools[i].tls ? "true" : "false",
                      config->aux_pools[i].enabled ? "true" : "false",
                      config->aux_pools[i].share_percent, aux_user,
-                     config->aux_pools[i].pass[0] != '\0' ? "true" : "false",
-                     config->aux_pools[i].pass[0] == '\0' ? "true" : "false");
+                     config->aux_pools[i].pass[0] != '\0' ? "true" : "false");
         if (written < 0 || written >= (int)(sizeof(aux_pools_json) - aux_offset)) {
             httpd_resp_set_status(req, "500 Internal Server Error");
             return httpd_resp_sendstr(req, "{\"error\":\"settings too large\"}");
@@ -2542,10 +2530,10 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         json_get_string(json, "wifi_ssid", config.wifi_ssid, sizeof(config.wifi_ssid), true) &&
         json_get_string(json, "wifi_password", config.wifi_password,
                         sizeof(config.wifi_password), false) &&
-        json_get_string(json, "pool_host", config.pool_host, sizeof(config.pool_host), true) &&
-        json_get_string(json, "pool_user", config.pool_user, sizeof(config.pool_user), true) &&
+        json_get_string(json, "pool_host", config.pool_host, sizeof(config.pool_host), false) &&
+        json_get_string(json, "pool_user", config.pool_user, sizeof(config.pool_user), false) &&
         json_get_string(json, "pool_pass", config.pool_pass, sizeof(config.pool_pass), false) &&
-        json_get_u16(json, "pool_port", &config.pool_port, 1, 65535) &&
+        json_get_optional_u16(json, "pool_port", &config.pool_port, 1, 65535) &&
         json_get_optional_bool(json, "pool_tls", &config.pool_tls) &&
         json_get_optional_bool(json, "pool_difficulty_auto",
                                &config.pool_difficulty_auto) &&
@@ -2622,13 +2610,14 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         json_get_string(json, "wifi_password", config.wifi_password,
                         sizeof(config.wifi_password), false) &&
         json_get_string(json, "hostname", config.hostname, sizeof(config.hostname), true) &&
-        json_get_string(json, "pool_host", config.pool_host, sizeof(config.pool_host), true) &&
+        json_get_string(json, "pool_host", config.pool_host, sizeof(config.pool_host), false) &&
         json_get_string(json, "backup_pool_host", config.backup_pool_host,
-                        sizeof(config.backup_pool_host), true) &&
-        json_get_string(json, "pool_user", config.pool_user, sizeof(config.pool_user), true) &&
+                        sizeof(config.backup_pool_host), false) &&
+        json_get_string(json, "pool_user", config.pool_user, sizeof(config.pool_user), false) &&
         json_get_string(json, "pool_pass", config.pool_pass, sizeof(config.pool_pass), false) &&
-        json_get_u16(json, "pool_port", &config.pool_port, 1, 65535) &&
-        json_get_u16(json, "backup_pool_port", &config.backup_pool_port, 1, 65535) &&
+        json_get_optional_u16(json, "pool_port", &config.pool_port, 1, 65535) &&
+        json_get_optional_u16(json, "backup_pool_port", &config.backup_pool_port, 1,
+                              65535) &&
         json_get_optional_bool(json, "pool_tls", &config.pool_tls) &&
         json_get_optional_bool(json, "backup_pool_tls", &config.backup_pool_tls) &&
         json_get_optional_bool(json, "multi_pool_enabled", &config.multi_pool_enabled) &&
@@ -2726,8 +2715,9 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     cJSON_Delete(json);
     m45_config_apply_auto_clock_policy(&config);
 
-    if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
-        config.backup_pool_host[0] == '\0' || config.pool_user[0] == '\0' ||
+    if (!ok || config.hostname[0] == '\0' ||
+        (!config.multi_pool_enabled &&
+         (config.pool_host[0] == '\0' || config.pool_user[0] == '\0')) ||
         (config.fan_override_percent != 0 &&
          (config.fan_override_percent < 35 || config.fan_override_percent > 100)) ||
         config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||

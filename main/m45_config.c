@@ -254,10 +254,10 @@ static void sanitize_config(m45_config_t *config)
         strlcpy(config->backup_pool_host, CONFIG_M45_BITAXE_STRATUM_BACKUP_HOST,
                 sizeof(config->backup_pool_host));
     }
-    if (config->pool_user[0] == '\0') {
+    if (!config->multi_pool_enabled && config->pool_user[0] == '\0') {
         strlcpy(config->pool_user, CONFIG_M45_BITAXE_STRATUM_USER, sizeof(config->pool_user));
     }
-    if (config->pool_pass[0] == '\0') {
+    if (!config->multi_pool_enabled && config->pool_pass[0] == '\0') {
         strlcpy(config->pool_pass, "x", sizeof(config->pool_pass));
     }
     if (config->pool_port < 1) {
@@ -266,7 +266,6 @@ static void sanitize_config(m45_config_t *config)
     if (config->backup_pool_port < 1) {
         config->backup_pool_port = CONFIG_M45_BITAXE_STRATUM_BACKUP_PORT;
     }
-    uint16_t aux_percent_total = 0;
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
         m45_aux_pool_t *aux = &config->aux_pools[i];
         aux->host[M45_POOL_HOST_MAX] = '\0';
@@ -289,17 +288,13 @@ static void sanitize_config(m45_config_t *config)
         if (!config->multi_pool_enabled || !aux->enabled) {
             continue;
         }
-        if (aux->share_percent == 0) {
+        if (aux->share_percent < M45_POOL_WEIGHT_MIN) {
             aux->enabled = false;
+            aux->share_percent = 0;
             continue;
         }
-        if (aux_percent_total + aux->share_percent > M45_AUX_POOL_TOTAL_SHARE_MAX) {
-            aux->share_percent =
-                (uint8_t)(M45_AUX_POOL_TOTAL_SHARE_MAX - aux_percent_total);
-        }
-        aux_percent_total += aux->share_percent;
-        if (aux->share_percent == 0) {
-            aux->enabled = false;
+        if (aux->share_percent > M45_POOL_WEIGHT_MAX) {
+            aux->share_percent = M45_POOL_WEIGHT_MAX;
         }
     }
     if (config->pool_difficulty < 1) {
@@ -510,10 +505,10 @@ esp_err_t m45_config_load(void)
         uint8_t aux_enabled = g_config.aux_pools[i].enabled ? 1 : 0;
         load_u8(nvs, key, &aux_enabled);
         g_config.aux_pools[i].enabled = aux_enabled != 0;
-        snprintf(key, sizeof(key), "aux%u_pct", (unsigned)i);
-        uint8_t aux_percent = g_config.aux_pools[i].share_percent;
-        load_u8(nvs, key, &aux_percent);
-        g_config.aux_pools[i].share_percent = aux_percent;
+        snprintf(key, sizeof(key), "aux%u_weight", (unsigned)i);
+        uint8_t aux_weight = g_config.aux_pools[i].share_percent;
+        load_u8(nvs, key, &aux_weight);
+        g_config.aux_pools[i].share_percent = aux_weight;
     }
     load_u16(nvs, "pool_diff", &g_config.pool_difficulty);
     uint8_t pool_difficulty_auto = g_config.pool_difficulty_auto ? 1 : 0;
@@ -676,7 +671,7 @@ esp_err_t m45_config_save(const m45_config_t *config)
         if (err != ESP_OK) {
             break;
         }
-        snprintf(key, sizeof(key), "aux%u_pct", (unsigned)i);
+        snprintf(key, sizeof(key), "aux%u_weight", (unsigned)i);
         err = nvs_set_u8(nvs, key, clean.aux_pools[i].share_percent);
     }
     if (err == ESP_OK) {

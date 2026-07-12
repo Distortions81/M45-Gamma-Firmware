@@ -175,21 +175,18 @@
 <span id=wifi-test-status class=status-text></span></div>
 </div></article>
 <article class='panel wide'><div class=label>Pool</div><div class=settings-form>
-<div class=field><label for=cfg-pool-host>Primary Pool</label><input id=cfg-pool-host maxlength=96></div>
-<div class=field><label for=cfg-pool-port>Port</label><input id=cfg-pool-port type=number min=1 max=65535></div>
-<label class=toggle-row for=cfg-pool-tls><input id=cfg-pool-tls type=checkbox><span class=label>Primary TLS</span></label>
-<div class=field><label for=cfg-backup-pool-host>Backup Pool</label><input id=cfg-backup-pool-host maxlength=96></div>
-<div class=field><label for=cfg-backup-pool-port>Port</label><input id=cfg-backup-pool-port type=number min=1 max=65535></div>
-<label class=toggle-row for=cfg-backup-pool-tls><input id=cfg-backup-pool-tls type=checkbox><span class=label>Backup TLS</span></label>
-<div class=field><label for=cfg-pool-user>Username (wallet.workername)</label><input id=cfg-pool-user maxlength=128></div>
-<div class=field><label for=cfg-pool-pass>Password (Optional, normally just 'x')</label><input id=cfg-pool-pass type=password maxlength=64 placeholder='unchanged'></div>
+<div class=field><label for=cfg-pool-mode>Pool Mode</label><select id=cfg-pool-mode>
+<option value=single>Single</option><option value=multi>Weighted</option></select></div>
+<div class='field single-pool-field'><label for=cfg-pool-host>Pool</label><input id=cfg-pool-host maxlength=96></div>
+<div class='field single-pool-field'><label for=cfg-pool-port>Port</label><input id=cfg-pool-port type=number min=1 max=65535></div>
+<label class='toggle-row single-pool-field' for=cfg-pool-tls><input id=cfg-pool-tls type=checkbox><span class=label>TLS</span></label>
+<div class=field><label id=cfg-pool-user-label for=cfg-pool-user>Username (wallet.workername)</label><input id=cfg-pool-user maxlength=128></div>
+<div class='field single-pool-field'><label for=cfg-pool-pass>Password (Optional, normally just 'x')</label><input id=cfg-pool-pass type=password maxlength=64 placeholder='unchanged'></div>
 <label class=toggle-row for=cfg-pool-diff-auto><input id=cfg-pool-diff-auto type=checkbox checked><span class=label>Auto Difficulty</span></label>
 <div id=cfg-pool-diff-field class=field><label for=cfg-pool-diff>Difficulty</label><input id=cfg-pool-diff type=number min=1 max=65535></div>
-<div class=field><label for=cfg-pool-mode>Pool Mode</label><select id=cfg-pool-mode>
-<option value=single>Single</option><option value=multi>Multi-pool</option></select></div>
-<div class='aux-pool-toolbar aux-pool-field'><div class=label>Auxiliary Pools</div><button id=cfg-add-aux-pool class=secondary type=button>Add Pool</button></div>
+<div class='aux-pool-toolbar aux-pool-field'><div class=label>Pools</div><button id=cfg-add-aux-pool class=secondary type=button>Add Pool</button></div>
 <div id=cfg-aux-pools class='aux-pools aux-pool-field'></div>
-<div class='formula-note aux-pool-field' id=cfg-main-pool-share>Main/backup share: 100%</div>
+<div class='formula-note aux-pool-field' id=cfg-pool-weight-summary>Configured weight total: 0</div>
 </div></article>
 <article class='panel wide'><div class=label>Display</div><div class=settings-form>
 <label class=toggle-row for=cfg-display-screensaver><input id=cfg-display-screensaver type=checkbox>
@@ -241,7 +238,7 @@ const CAL_START_MV=1200,CAL_MIN_MV=750,CAL_DOWN_STEP_MV=10,CAL_UP_STEP_MV=5,CAL_
 const CAL_TARGET_TEMP_C=61,CAL_TEMP_MARGIN_C=2;
 const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MIN_SAMPLE_RESULTS=3;
 const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
-const AUX_POOL_COUNT=2,PRIMARY_POOL_MIN_SHARE=1,AUX_POOL_TOTAL_SHARE_MAX=100-PRIMARY_POOL_MIN_SHARE;
+const AUX_POOL_COUNT=2,POOL_WEIGHT_MIN=1,POOL_WEIGHT_MAX=99;
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
@@ -445,61 +442,60 @@ if(auto){if(input.value)input.dataset.manual=input.value;input.value=input.datas
 else if(input.dataset.manual)input.value=input.dataset.manual;input.disabled=auto}
 function auxPoolRows(){return Array.from(document.querySelectorAll('.aux-pool-row'))}
 function auxField(row,name){return row.querySelector(`[data-aux-field="${name}"]`)}
-function auxPoolConfigured(p={}){return !!((p.host||'').trim()||(p.user||'').trim()||p.enabled||Number(p.share_percent)>0||p.password_set)}
-function auxShareValue(v){return clamp(Math.floor(Number(v)||0),0,AUX_POOL_TOTAL_SHARE_MAX)}
-function auxPoolRowShare(row){return auxShareValue(auxField(row,'percent').value.trim())}
-function auxPoolFromRow(row){const inherit=auxField(row,'pass-inherit').checked;
+function auxPoolConfigured(p={}){return !!((p.host||'').trim()||(p.user||'').trim()||p.enabled||Number(p.weight)>0||p.password_set)}
+function poolWeightValue(v){return clamp(Math.floor(Number(v)||0),POOL_WEIGHT_MIN,POOL_WEIGHT_MAX)}
+function auxPoolRowWeight(row){return poolWeightValue(auxField(row,'weight').value.trim())}
+function setAuxPoolWeight(row,v){const weight=poolWeightValue(v);
+auxField(row,'weight').value=weight;auxField(row,'weight-slider').value=weight;auxField(row,'weight-value').textContent=weight;return weight}
+function auxPoolFromRow(row){
 return{host:auxField(row,'host').value.trim(),port:Number(auxField(row,'port').value.trim()),
 tls:auxField(row,'tls').checked,enabled:auxField(row,'enabled').checked,
-share_percent:auxPoolRowShare(row),user:auxField(row,'user').value.trim(),
-pass:inherit?'':auxField(row,'pass').value.trim(),password_inherit:inherit,password_set:row.dataset.passwordSet==='1'}}
+weight:auxPoolRowWeight(row),user:auxField(row,'user').value.trim(),
+pass:auxField(row,'pass').value.trim(),password_set:row.dataset.passwordSet==='1'}}
 function auxPools(){return auxPoolRows().map(auxPoolFromRow)}
 function auxPoolPayload(){return auxPools().map(p=>({host:p.host,port:p.port,tls:p.tls,enabled:p.enabled,
-share_percent:p.share_percent,user:p.user,pass:p.pass,password_inherit:p.password_inherit}))}
-function syncAuxPoolPassword(row){const input=auxField(row,'pass'),inherit=auxField(row,'pass-inherit').checked;
-input.disabled=!auxField(row,'enabled').checked||inherit;if(inherit){input.value='';input.placeholder='same as primary'}else if(!input.placeholder||input.placeholder==='same as primary')input.placeholder='unchanged'}
-function auxPoolRemainingShare(row=null){return Math.max(0,AUX_POOL_TOTAL_SHARE_MAX-auxPoolRows().reduce((sum,r)=>r!==row&&auxField(r,'enabled').checked?sum+auxPoolRowShare(r):sum,0))}
-function defaultAuxPoolShare(row=null){const remaining=auxPoolRemainingShare(row);return remaining>=10?10:remaining}
+weight:p.weight,user:p.user,pass:p.pass}))}
+function syncAuxPoolPassword(row){const input=auxField(row,'pass');
+input.disabled=!auxField(row,'enabled').checked;if(!input.placeholder)input.placeholder='unchanged'}
+function defaultAuxPoolWeight(){return 50}
 function syncAuxPoolEnabled(row){const enabled=auxField(row,'enabled').checked,state=row.querySelector('.aux-pool-state');
-if(enabled&&(Number(auxField(row,'percent').value.trim())||0)<=0)auxField(row,'percent').value=defaultAuxPoolShare(row);
+if(enabled&&(Number(auxField(row,'weight').value.trim())||0)<=0)auxField(row,'weight').value=defaultAuxPoolWeight();
 row.classList.toggle('aux-pool-disabled',!enabled);if(state){state.className=`pill aux-pool-state ${enabled?'ok':''}`.trim();state.textContent=enabled?'Enabled':'Disabled'}
-['host','port','tls','percent','user','pass-inherit'].forEach(name=>{auxField(row,name).disabled=!enabled});syncAuxPoolPassword(row);syncAuxPoolShare()}
+['host','port','tls','weight','weight-slider','user'].forEach(name=>{auxField(row,name).disabled=!enabled});syncAuxPoolPassword(row);syncPoolWeights()}
 function setAuxPoolRow(row,p={}){row.dataset.passwordSet=p.password_set?'1':'0';auxField(row,'enabled').checked=!!p.enabled;
 auxField(row,'host').value=p.host||'';auxField(row,'port').value=p.port||3333;auxField(row,'tls').checked=!!p.tls;
-auxField(row,'percent').value=p.share_percent||0;auxField(row,'user').value=p.user||'';auxField(row,'pass').value=p.pass||'';
-const inherit=p.password_inherit!==undefined?!!p.password_inherit:!p.password_set;auxField(row,'pass-inherit').checked=inherit;
-auxField(row,'pass').placeholder=p.password_set?'Saved password':'same as primary';syncAuxPoolEnabled(row)}
+auxField(row,'weight').value=p.weight||0;auxField(row,'user').value=p.user||'';auxField(row,'pass').value=p.pass||'';
+auxField(row,'pass').placeholder=p.password_set?'Saved password':'x';syncAuxPoolEnabled(row)}
 function renderAuxPools(pools=[]){const list=$('cfg-aux-pools');list.textContent='';
 pools.slice(0,AUX_POOL_COUNT).forEach((p,i)=>list.appendChild(createAuxPoolRow(p,i)));syncPoolMode()}
 function setAuxPools(pools=[]){renderAuxPools(pools.filter(auxPoolConfigured))}
 function createAuxPoolRow(p={},i=0){const row=document.createElement('div');row.className='aux-pool-row';
-row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title-group><div class=aux-pool-title>Auxiliary Pool ${i+1}</div><span class='pill aux-pool-state'>Disabled</span></div><label class=aux-pool-enable for=cfg-aux-pool-${i}-enabled><input id=cfg-aux-pool-${i}-enabled data-aux-field=enabled type=checkbox><span>Enabled</span></label><button class='danger aux-pool-delete' type=button>Delete</button></div>
+row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title-group><div class=aux-pool-title>Pool ${i+1}</div><span class='pill aux-pool-state'>Disabled</span></div><label class=aux-pool-enable for=cfg-aux-pool-${i}-enabled><input id=cfg-aux-pool-${i}-enabled data-aux-field=enabled type=checkbox><span>Enabled</span></label><button class='danger aux-pool-delete' type=button>Delete</button></div>
 <label class=toggle-row for=cfg-aux-pool-${i}-tls><input id=cfg-aux-pool-${i}-tls data-aux-field=tls type=checkbox><span class=label>TLS</span></label>
 <div class=field><label for=cfg-aux-pool-${i}-host>Pool</label><input id=cfg-aux-pool-${i}-host data-aux-field=host maxlength=96></div>
 <div class=field><label for=cfg-aux-pool-${i}-port>Port</label><input id=cfg-aux-pool-${i}-port data-aux-field=port type=number min=1 max=65535></div>
-<div class=field><label for=cfg-aux-pool-${i}-percent>Share %</label><input id=cfg-aux-pool-${i}-percent data-aux-field=percent type=number min=0 max=99></div>
-<div class=field><label for=cfg-aux-pool-${i}-user>Username Override</label><input id=cfg-aux-pool-${i}-user data-aux-field=user maxlength=128 placeholder='same as primary'></div>
-<div class=field><label for=cfg-aux-pool-${i}-pass>Password Override</label><input id=cfg-aux-pool-${i}-pass data-aux-field=pass type=password maxlength=64 placeholder='same as primary'></div>
-<label class='toggle-row aux-pool-wide' for=cfg-aux-pool-${i}-pass-inherit><input id=cfg-aux-pool-${i}-pass-inherit data-aux-field=pass-inherit type=checkbox><span class=label>Use Primary Password</span></label>`;
-setAuxPoolRow(row,p);['enabled','host','port','tls','percent'].forEach(name=>{
-const el=auxField(row,name);el.addEventListener('input',syncAuxPoolShare);el.addEventListener('change',syncAuxPoolShare)});
+<div class='field aux-weight-field'><label for=cfg-aux-pool-${i}-weight>Weight</label><div class=aux-weight-control><input id=cfg-aux-pool-${i}-weight data-aux-field=weight type=number min=1 max=99>
+<div class=range-line><input id=cfg-aux-pool-${i}-weight-slider data-aux-field=weight-slider type=range min=1 max=99 step=1><span data-aux-field=weight-value class=range-value>--</span></div></div></div>
+<div class=field><label for=cfg-aux-pool-${i}-user>Username</label><input id=cfg-aux-pool-${i}-user data-aux-field=user maxlength=128 placeholder='default username'></div>
+<div class=field><label for=cfg-aux-pool-${i}-pass>Password</label><input id=cfg-aux-pool-${i}-pass data-aux-field=pass type=password maxlength=64 placeholder='x'></div>`;
+setAuxPoolRow(row,p);['enabled','host','port','tls','weight','weight-slider','user'].forEach(name=>{
+const el=auxField(row,name);el.addEventListener('input',syncPoolWeights);el.addEventListener('change',syncPoolWeights)});
 auxField(row,'enabled').addEventListener('change',()=>syncAuxPoolEnabled(row));
-auxField(row,'pass-inherit').addEventListener('change',()=>syncAuxPoolPassword(row));
 row.querySelector('.aux-pool-delete').onclick=()=>{const pools=auxPools();pools.splice(i,1);renderAuxPools(pools)};
 return row}
 function syncAuxPoolLimit(){const btn=$('cfg-add-aux-pool');if(btn)btn.disabled=auxPools().length>=AUX_POOL_COUNT}
-function clampAuxPoolShare(row){if(!row||!auxField(row,'enabled').checked)return;
-const input=auxField(row,'percent'),max=auxPoolRemainingShare(row),share=auxShareValue(input.value),clamped=Math.min(share,max);
-if(Number(input.value)!==clamped)input.value=clamped;
-if(clamped===0){auxField(row,'enabled').checked=false;syncAuxPoolEnabled(row)}}
-function syncAuxPoolShare(e=null){const row=e&&e.currentTarget?e.currentTarget.closest('.aux-pool-row'):null;
-if(row)clampAuxPoolShare(row);else auxPoolRows().forEach(clampAuxPoolShare);
-const total=auxPools().reduce((sum,p)=>sum+(p.enabled?p.share_percent:0),0),main=100-total;
-const note=$('cfg-main-pool-share');if(!note)return;note.textContent=`Main/backup share: ${Math.max(PRIMARY_POOL_MIN_SHARE,main)}%`;
-note.classList.toggle('bad',total>AUX_POOL_TOTAL_SHARE_MAX);syncAuxPoolLimit()}
+function clampAuxPoolWeight(row,source=null){if(!row||!auxField(row,'enabled').checked)return;
+const slider=auxField(row,'weight-slider'),input=auxField(row,'weight');
+setAuxPoolWeight(row,source===slider?slider.value:input.value)}
+function syncPoolWeights(e=null){const row=e&&e.currentTarget?e.currentTarget.closest('.aux-pool-row'):null;
+if(row)clampAuxPoolWeight(row,e.currentTarget);else auxPoolRows().forEach(clampAuxPoolWeight);
+const total=auxPools().reduce((sum,p)=>sum+(p.enabled?p.weight:0),0);
+const note=$('cfg-pool-weight-summary');if(note)note.textContent=`Configured weight total: ${total}`;
+syncAuxPoolLimit()}
 function multiPoolEnabled(){return val('cfg-pool-mode')==='multi'}
 function syncPoolMode(){const multi=multiPoolEnabled();document.querySelectorAll('.aux-pool-field').forEach(el=>el.classList.toggle('hidden',!multi));
-syncAuxPoolShare()}
+document.querySelectorAll('.single-pool-field').forEach(el=>el.classList.toggle('hidden',multi));
+txt('cfg-pool-user-label',multi?'Default Username':'Username (wallet.workername)');syncPoolWeights()}
 function syncTempCompensationNote(s=null){const cb=$('oc-temp-compensation'),note=$('oc-temp-compensation-note');if(!cb||!note)return;
 const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested();cb.disabled=!on||auto;
 if(auto){note.textContent='Locked while Auto Clock is armed';return}
@@ -616,7 +612,7 @@ if(issue){label.classList.remove('hidden');value.classList.remove('hidden');valu
 else{label.classList.add('hidden');value.classList.add('hidden');value.textContent=''}}
 function setSettings(s){txt('set-wifi',s.wifi_connected?s.wifi_ssid:s.setup_mode?`setup AP ${s.setup_ssid}`:'offline');
 txt('set-ip',s.wifi_connected?s.ip:'--');txt('set-stratum',s.multi_pool_enabled?'multi-pool':s.stratum_connected?'online':'offline');
-txt('set-pool',s.multi_pool_enabled?'multi-pool':s.pool?`${s.pool_using_backup?'backup':'primary'} ${s.pool}:${s.pool_port}`:'--');
+txt('set-pool',s.multi_pool_enabled?'weighted pools':s.pool?`${s.pool}:${s.pool_port}`:'--');
 const asicOn=s.booting===true||s.asic_power_enabled!==false;
 txt('set-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
 txt('set-frequency',`${n(s.frequency_mhz,0)} MHz`);txt('set-voltage',`${n(s.voltage_mv,0)} mV`);
@@ -624,11 +620,11 @@ txt('set-hardware',s.hardware)}
 function poolStatusMetric(label,value){const box=document.createElement('div');box.className='pool-status-metric';
 const l=document.createElement('span');l.textContent=label;const v=document.createElement('strong');v.textContent=value;
 box.appendChild(l);box.appendChild(v);return box}
-function poolRoleText(p){return p.role==='backup'?'Backup active':p.role==='aux'?'Auxiliary':'Primary lane'}
 function setPoolStatusPanel(s){const panel=$('pool-status-panel'),list=$('pool-status-list'),pill=$('pool-status-count');
 if(!panel||!list)return;const pools=(s.pool_statuses||[]).filter(p=>p&&p.host);
 const show=!!s.multi_pool_enabled&&pools.length>0;panel.classList.toggle('hidden',!show);if(!show){list.textContent='';poolShareSamples.clear();return}
-const online=pools.filter(p=>p.connected).length;if(pill){pill.className=`pill ${online===pools.length?'ok':online?'warn':'bad'}`;
+const online=pools.filter(p=>p.connected).length,onlineWeight=pools.reduce((sum,p)=>p.connected&&!p.disabled?sum+(Number(p.weight)||0):sum,0);
+if(pill){pill.className=`pill ${online===pools.length?'ok':online?'warn':'bad'}`;
 pill.textContent=`${online}/${pools.length} online`}list.textContent='';const activeKeys=new Set();
 pools.forEach(p=>{const row=document.createElement('div');row.className='pool-status-row';
 activeKeys.add(poolSampleKey(p));
@@ -640,10 +636,11 @@ const label=document.createElement('span');label.textContent=p.label||'Pool';nam
 const host=document.createElement('div');host.className='pool-status-host';host.textContent=p.host?`${p.host}:${p.port||'--'}`:'--';
 const age=shortTime(p.connected_seconds);
 const state=disabled?'Disabled':p.connected?`Online${age?` ${age}`:''}`:'Offline';
-const role=document.createElement('div');role.className='pool-status-role';role.textContent=`${state} - ${poolRoleText(p)}`;
+const role=document.createElement('div');role.className='pool-status-role';role.textContent=state;
 main.appendChild(name);main.appendChild(host);main.appendChild(role);if(note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
 const metrics=document.createElement('div');metrics.className='pool-status-metrics';
-[['Weight',`${Number(p.share_percent)||0}%`],['Response',responseText(p.response_ms)],['Shares/min',poolSharesPerMinute(p)],
+const liveShare=p.connected&&onlineWeight>0?Math.round((Number(p.weight)||0)*100/onlineWeight):0;
+[['Weight',`${Number(p.weight)||0}`],['Live share',`${liveShare}%`],['Response',responseText(p.response_ms)],['Shares/min',poolSharesPerMinute(p)],
 ['Work',fmt(p.work_received)],['Submitted',fmt(p.submitted)],['Accepted',fmt(p.accepted)],['Rejected',fmt(p.rejected)],
 ['Diff',diffText(p.pool_difficulty)],['Payout',payoutInfo(p).label]].forEach(m=>metrics.appendChild(poolStatusMetric(m[0],m[1])));
 row.appendChild(main);row.appendChild(metrics);list.appendChild(row)});
@@ -695,8 +692,7 @@ const live=$('cal-live-state');live.className=`pill ${s.hardware_fault?'bad':cal
 async function loadSettings(){try{const r=await fetch('/api/settings',{cache:'no-store'});
 if(!r.ok)throw new Error(r.status);const c=await r.json();setVal('cfg-wifi-ssid',c.wifi_ssid);
 setVal('cfg-hostname',c.hostname);setVal('cfg-pool-host',c.pool_host);setVal('cfg-pool-port',c.pool_port);
-setVal('cfg-backup-pool-host',c.backup_pool_host);setVal('cfg-backup-pool-port',c.backup_pool_port);
-$('cfg-pool-tls').checked=!!c.pool_tls;$('cfg-backup-pool-tls').checked=!!c.backup_pool_tls;
+$('cfg-pool-tls').checked=!!c.pool_tls;
 setVal('cfg-pool-mode',c.multi_pool_enabled?'multi':'single');
 setAuxPools(c.aux_pools||[]);
 setVal('cfg-pool-user',c.pool_user);$('cfg-pool-diff').dataset.manual=c.pool_difficulty||1000;
@@ -735,8 +731,8 @@ $('cfg-display-sleep-mode').onchange=syncDisplaySleep;$('cfg-display-sleep-minut
 $('cfg-pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.value};
 $('cfg-pool-diff-auto').onchange=syncPoolDifficulty;
 $('cfg-pool-mode').onchange=syncPoolMode;
-$('cfg-add-aux-pool').onclick=()=>{const share=defaultAuxPoolShare();
-if(auxPools().length<AUX_POOL_COUNT)renderAuxPools([...auxPools(),{port:3333,enabled:share>0,share_percent:share,password_inherit:true}])};
+$('cfg-add-aux-pool').onclick=()=>{
+if(auxPools().length<AUX_POOL_COUNT)renderAuxPools([...auxPools(),{port:3333,enabled:true,weight:defaultAuxPoolWeight()}])};
 $('oc-limits-defaults').onclick=setDefaultLimits;
 $('limit-unrestricted').onchange=e=>setLimitRangeMode(e.currentTarget.checked,true);
 $('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){$('cfg-overclock-enabled').checked=false;
@@ -759,12 +755,12 @@ let fanMode=val('cfg-fan-mode');const sleepMode=val('cfg-display-sleep-mode');
 const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';
 const sleepMax=Number($('cfg-display-sleep-minutes').max)||65535;
 const sleepMinutes=clamp(Number(val('cfg-display-sleep-minutes'))||15,1,sleepMax);
-const body={wifi_ssid:val('cfg-wifi-ssid'),hostname:val('cfg-hostname'),pool_host:val('cfg-pool-host'),
-pool_port:Number(val('cfg-pool-port')),backup_pool_host:val('cfg-backup-pool-host'),backup_pool_port:Number(val('cfg-backup-pool-port')),
-pool_tls:$('cfg-pool-tls').checked,backup_pool_tls:$('cfg-backup-pool-tls').checked,
+const weightedMode=multiPoolEnabled();
+const body={wifi_ssid:val('cfg-wifi-ssid'),hostname:val('cfg-hostname'),
+pool_user:val('cfg-pool-user'),
 multi_pool_enabled:multiPoolEnabled(),
 aux_pools:auxPoolPayload(),
-pool_user:val('cfg-pool-user'),pool_difficulty_auto:$('cfg-pool-diff-auto').checked,
+pool_difficulty_auto:$('cfg-pool-diff-auto').checked,
 pool_difficulty:Number(($('cfg-pool-diff-auto').checked?$('cfg-pool-diff').dataset.manual:val('cfg-pool-diff'))||1000),
 display_screensaver_enabled:$('cfg-display-screensaver').checked,display_sleep_minutes:sleepMode==='off'?0:sleepMinutes,
 overclock_enabled:$('cfg-overclock-enabled').checked,asic_frequency_mhz:Number(val('cfg-frequency')),asic_voltage_mv:Number(val('cfg-voltage')),
@@ -790,7 +786,9 @@ limit_tps546_temp_max_c:Number(val('limit-tps546-temp-max')),
 limit_iout_warn_deciamps:limitAmpDa('limit-iout-warn'),
 limit_iout_fault_deciamps:limitAmpDa('limit-iout-fault')};
 const wifiPass=cfgWifiPasswordForTest();if(wifiPass!=null)body.wifi_password=wifiPass;
-if(val('cfg-pool-pass')&&val('cfg-pool-pass')!==PASSWORD_MASK)body.pool_pass=val('cfg-pool-pass');
+if(!weightedMode){body.pool_host=val('cfg-pool-host');body.pool_port=Number(val('cfg-pool-port'));
+body.pool_tls=$('cfg-pool-tls').checked;
+if(val('cfg-pool-pass')&&val('cfg-pool-pass')!==PASSWORD_MASK)body.pool_pass=val('cfg-pool-pass')}
 return body}
 const statusTimers={};
 function setStatus(id,msg,cls='',fade=false){const el=$(id);if(!el)return;
@@ -802,7 +800,8 @@ if(p===''&&val('cfg-wifi-ssid')===loadedWifiSsid)return null;return p.trim()}
 function cfgWifiKey(){const p=cfgWifiPasswordForTest();return `${val('cfg-wifi-ssid')}\n${p==null?'__saved__':p}`}
 function cfgWifiChanged(){return val('cfg-wifi-ssid')!==loadedWifiSsid||cfgWifiPasswordForTest()!=null}
 function cfgWifiReady(){return !cfgWifiChanged()||(wifiSettingsTestOk&&wifiSettingsTestKey===cfgWifiKey())}
-function auxPoolTotal(){return auxPools().reduce((sum,p)=>sum+(p.enabled?p.share_percent:0),0)}
+function invalidWeightedPools(){const defaultUser=val('cfg-pool-user');
+return auxPools().some(p=>p.enabled&&(!p.host||!p.port||(!p.user&&!defaultUser)||p.weight<POOL_WEIGHT_MIN||p.weight>POOL_WEIGHT_MAX))}
 function showSettingsValidationModal(message,tests=[]){txt('settings-validation-message',message||'Check the settings and try again.');
 const list=$('settings-validation-details');list.innerHTML='';
 tests.forEach(t=>{const row=document.createElement('div');row.className=`risk-row ${t.ok?'':'bad'}`;
@@ -992,8 +991,8 @@ const live=$('cal-live-state');live.className='pill bad';live.textContent=calibr
 setStatus('calibration-status',`calibration failed: ${e.message||e}`,'err')}finally{calibrationActive=false;calibrationAbort=false;btn.textContent='Calibrate OC Voltage';refresh()}}
 async function saveConfig(statusId,forceRisk=false){if(!cfgWifiReady()){setStatus(statusId,'test Wi-Fi before saving','err');
 setStatus('wifi-test-status','Test Wi-Fi before saving.','err');showSettingsValidationModal('Test Wi-Fi connection before saving.');syncWifiTest();return}
-if(statusId==='settings-status'&&multiPoolEnabled()&&auxPoolTotal()>AUX_POOL_TOTAL_SHARE_MAX){showSettingsValidationModal('Enabled auxiliary pool shares cannot exceed 99% so the main pool keeps 1%.');
-setStatus(statusId,'save blocked: auxiliary shares exceed 99%','err');return}
+if(statusId==='settings-status'&&multiPoolEnabled()&&invalidWeightedPools()){showSettingsValidationModal('Enabled pools need host, port, weight 1-99, and either a row username or default username.');
+setStatus(statusId,'save blocked: invalid weighted pool','err');return}
 if(statusId==='overclock-status'&&!forceRisk&&$('cfg-overclock-enabled').checked){const r=overclockRisk();
 if(r.freqBad){showRiskModal(statusId);return}}
 setStatus(statusId,'saving...');

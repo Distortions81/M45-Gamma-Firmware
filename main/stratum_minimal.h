@@ -43,6 +43,7 @@ typedef struct {
     bool using_backup_pool;
     bool disabled;
     uint8_t pool_id;
+    uint8_t weight;
     uint8_t share_percent;
     char pool_host[M45_POOL_HOST_MAX + 1];
     char note[STRATUM_POOL_STATUS_NOTE_MAX];

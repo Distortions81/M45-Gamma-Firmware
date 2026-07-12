@@ -137,7 +137,8 @@ align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.aux-po
 .aux-pool-enable{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
 .aux-pool-enable input{width:18px;height:18px;margin:0}.aux-pool-delete{height:30px;padding:0 10px}
 .aux-pool-row .toggle-row{grid-column:auto;padding:0}.aux-pool-disabled .field,.aux-pool-disabled .toggle-row{opacity:.48}
-.aux-pool-row .aux-pool-wide{grid-column:1/-1}
+.aux-pool-row .aux-pool-wide{grid-column:1/-1}.aux-weight-control{display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;align-items:center}
+.aux-weight-control .range-line input[type=range]{flex:0 1 196px;max-width:100%}
 .fan-presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
 .fan-presets button{height:28px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--muted);
 font-size:11px;font-weight:650;padding:0 5px;cursor:pointer;min-width:0;white-space:nowrap}

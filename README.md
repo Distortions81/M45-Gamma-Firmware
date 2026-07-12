@@ -120,8 +120,7 @@ HTTP QR code. Open that address from a phone or computer on the same network.
 - Runtime settings for Wi-Fi, mining pool, fan mode, and ASIC speed.
 - Overclocking disabled by default. When disabled, stock clock and voltage are
   enforced even if higher saved values exist.
-- Primary and backup Stratum pools with automatic return to the primary pool,
-  plus optional weighted auxiliary pools.
+- Single-pool mining or weighted multi-pool mining with per-pool weights.
 - Wallet payout detection from coinbase data when the pool exposes enough
   information.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes for tools
@@ -133,7 +132,7 @@ HTTP QR code. Open that address from a phone or computer on the same network.
 M45-specific additions compared with the stock ESP-Miner-style workflow:
 
 - OLED first-boot Wi-Fi setup QR code and post-setup dashboard QR code.
-- Browser controls for Wi-Fi, primary and backup pools, fan mode, ASIC
+- Browser controls for Wi-Fi, mining pools, fan mode, ASIC
   clock/voltage, temperature compensation, display sleep, screensaver and ASIC power.
 - Configurable safety limits for VIN, ASIC voltage, ASIC temperature, TPS546
   temperature, and TPS546 current, with an explicit unrestricted mode for
@@ -143,12 +142,10 @@ M45-specific additions compared with the stock ESP-Miner-style workflow:
 - Auto-clock preset selection holds or steps down instead of increasing when
   VIN is at or below `5.01 V`, TPS546 current or VR temperature is close to
   configured safety limits, and caps automatic increases at `1200 MHz`.
-- Coinbase payout detection, block-found alerting, best-diff reset, and
-  automatic fallback and return behavior for backup Stratum pools.
+- Coinbase payout detection, block-found alerting, and best-diff reset.
 - Weighted multi-pool mining uses per-pool job slices so pools can keep their
   own Stratum version mask without clearing unrelated ASIC work.
-- Auxiliary pools can inherit the primary username/password or override
-  credentials per pool for different SHA-256 coins.
+- Weighted pools use per-pool usernames or an optional default username.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes documented in
   [`docs/json-endpoints.md`](docs/json-endpoints.md).
 
