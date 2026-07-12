@@ -1980,6 +1980,25 @@ void bitaxe_gamma602_clear_jobs(GlobalState *state)
     pthread_mutex_unlock(&state->valid_jobs_lock);
 }
 
+void bitaxe_gamma602_clear_pool_jobs(GlobalState *state, uint8_t pool_id)
+{
+    if (state->ASIC_TASK_MODULE.active_jobs == NULL || state->valid_jobs == NULL) {
+        return;
+    }
+
+    pthread_mutex_lock(&state->valid_jobs_lock);
+    for (int i = 0; i < ASIC_JOB_SLOTS; ++i) {
+        bm_job *job = state->ASIC_TASK_MODULE.active_jobs[i];
+        if (job == NULL || job->pool_id != pool_id) {
+            continue;
+        }
+        state->valid_jobs[i] = 0;
+        free_bm_job(job);
+        state->ASIC_TASK_MODULE.active_jobs[i] = NULL;
+    }
+    pthread_mutex_unlock(&state->valid_jobs_lock);
+}
+
 uint8_t bitaxe_gamma602_chip_count(void)
 {
     return g_chip_count;

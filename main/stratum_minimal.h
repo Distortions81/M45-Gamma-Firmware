@@ -10,6 +10,7 @@
 #define STRATUM_HASHRATE_MAX_ASICS 2
 #define STRATUM_HASH_DOMAIN_COUNT 4
 #define STRATUM_POOL_STATUS_MAX (1 + M45_AUX_POOL_MAX)
+#define STRATUM_POOL_STATUS_NOTE_MAX 96
 
 #ifdef M45_ASIC_LOSS_METRICS
 typedef struct {
@@ -40,9 +41,11 @@ typedef struct {
     bool connected;
     bool auxiliary;
     bool using_backup_pool;
+    bool disabled;
     uint8_t pool_id;
     uint8_t share_percent;
     char pool_host[M45_POOL_HOST_MAX + 1];
+    char note[STRATUM_POOL_STATUS_NOTE_MAX];
     uint16_t pool_port;
     double pool_diff;
     uint32_t work_received;
@@ -50,6 +53,8 @@ typedef struct {
     uint32_t accepted;
     uint32_t rejected;
     uint32_t connected_seconds;
+    uint16_t payout_percent_x100;
+    uint8_t payout_status;
 } stratum_pool_status_t;
 
 typedef struct {

@@ -951,12 +951,12 @@ static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POO
         return false;
     }
 
-    memset(aux_pools, 0, sizeof(m45_aux_pool_t) * M45_AUX_POOL_MAX);
     const int count = cJSON_GetArraySize(array);
     if (count > M45_AUX_POOL_MAX) {
         return false;
     }
 
+    m45_aux_pool_t parsed[M45_AUX_POOL_MAX] = {0};
     for (int i = 0; i < count; ++i) {
         cJSON *item = cJSON_GetArrayItem(array, i);
         if (!cJSON_IsObject(item)) {
@@ -964,11 +964,13 @@ static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POO
         }
 
         char host[M45_POOL_HOST_MAX + 1] = "";
+        char user[M45_POOL_USER_MAX + 1] = "";
         uint16_t port = 0;
         uint16_t percent = 0;
         bool tls = false;
         bool enabled = false;
         if (!json_get_string(item, "host", host, sizeof(host), false) ||
+            !json_get_string(item, "user", user, sizeof(user), false) ||
             !json_get_optional_u16(item, "port", &port, 1, 65535) ||
             !json_get_optional_bool(item, "tls", &tls) ||
             !json_get_optional_bool(item, "enabled", &enabled) ||
@@ -985,12 +987,26 @@ static bool json_get_aux_pools(cJSON *root, m45_aux_pool_t aux_pools[M45_AUX_POO
         if (port == 0) {
             return false;
         }
-        strlcpy(aux_pools[i].host, host, sizeof(aux_pools[i].host));
-        aux_pools[i].port = port;
-        aux_pools[i].tls = tls;
-        aux_pools[i].enabled = enabled;
-        aux_pools[i].share_percent = (uint8_t)percent;
+        strlcpy(parsed[i].host, host, sizeof(parsed[i].host));
+        strlcpy(parsed[i].user, user, sizeof(parsed[i].user));
+
+        cJSON *pass = cJSON_GetObjectItem(item, "pass");
+        if (pass != NULL &&
+            (!cJSON_IsString(pass) || pass->valuestring == NULL ||
+             strlen(pass->valuestring) >= sizeof(parsed[i].pass))) {
+            return false;
+        }
+        if (pass != NULL && pass->valuestring[0] != '\0') {
+            strlcpy(parsed[i].pass, pass->valuestring, sizeof(parsed[i].pass));
+        } else {
+            strlcpy(parsed[i].pass, aux_pools[i].pass, sizeof(parsed[i].pass));
+        }
+        parsed[i].port = port;
+        parsed[i].tls = tls;
+        parsed[i].enabled = enabled;
+        parsed[i].share_percent = (uint8_t)percent;
     }
+    memcpy(aux_pools, parsed, sizeof(parsed));
     return true;
 }
 
@@ -1548,7 +1564,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     char auto_clock_hold_reason[128];
     char tps546_model[24];
     char domain_hashrates_json[512];
-    char pool_statuses_json[1800];
+    char pool_statuses_json[3000];
 #ifdef M45_ASIC_LOSS_METRICS
     char asic_loss_json[960];
 #endif
@@ -1573,8 +1589,10 @@ static esp_err_t status_handler(httpd_req_t *req)
             continue;
         }
         char status_host[160];
+        char status_note[160];
         char status_label[16];
         json_escape(status_host, sizeof(status_host), pool->pool_host);
+        json_escape(status_note, sizeof(status_note), pool->note);
         if (pool->auxiliary) {
             snprintf(status_label, sizeof(status_label), "Aux %u", (unsigned)pool->pool_id);
         } else {
@@ -1587,15 +1605,19 @@ static esp_err_t status_handler(httpd_req_t *req)
             sizeof(pool_statuses_json) - pool_status_offset,
             "%s{\"pool_id\":%u,\"label\":\"%s\",\"role\":\"%s\","
             "\"host\":\"%s\",\"port\":%u,\"connected\":%s,\"using_backup\":%s,"
+            "\"disabled\":%s,\"note\":\"%s\","
             "\"share_percent\":%u,\"connected_seconds\":%lu,\"pool_difficulty\":%.2f,"
-            "\"work_received\":%lu,\"submitted\":%lu,\"accepted\":%lu,\"rejected\":%lu}",
+            "\"work_received\":%lu,\"submitted\":%lu,\"accepted\":%lu,\"rejected\":%lu,"
+            "\"payout_status\":\"%s\",\"payout_percent_x100\":%u}",
             first_pool_status ? "" : ",", (unsigned)pool->pool_id, status_label, role,
             status_host,
             pool->pool_port, pool->connected ? "true" : "false",
-            pool->using_backup_pool ? "true" : "false", pool->share_percent,
+            pool->using_backup_pool ? "true" : "false",
+            pool->disabled ? "true" : "false", status_note, pool->share_percent,
             (unsigned long)pool->connected_seconds, pool->pool_diff,
             (unsigned long)pool->work_received, (unsigned long)pool->submitted,
-            (unsigned long)pool->accepted, (unsigned long)pool->rejected);
+            (unsigned long)pool->accepted, (unsigned long)pool->rejected,
+            payout_status_name(pool->payout_status), pool->payout_percent_x100);
         if (written < 0 ||
             written >= (int)(sizeof(pool_statuses_json) - pool_status_offset)) {
             httpd_resp_set_status(req, "500 Internal Server Error");
@@ -1910,7 +1932,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     char pool_host[160];
     char backup_pool_host[160];
     char pool_user[200];
-    char aux_pools_json[640];
+    char aux_pools_json[960];
     json_escape(wifi_ssid, sizeof(wifi_ssid), config->wifi_ssid);
     json_escape(hostname, sizeof(hostname), config->hostname);
     json_escape(pool_host, sizeof(pool_host), config->pool_host);
@@ -1920,14 +1942,18 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     aux_pools_json[aux_offset++] = '[';
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
         char aux_host[160];
+        char aux_user[200];
         json_escape(aux_host, sizeof(aux_host), config->aux_pools[i].host);
+        json_escape(aux_user, sizeof(aux_user), config->aux_pools[i].user);
         const int written =
             snprintf(aux_pools_json + aux_offset, sizeof(aux_pools_json) - aux_offset,
-                     "%s{\"host\":\"%s\",\"port\":%u,\"tls\":%s,\"enabled\":%s,\"share_percent\":%u}",
+                     "%s{\"host\":\"%s\",\"port\":%u,\"tls\":%s,\"enabled\":%s,"
+                     "\"share_percent\":%u,\"user\":\"%s\",\"password_set\":%s}",
                      i == 0 ? "" : ",", aux_host, config->aux_pools[i].port,
                      config->aux_pools[i].tls ? "true" : "false",
                      config->aux_pools[i].enabled ? "true" : "false",
-                     config->aux_pools[i].share_percent);
+                     config->aux_pools[i].share_percent, aux_user,
+                     config->aux_pools[i].pass[0] != '\0' ? "true" : "false");
         if (written < 0 || written >= (int)(sizeof(aux_pools_json) - aux_offset)) {
             httpd_resp_set_status(req, "500 Internal Server Error");
             return httpd_resp_sendstr(req, "{\"error\":\"settings too large\"}");

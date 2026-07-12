@@ -120,7 +120,8 @@ HTTP QR code. Open that address from a phone or computer on the same network.
 - Runtime settings for Wi-Fi, mining pool, fan mode, and ASIC speed.
 - Overclocking disabled by default. When disabled, stock clock and voltage are
   enforced even if higher saved values exist.
-- Primary and backup Stratum pools with automatic return to the primary pool.
+- Primary and backup Stratum pools with automatic return to the primary pool,
+  plus optional weighted auxiliary pools.
 - Wallet payout detection from coinbase data when the pool exposes enough
   information.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes for tools
@@ -144,6 +145,10 @@ M45-specific additions compared with the stock ESP-Miner-style workflow:
   configured safety limits, and caps automatic increases at `1200 MHz`.
 - Coinbase payout detection, block-found alerting, best-diff reset, and
   automatic fallback and return behavior for backup Stratum pools.
+- Weighted multi-pool mining uses per-pool job slices so pools can keep their
+  own Stratum version mask without clearing unrelated ASIC work.
+- Auxiliary pools can inherit the primary username or override credentials per
+  pool for different SHA-256 coins.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes documented in
   [`docs/json-endpoints.md`](docs/json-endpoints.md).
 

@@ -271,8 +271,12 @@ static void sanitize_config(m45_config_t *config)
         m45_aux_pool_t *aux = &config->aux_pools[i];
         aux->host[M45_POOL_HOST_MAX] = '\0';
         aux->ip[M45_POOL_IP_MAX] = '\0';
+        aux->user[M45_POOL_USER_MAX] = '\0';
+        aux->pass[M45_POOL_PASS_MAX] = '\0';
         if (aux->host[0] == '\0') {
             aux->ip[0] = '\0';
+            aux->user[0] = '\0';
+            aux->pass[0] = '\0';
             aux->port = 0;
             aux->tls = false;
             aux->enabled = false;
@@ -489,6 +493,12 @@ esp_err_t m45_config_load(void)
         snprintf(key, sizeof(key), "aux%u_ip", (unsigned)i);
         load_string(nvs, key, g_config.aux_pools[i].ip,
                     sizeof(g_config.aux_pools[i].ip));
+        snprintf(key, sizeof(key), "aux%u_user", (unsigned)i);
+        load_string(nvs, key, g_config.aux_pools[i].user,
+                    sizeof(g_config.aux_pools[i].user));
+        snprintf(key, sizeof(key), "aux%u_pass", (unsigned)i);
+        load_string(nvs, key, g_config.aux_pools[i].pass,
+                    sizeof(g_config.aux_pools[i].pass));
         snprintf(key, sizeof(key), "aux%u_port", (unsigned)i);
         load_u16(nvs, key, &g_config.aux_pools[i].port);
         snprintf(key, sizeof(key), "aux%u_tls", (unsigned)i);
@@ -637,6 +647,16 @@ esp_err_t m45_config_save(const m45_config_t *config)
         }
         snprintf(key, sizeof(key), "aux%u_ip", (unsigned)i);
         err = nvs_set_str(nvs, key, clean.aux_pools[i].ip);
+        if (err != ESP_OK) {
+            break;
+        }
+        snprintf(key, sizeof(key), "aux%u_user", (unsigned)i);
+        err = nvs_set_str(nvs, key, clean.aux_pools[i].user);
+        if (err != ESP_OK) {
+            break;
+        }
+        snprintf(key, sizeof(key), "aux%u_pass", (unsigned)i);
+        err = nvs_set_str(nvs, key, clean.aux_pools[i].pass);
         if (err != ESP_OK) {
             break;
         }
@@ -838,6 +858,43 @@ esp_err_t m45_config_set_pool_ip_cache(bool backup_pool, const char *expected_ho
 
     if (err == ESP_OK) {
         strlcpy(active_ip, ip, M45_POOL_IP_MAX + 1);
+    }
+    return err;
+}
+
+esp_err_t m45_config_set_aux_pool_ip_cache(size_t aux_index, const char *expected_host,
+                                           const char *ip)
+{
+    if (aux_index >= M45_AUX_POOL_MAX || expected_host == NULL || ip == NULL ||
+        strlen(ip) > M45_POOL_IP_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    m45_aux_pool_t *aux = &g_config.aux_pools[aux_index];
+    if (strcmp(aux->host, expected_host) != 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (strcmp(aux->ip, ip) == 0) {
+        return ESP_OK;
+    }
+
+    char nvs_key[16];
+    snprintf(nvs_key, sizeof(nvs_key), "aux%u_ip", (unsigned)aux_index);
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(M45_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_set_str(nvs, nvs_key, ip);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+
+    if (err == ESP_OK) {
+        strlcpy(aux->ip, ip, sizeof(aux->ip));
     }
     return err;
 }

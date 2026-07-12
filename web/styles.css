@@ -111,6 +111,7 @@ pointer-events:none;transition:opacity .12s ease,visibility .12s ease}
 gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:6px;background:#111518}
 .pool-status-main{display:grid;gap:2px;min-width:0}.pool-status-name{display:flex;align-items:center;gap:6px;font-weight:760}
 .pool-status-host{color:var(--muted);font-size:12px;overflow-wrap:anywhere;min-width:0}
+.pool-status-note{color:var(--warn);font-size:12px;overflow-wrap:anywhere;min-width:0}
 .pool-status-metric{display:grid;gap:2px;min-width:0}.pool-status-metric span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .pool-status-metric strong{font-size:13px;line-height:1.1}.pool-status-role{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
 .inline-value{display:inline-flex;align-items:center;gap:6px}.icon-btn{width:24px;height:24px;

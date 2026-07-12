@@ -73,6 +73,7 @@ esp_err_t bitaxe_gamma602_set_voltage_mv_for_config(GlobalState *state, uint16_t
 esp_err_t bitaxe_gamma602_apply_safety_limits(const m45_config_t *config);
 void bitaxe_gamma602_reset_auto_clock_control(void);
 void bitaxe_gamma602_clear_jobs(GlobalState *state);
+void bitaxe_gamma602_clear_pool_jobs(GlobalState *state, uint8_t pool_id);
 uint8_t bitaxe_gamma602_chip_count(void);
 const char *bitaxe_gamma602_status(void);
 const char *bitaxe_gamma602_tps_model(void);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -57,6 +58,8 @@
 typedef struct {
     char host[M45_POOL_HOST_MAX + 1];
     char ip[M45_POOL_IP_MAX + 1];
+    char user[M45_POOL_USER_MAX + 1];
+    char pass[M45_POOL_PASS_MAX + 1];
     uint16_t port;
     bool tls;
     bool enabled;
@@ -118,6 +121,8 @@ esp_err_t m45_config_set_runtime(const m45_config_t *config);
 esp_err_t m45_config_factory_reset(void);
 esp_err_t m45_config_set_pool_ip_cache(bool backup_pool, const char *expected_host,
                                        const char *ip);
+esp_err_t m45_config_set_aux_pool_ip_cache(size_t aux_index, const char *expected_host,
+                                           const char *ip);
 esp_err_t m45_config_set_best_diff(double best_diff);
 esp_err_t m45_config_reset_best_diff(void);
 const m45_config_t *m45_config_get(void);
