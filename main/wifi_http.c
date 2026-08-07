@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -54,8 +55,11 @@
 #define M45_DEVICE_NAME "M45-Firmware"
 #define HTTP_URI_HANDLER_SLOTS 58
 #define HTTP_HANDLER_WARN_MS 100
+#define HTTP_JSON_BODY_DEADLINE_MS 30000
 #define LOG_CAPTURE_TIMEOUT_MS 5000
 #define OTA_UPLOAD_BUFFER_SIZE 4096
+#define OTA_UPLOAD_IDLE_TIMEOUT_MS 30000
+#define OTA_UPLOAD_TOTAL_TIMEOUT_MS (5U * 60U * 1000U)
 #define OTA_FACTORY_TABLE_OFFSET 0x8000
 #define OTA_FACTORY_TABLE_SIZE 0xC00
 
@@ -186,12 +190,84 @@ static const char *http_method_name(httpd_method_t method)
     }
 }
 
+static bool http_header_equals(httpd_req_t *req, const char *name,
+                               const char *expected)
+{
+    const size_t value_len = httpd_req_get_hdr_value_len(req, name);
+    const size_t expected_len = strlen(expected);
+    if (value_len != expected_len || value_len >= 32) {
+        return false;
+    }
+
+    char value[32];
+    return httpd_req_get_hdr_value_str(req, name, value, sizeof(value)) == ESP_OK &&
+           strcasecmp(value, expected) == 0;
+}
+
+static bool http_origin_authority_matches_host(const char *origin, const char *host)
+{
+    static const char prefix[] = "http://";
+    if (strncasecmp(origin, prefix, sizeof(prefix) - 1U) != 0) {
+        return false;
+    }
+
+    const char *authority = origin + sizeof(prefix) - 1U;
+    if (authority[0] == '\0' || strchr(authority, '/') != NULL) {
+        return false;
+    }
+    if (strcasecmp(authority, host) == 0) {
+        return true;
+    }
+
+    const size_t authority_len = strlen(authority);
+    const size_t host_len = strlen(host);
+    if (authority_len > 3U && strcmp(authority + authority_len - 3U, ":80") == 0 &&
+        host_len == authority_len - 3U && strncasecmp(authority, host, host_len) == 0) {
+        return true;
+    }
+    return host_len > 3U && strcmp(host + host_len - 3U, ":80") == 0 &&
+           authority_len == host_len - 3U &&
+           strncasecmp(authority, host, authority_len) == 0;
+}
+
+static bool request_has_disallowed_browser_origin(httpd_req_t *req)
+{
+    if (http_header_equals(req, "Sec-Fetch-Site", "cross-site")) {
+        return true;
+    }
+
+    const size_t origin_len = httpd_req_get_hdr_value_len(req, "Origin");
+    if (origin_len == 0) {
+        return false;
+    }
+    const size_t host_len = httpd_req_get_hdr_value_len(req, "Host");
+    if (origin_len >= 192 || host_len == 0 || host_len >= 128) {
+        return true;
+    }
+
+    char origin[192];
+    char host[128];
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) {
+        return true;
+    }
+    return !http_origin_authority_matches_host(origin, host);
+}
+
 static esp_err_t timed_http_handler(httpd_req_t *req)
 {
     const timed_http_route_t *route = (const timed_http_route_t *)req->user_ctx;
     if (route == NULL || route->handler == NULL) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"route missing\"}");
+    }
+
+    if ((route->method == HTTP_POST || route->method == HTTP_PATCH) &&
+        request_has_disallowed_browser_origin(req)) {
+        httpd_resp_set_status(req, "403 Forbidden");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(
+            req, "{\"ok\":false,\"error\":\"cross-origin request denied\"}");
     }
 
     const uint64_t started_us = http_now_us();
@@ -3073,8 +3149,22 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     esp_ota_handle_t ota_handle = 0;
     bool ota_started = false;
     bool factory_table_checked = false;
+    const uint64_t upload_started_us = http_now_us();
+    uint64_t last_progress_us = upload_started_us;
 
     while (remaining > 0) {
+        const uint64_t now_us = http_now_us();
+        if (now_us - upload_started_us >=
+                (uint64_t)OTA_UPLOAD_TOTAL_TIMEOUT_MS * 1000ULL ||
+            now_us - last_progress_us >=
+                (uint64_t)OTA_UPLOAD_IDLE_TIMEOUT_MS * 1000ULL) {
+            if (ota_started) {
+                esp_ota_abort(ota_handle);
+            }
+            free(buf);
+            return send_json_error(req, "408 Request Timeout", "firmware upload timed out");
+        }
+
         const int recv_len = httpd_req_recv(req, (char *)buf,
                                             remaining < OTA_UPLOAD_BUFFER_SIZE
                                                 ? remaining
@@ -3089,6 +3179,18 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
             free(buf);
             return send_json_error(req, "500 Internal Server Error", "upload failed");
         }
+        const uint64_t received_us = http_now_us();
+        if (received_us - upload_started_us >=
+                (uint64_t)OTA_UPLOAD_TOTAL_TIMEOUT_MS * 1000ULL ||
+            received_us - last_progress_us >=
+                (uint64_t)OTA_UPLOAD_IDLE_TIMEOUT_MS * 1000ULL) {
+            if (ota_started) {
+                esp_ota_abort(ota_handle);
+            }
+            free(buf);
+            return send_json_error(req, "408 Request Timeout", "firmware upload timed out");
+        }
+        last_progress_us = received_us;
 
         const size_t chunk_start = received;
         const size_t chunk_end = received + (size_t)recv_len;
@@ -3291,11 +3393,6 @@ typedef struct {
 static void set_espminer_api_headers(httpd_req_t *req)
 {
     set_no_store_headers(req);
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods",
-                       "GET, POST, PATCH, OPTIONS");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers",
-                       "Content-Type, X-Page-Token");
 }
 
 static esp_err_t send_espminer_json_error(httpd_req_t *req, const char *status,
@@ -4113,7 +4210,14 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     }
 
     int received = 0;
+    const uint64_t receive_started_us = http_now_us();
     while (received < req->content_len) {
+        if (http_now_us() - receive_started_us >=
+            (uint64_t)HTTP_JSON_BODY_DEADLINE_MS * 1000ULL) {
+            free(body);
+            return send_espminer_json_error(req, "408 Request Timeout",
+                                            "request body timed out");
+        }
         const int ret = httpd_req_recv(req, body + received, req->content_len - received);
         if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
             continue;
@@ -4121,6 +4225,12 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
         if (ret <= 0) {
             free(body);
             return ESP_FAIL;
+        }
+        if (http_now_us() - receive_started_us >=
+            (uint64_t)HTTP_JSON_BODY_DEADLINE_MS * 1000ULL) {
+            free(body);
+            return send_espminer_json_error(req, "408 Request Timeout",
+                                            "request body timed out");
         }
         received += ret;
     }

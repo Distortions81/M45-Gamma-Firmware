@@ -70,6 +70,19 @@ OTA accepts either:
 Release builds publish a merged factory image and update the GitHub Pages web
 flasher so older release images can be selected.
 
+### Network Trust And Exposure
+
+M45 is designed for use on a trusted local network. Its HTTP dashboard and API
+do not provide user accounts or access control, so any client that can reach the
+device can view its status and change its configuration, hardware settings, or
+firmware.
+
+Do not expose the device HTTP port through router port forwarding, UPnP, a
+public reverse proxy, or a cloud tunnel. Do not place it on an untrusted or guest
+LAN/VLAN unless that network prevents other clients from reaching the device.
+Browser cross-origin management requests are blocked, but that is not a
+substitute for network isolation.
+
 ### Build And Flash
 
 Docker is the easiest build path:

@@ -5,6 +5,11 @@ This document describes the HTTP JSON API served by the device web UI.
 All paths are relative to the device origin, for example
 `http://m45-firmware.local/api/status`.
 
+The API has no user authentication and is intended only for a trusted local
+network. Do not publish it through port forwarding, UPnP, a public reverse
+proxy, or a cloud tunnel. Any client that can connect directly to the device can
+invoke both read and management endpoints.
+
 Most endpoints return `application/json` and set no-store cache headers. Errors
 use:
 
@@ -415,6 +420,8 @@ Limits and errors:
 - Returns `409 Conflict` in setup mode.
 - Returns `409 Conflict` if no OTA partition is available.
 - Returns `400 Bad Request` for unsupported or invalid firmware images.
+- Returns `408 Request Timeout` after 30 seconds without upload progress or
+  after five minutes total.
 
 Success response:
 
@@ -444,17 +451,14 @@ These endpoints are part of the API surface but do not return JSON.
 ## ESP-Miner Compatibility Endpoints
 
 The compatibility routes are intended for tools that expect the Bitaxe
-ESP-Miner API shape. These endpoints set CORS headers:
-
-```text
-Access-Control-Allow-Origin: *
-Access-Control-Allow-Methods: GET, POST, PATCH, OPTIONS
-Access-Control-Allow-Headers: Content-Type, X-Page-Token
-```
+ESP-Miner API shape. They do not emit CORS authorization headers. Same-origin
+dashboard requests and non-browser API clients continue to work, while browsers
+cannot grant an unrelated web origin access to the API. State-changing browser
+requests with a mismatched `Origin` are rejected with `403 Forbidden`.
 
 ### `OPTIONS /api/*`
 
-Preflight response for compatibility API requests.
+Returns `204 No Content` without CORS authorization headers.
 
 Response status: `204 No Content`.
 
@@ -604,6 +608,7 @@ Notes:
 - `stratumSuggestedDifficulty` of `0` enables automatic difficulty.
 - `autofanspeed` accepts JSON booleans or numeric `0`/`1`.
 - `manualFanSpeed` of `0` means fan off when manual fan mode is active.
+- The request body must be received within 30 seconds.
 
 Response:
 
