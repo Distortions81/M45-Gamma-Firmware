@@ -206,28 +206,33 @@ static bool http_header_equals(httpd_req_t *req, const char *name,
 
 static bool http_origin_authority_matches_host(const char *origin, const char *host)
 {
-    static const char prefix[] = "http://";
-    if (strncasecmp(origin, prefix, sizeof(prefix) - 1U) != 0) {
+    static const char http_prefix[] = "http://";
+    static const char https_prefix[] = "https://";
+    const char *authority = NULL;
+
+    if (strncasecmp(origin, http_prefix, sizeof(http_prefix) - 1U) == 0) {
+        authority = origin + (sizeof(http_prefix) - 1U);
+    } else if (strncasecmp(origin, https_prefix, sizeof(https_prefix) - 1U) == 0) {
+        authority = origin + (sizeof(https_prefix) - 1U);
+    } else {
         return false;
     }
 
-    const char *authority = origin + sizeof(prefix) - 1U;
     if (authority[0] == '\0' || strchr(authority, '/') != NULL) {
         return false;
     }
-    if (strcasecmp(authority, host) == 0) {
-        return true;
+
+    const char *origin_host_end = strchr(authority, ':');
+    const size_t origin_host_len =
+        origin_host_end != NULL ? (size_t)(origin_host_end - authority) : strlen(authority);
+
+    const char *host_end = strchr(host, ':');
+    const size_t host_len = host_end != NULL ? (size_t)(host_end - host) : strlen(host);
+    if (origin_host_len == 0 || host_len == 0 || origin_host_len != host_len) {
+        return false;
     }
 
-    const size_t authority_len = strlen(authority);
-    const size_t host_len = strlen(host);
-    if (authority_len > 3U && strcmp(authority + authority_len - 3U, ":80") == 0 &&
-        host_len == authority_len - 3U && strncasecmp(authority, host, host_len) == 0) {
-        return true;
-    }
-    return host_len > 3U && strcmp(host + host_len - 3U, ":80") == 0 &&
-           authority_len == host_len - 3U &&
-           strncasecmp(authority, host, authority_len) == 0;
+    return strncasecmp(authority, host, origin_host_len) == 0;
 }
 
 static bool request_has_disallowed_browser_origin(httpd_req_t *req)
