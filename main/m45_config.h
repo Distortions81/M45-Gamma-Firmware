@@ -124,6 +124,8 @@ typedef struct {
 } m45_config_t;
 
 esp_err_t m45_config_load(void);
+bool m45_config_hardware_identity_allowed(void);
+const char *m45_config_imported_board_version(void);
 esp_err_t m45_config_save(const m45_config_t *config);
 esp_err_t m45_config_set_runtime(const m45_config_t *config);
 esp_err_t m45_config_factory_reset(void);

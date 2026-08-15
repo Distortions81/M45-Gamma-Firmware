@@ -12,3 +12,5 @@ const char *wifi_http_ip(void);
 bool wifi_http_setup_active(void);
 const char *wifi_http_setup_ssid(void);
 const char *wifi_http_setup_ip(void);
+bool wifi_http_retained_axeos_available(void);
+esp_err_t wifi_http_select_retained_axeos(void);

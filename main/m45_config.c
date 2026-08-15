@@ -3,13 +3,18 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "nvs.h"
 
 #define M45_CONFIG_NAMESPACE "m45"
+#define M45_AXEOS_CONFIG_NAMESPACE "main"
+#define M45_AXEOS_BOARD_VERSION "602"
+#define M45_IMPORTED_BOARD_KEY "source_board"
 #define M45_DEFAULT_HOSTNAME_BASE "M45-Firmware"
 #define M45_LEGACY_HOSTNAME_BASE "m45-bitaxe"
 #define M45_HOSTNAME_SUFFIX_HEX_CHARS 6
@@ -54,6 +59,10 @@ static const char *TAG = "m45_config";
 static m45_config_t g_config;
 static pthread_mutex_t g_config_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local m45_config_t g_config_snapshot;
+static char g_imported_board_version[16];
+static bool g_imported_board_identity_present;
+
+static void sanitize_config(m45_config_t *config);
 
 static void config_store_runtime(const m45_config_t *config)
 {
@@ -231,6 +240,181 @@ static void load_double(nvs_handle_t nvs, const char *key, double *value)
     if (nvs_get_blob(nvs, key, &stored, &size) == ESP_OK && size == sizeof(stored)) {
         *value = stored;
     }
+}
+
+static bool read_string(nvs_handle_t nvs, const char *key, char *value,
+                        size_t value_size)
+{
+    size_t required = 0;
+    if (value == NULL || value_size == 0 ||
+        nvs_get_str(nvs, key, NULL, &required) != ESP_OK || required > value_size) {
+        return false;
+    }
+    return nvs_get_str(nvs, key, value, &required) == ESP_OK;
+}
+
+static bool axeos_namespace_has_config(nvs_handle_t nvs)
+{
+    return nvs_find_key(nvs, "boardversion", NULL) == ESP_OK ||
+           nvs_find_key(nvs, "wifissid", NULL) == ESP_OK ||
+           nvs_find_key(nvs, "pool_1", NULL) == ESP_OK ||
+           nvs_find_key(nvs, "stratumurl", NULL) == ESP_OK;
+}
+
+static void import_pool_url(char *destination, size_t destination_size,
+                            const char *source)
+{
+    static const char *prefixes[] = {
+        "stratum+tcp://", "stratum+ssl://", "stratum+tls://", "stratum://",
+    };
+    const char *host = source;
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        const size_t prefix_len = strlen(prefixes[i]);
+        if (strncmp(host, prefixes[i], prefix_len) == 0) {
+            host += prefix_len;
+            break;
+        }
+    }
+
+    strlcpy(destination, host, destination_size);
+    char *slash = strchr(destination, '/');
+    if (slash != NULL) {
+        *slash = '\0';
+    }
+}
+
+static bool import_axeos_pool_json(nvs_handle_t nvs, m45_config_t *config)
+{
+    uint16_t primary_index = 0;
+    (void)nvs_get_u16(nvs, "prim_idx", &primary_index);
+
+    char key[16];
+    snprintf(key, sizeof(key), "pool_%u", (unsigned)primary_index + 1U);
+    size_t json_size = 0;
+    if (nvs_get_str(nvs, key, NULL, &json_size) != ESP_OK || json_size < 3 ||
+        json_size > 4000) {
+        return false;
+    }
+
+    char *json_text = malloc(json_size);
+    if (json_text == NULL) {
+        return false;
+    }
+    if (nvs_get_str(nvs, key, json_text, &json_size) != ESP_OK) {
+        free(json_text);
+        return false;
+    }
+
+    cJSON *root = cJSON_Parse(json_text);
+    free(json_text);
+    if (root == NULL) {
+        return false;
+    }
+
+    const cJSON *protocol = cJSON_GetObjectItemCaseSensitive(root, "stratumProtocol");
+    if (cJSON_IsString(protocol) && strcmp(protocol->valuestring, "SV1") != 0) {
+        ESP_LOGW(TAG, "not importing AxeOS %s primary pool", protocol->valuestring);
+        cJSON_Delete(root);
+        return false;
+    }
+
+    const cJSON *url = cJSON_GetObjectItemCaseSensitive(root, "stratumURL");
+    const cJSON *port = cJSON_GetObjectItemCaseSensitive(root, "stratumPort");
+    const cJSON *user = cJSON_GetObjectItemCaseSensitive(root, "stratumUser");
+    const cJSON *password = cJSON_GetObjectItemCaseSensitive(root, "stratumPassword");
+    const cJSON *difficulty =
+        cJSON_GetObjectItemCaseSensitive(root, "stratumSuggestedDifficulty");
+    const cJSON *tls = cJSON_GetObjectItemCaseSensitive(root, "stratumTLS");
+
+    bool imported = false;
+    if (cJSON_IsString(url) && url->valuestring[0] != '\0') {
+        import_pool_url(config->pool_host, sizeof(config->pool_host), url->valuestring);
+        imported = config->pool_host[0] != '\0';
+    }
+    if (cJSON_IsNumber(port) && port->valueint > 0 && port->valueint <= UINT16_MAX) {
+        config->pool_port = (uint16_t)port->valueint;
+    }
+    if (cJSON_IsString(user)) {
+        strlcpy(config->pool_user, user->valuestring, sizeof(config->pool_user));
+    }
+    if (cJSON_IsString(password)) {
+        strlcpy(config->pool_pass, password->valuestring, sizeof(config->pool_pass));
+    }
+    if (cJSON_IsNumber(difficulty) && difficulty->valueint > 0 &&
+        difficulty->valueint <= UINT16_MAX) {
+        config->pool_difficulty = (uint16_t)difficulty->valueint;
+        config->pool_difficulty_auto = false;
+    }
+    config->pool_tls = cJSON_IsTrue(tls) || (cJSON_IsNumber(tls) && tls->valueint != 0);
+    cJSON_Delete(root);
+    return imported;
+}
+
+static bool import_axeos_legacy_pool(nvs_handle_t nvs, m45_config_t *config)
+{
+    char protocol[16] = "SV1";
+    (void)read_string(nvs, "stratumprot", protocol, sizeof(protocol));
+    if (strcmp(protocol, "SV1") != 0) {
+        ESP_LOGW(TAG, "not importing AxeOS %s legacy primary pool", protocol);
+        return false;
+    }
+
+    char url[M45_POOL_HOST_MAX + 1];
+    if (!read_string(nvs, "stratumurl", url, sizeof(url)) || url[0] == '\0') {
+        return false;
+    }
+    import_pool_url(config->pool_host, sizeof(config->pool_host), url);
+    (void)read_string(nvs, "stratumuser", config->pool_user,
+                      sizeof(config->pool_user));
+    (void)read_string(nvs, "stratumpass", config->pool_pass,
+                      sizeof(config->pool_pass));
+    (void)nvs_get_u16(nvs, "stratumport", &config->pool_port);
+    (void)nvs_get_u16(nvs, "stratumdiff", &config->pool_difficulty);
+    uint16_t tls = 0;
+    (void)nvs_get_u16(nvs, "stratumtls", &tls);
+    config->pool_tls = tls != 0;
+    return config->pool_host[0] != '\0';
+}
+
+static bool import_axeos_config(m45_config_t *config)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(M45_AXEOS_CONFIG_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return false;
+    }
+    if (!axeos_namespace_has_config(nvs)) {
+        nvs_close(nvs);
+        return false;
+    }
+
+    g_imported_board_identity_present = true;
+    strlcpy(g_imported_board_version, "unknown", sizeof(g_imported_board_version));
+    (void)read_string(nvs, "boardversion", g_imported_board_version,
+                      sizeof(g_imported_board_version));
+    (void)read_string(nvs, "wifissid", config->wifi_ssid,
+                      sizeof(config->wifi_ssid));
+    (void)read_string(nvs, "wifipass", config->wifi_password,
+                      sizeof(config->wifi_password));
+    (void)read_string(nvs, "hostname", config->hostname, sizeof(config->hostname));
+
+    if (!import_axeos_pool_json(nvs, config)) {
+        (void)import_axeos_legacy_pool(nvs, config);
+    }
+    nvs_close(nvs);
+    sanitize_config(config);
+    ESP_LOGI(TAG, "imported AxeOS settings for board %s", g_imported_board_version);
+    return true;
+}
+
+bool m45_config_hardware_identity_allowed(void)
+{
+    return !g_imported_board_identity_present ||
+           strcmp(g_imported_board_version, M45_AXEOS_BOARD_VERSION) == 0;
+}
+
+const char *m45_config_imported_board_version(void)
+{
+    return g_imported_board_identity_present ? g_imported_board_version : "";
 }
 
 void m45_config_apply_auto_clock_policy(m45_config_t *config)
@@ -488,6 +672,8 @@ esp_err_t m45_config_load(void)
 {
     m45_config_t loaded;
     set_defaults(&loaded);
+    g_imported_board_identity_present = false;
+    g_imported_board_version[0] = '\0';
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(M45_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
@@ -496,7 +682,25 @@ esp_err_t m45_config_load(void)
     }
 
     uint32_t stored_schema = 0;
-    (void)nvs_get_u32(nvs, "cfg_schema", &stored_schema);
+    const bool has_schema = nvs_get_u32(nvs, "cfg_schema", &stored_schema) == ESP_OK;
+    const bool has_m45_config = has_schema ||
+        nvs_find_key(nvs, "wifi_ssid", NULL) == ESP_OK ||
+        nvs_find_key(nvs, "pool_host", NULL) == ESP_OK;
+    if (!has_m45_config) {
+        nvs_close(nvs);
+        if (import_axeos_config(&loaded)) {
+            config_store_runtime(&loaded);
+            return m45_config_save(&loaded);
+        }
+        err = nvs_open(M45_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    if (read_string(nvs, M45_IMPORTED_BOARD_KEY, g_imported_board_version,
+                    sizeof(g_imported_board_version))) {
+        g_imported_board_identity_present = true;
+    }
     if (stored_schema > M45_CONFIG_SCHEMA_VERSION) {
         ESP_LOGW(TAG, "stored config schema %lu is newer than supported schema %lu; erasing settings",
                  (unsigned long)stored_schema,
@@ -504,6 +708,10 @@ esp_err_t m45_config_load(void)
         err = nvs_erase_all(nvs);
         if (err == ESP_OK) {
             err = nvs_set_u32(nvs, "cfg_schema", M45_CONFIG_SCHEMA_VERSION);
+        }
+        if (err == ESP_OK && g_imported_board_identity_present) {
+            err = nvs_set_str(nvs, M45_IMPORTED_BOARD_KEY,
+                              g_imported_board_version);
         }
         if (err == ESP_OK) {
             err = nvs_commit(nvs);
@@ -865,6 +1073,10 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
     if (err == ESP_OK) {
         err = nvs_set_u32(nvs, "cfg_schema", M45_CONFIG_SCHEMA_VERSION);
+    }
+    if (err == ESP_OK && g_imported_board_identity_present) {
+        err = nvs_set_str(nvs, M45_IMPORTED_BOARD_KEY,
+                          g_imported_board_version);
     }
     if (err == ESP_OK) {
         err = nvs_commit(nvs);

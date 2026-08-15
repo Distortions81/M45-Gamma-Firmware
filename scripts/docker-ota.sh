@@ -21,6 +21,7 @@ Build firmware in Docker and collect local OTA upload files.
 
 Output files:
   M45-Firmware.bin
+  esp-miner.bin
   esp-miner-factory-${BOARD_VERSION}-*.bin
   sha256sums.txt
   version.txt
@@ -180,6 +181,7 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
             exit 1
         }
         cp "$factory_image" "$output_dir/$(basename "$factory_image")"
+        cp "$package_dir/esp-miner.bin" "$output_dir/esp-miner.bin"
 
         if [[ -f "$package_dir/version.txt" ]]; then
             cp "$package_dir/version.txt" "$output_dir/version.txt"
@@ -191,7 +193,8 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
 
         (
             cd "$output_dir"
-            sha256sum M45-Firmware.bin esp-miner-factory-"$board_version"-*.bin > sha256sums.txt
+            sha256sum M45-Firmware.bin esp-miner.bin \
+                esp-miner-factory-"$board_version"-*.bin > sha256sums.txt
         )
 
         echo "OTA update files: $output_dir"

@@ -17,6 +17,8 @@ NVS_START = 0x9000
 NVS_SIZE = 0x6000
 PARTITION_TABLE_OFFSET = 0x8000
 PARTITION_TABLE_MAGIC = b"\xaa\x50"
+ESP_APP_MAGIC = b"\xe9"
+MIGRATION_FIRMWARE_NAME = "esp-miner.bin"
 
 
 def die(message):
@@ -114,6 +116,19 @@ def validate_factory_image(path):
         magic = firmware.read(len(PARTITION_TABLE_MAGIC))
     if magic != PARTITION_TABLE_MAGIC:
         raise ValueError(f"{path} does not contain a partition table at 0x{PARTITION_TABLE_OFFSET:x}")
+
+
+def copy_migration_image(build_dir, output_dir, flasher_args):
+    app_filename = flasher_args["app"]["file"]
+    source = build_dir / app_filename
+    if not source.exists():
+        raise FileNotFoundError(f"app firmware '{source}' does not exist")
+    with source.open("rb") as app:
+        if app.read(1) != ESP_APP_MAGIC:
+            raise ValueError(f"{source} is not an ESP application image")
+    destination = output_dir / MIGRATION_FIRMWARE_NAME
+    shutil.copy2(source, destination)
+    return destination
 
 
 def merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args):
@@ -539,6 +554,7 @@ def main():
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True)
 
+        migration_firmware = copy_migration_image(build_dir, output_dir, flasher_args)
         firmware = merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args)
         write_release_manifest(output_dir, args.name, version, firmware_name, args.board_version)
         write_index(output_dir, args.name, version, firmware_name, args.board_version)
@@ -552,6 +568,7 @@ def main():
         return die(str(err))
 
     print(f"web flasher package: {output_dir}")
+    print(f"AxeOS OTA migration firmware: {migration_firmware}")
     print(f"firmware: {firmware}")
     return 0
 

@@ -81,12 +81,28 @@ Use the web flasher above for first install or USB recovery.
 
 OTA accepts either:
 
-- `M45-Firmware.bin`, the app image produced by `scripts/docker-build.sh`.
-- `esp-miner-factory-602-*.bin`, the merged factory image used by the web
-  flasher.
+- `esp-miner.bin`, the raw application image for migrating a Gamma 602 from
+  the stock AxeOS/ESP-Miner OTA page. On its first M45 boot it imports the
+  existing Wi-Fi, hostname, and selected Stratum V1 pool settings before
+  writing M45 configuration. Stratum V2 and hardware tuning settings are not
+  imported.
+- `esp-miner-factory-602-*.bin`, the merged single-file image used by the USB
+  web flasher and full-flash tools.
+- `M45-Firmware.bin`, a compatibility copy of the raw application image in
+  local OTA packages.
 
-Release builds publish a merged factory image and update the GitHub Pages web
-flasher so older release images can be selected.
+Release builds publish both `esp-miner.bin` and the merged factory image, and
+update the GitHub Pages web flasher so older merged release images can be
+selected.
+
+The migration importer runs only when no M45 configuration exists. It reads
+stock settings from AxeOS's `main` NVS namespace and leaves that namespace
+unchanged. If the imported AxeOS board identity is missing or is not `602`, M45
+still starts Wi-Fi and its dashboard but keeps the ASIC disabled. The OLED
+identifies the unsupported board; pressing BOOT at that screen, or choosing
+**Return to AxeOS** in the dashboard, boots a validated retained `esp-miner`
+application partition. A fresh full flash with erased settings is treated as an
+explicit Gamma 602 installation.
 
 OTA images carry a Gamma 602 board identity and a configuration epoch. Firmware
 release numbers may move forward or backward. When installing firmware with an
@@ -100,6 +116,16 @@ keep their installed layout. New M45 factory images use the AxeOS/ESP-Miner
 16 MB partition layout verbatim, including its 4 MB factory and OTA app slots
 and retained `www` partition. Normal M45 application images are checked against
 the actual target slot size at upload time.
+
+When a valid AxeOS image is still installed, the Update page offers an opt-in
+option to keep at least one AxeOS firmware slot. If the sole
+retained AxeOS image occupies the only writable OTA target, M45 blocks the
+update until the user explicitly disables that option.
+
+The Update page also has a separate **Install AxeOS** area. It accepts either a
+new merged single-file factory image or the legacy `esp-miner.bin` plus matching
+`www.bin` pair. Merged images contribute only their application image; M45 does
+not rewrite the bootloader, partition table, or NVS during an AxeOS install.
 
 A newly installed OTA image remains rollback-pending until Gamma 602 hardware
 initialization succeeds. If initialization fails, the bootloader returns to the

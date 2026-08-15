@@ -12,6 +12,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_ssd1306.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "i2c_bitaxe.h"
@@ -653,6 +654,19 @@ static void draw_status_view(GlobalState *state, const stratum_minimal_stats_t *
 {
     int row = 0;
 
+    if (!m45_config_hardware_identity_allowed()) {
+        char board[32];
+        snprintf(board, sizeof(board), "AXEOS BOARD %s",
+                 m45_config_imported_board_version());
+        oled_add_line(&row, "UNSUPPORTED BOARD");
+        oled_add_line(&row, board);
+        oled_add_line(&row, "ASIC DISABLED");
+        oled_add_line(&row, wifi_http_retained_axeos_available()
+                                ? "PRESS BOOT: AXEOS"
+                                : "USB FLASH REQUIRED");
+        return;
+    }
+
     if (state->SYSTEM_MODULE.hardware_fault) {
         oled_add_line(&row, "SAFETY STOP");
         add_temp_line(&row, asic_temp_c, vr_temp_c);
@@ -738,6 +752,22 @@ static void oled_status_task(void *arg)
         const bool button_pressed = oled_alert_button_pressed();
         const bool button_edge = button_pressed && !g_button_was_pressed;
         g_button_was_pressed = button_pressed;
+
+        if (button_edge && !m45_config_hardware_identity_allowed() &&
+            wifi_http_retained_axeos_available()) {
+            memset(g_frame, 0, sizeof(g_frame));
+            oled_draw_centered_scaled(8, "RETURNING TO", 1);
+            oled_draw_centered_scaled(18, "AXEOS", 1);
+            g_full_refresh = true;
+            oled_flush();
+            const esp_err_t err = wifi_http_select_retained_axeos();
+            if (err == ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                esp_restart();
+            }
+            ESP_LOGE(TAG, "failed to select retained AxeOS firmware: %s",
+                     esp_err_to_name(err));
+        }
 
         if (button_edge) {
             const bool woke_display = oled_record_input(now);

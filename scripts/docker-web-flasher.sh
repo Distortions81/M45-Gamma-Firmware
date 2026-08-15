@@ -140,6 +140,7 @@ fi
 
 docker run "${RUN_ARGS[@]}" "$IMAGE" \
     bash -lc '
+        set -euo pipefail
         mkdir -p "$HOME"
         git config --global --add safe.directory /opt/esp/idf >/dev/null 2>&1 || true
         git config --global --add safe.directory /opt/esp/idf/components/openthread/openthread >/dev/null 2>&1 || true

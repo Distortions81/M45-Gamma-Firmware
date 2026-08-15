@@ -43,6 +43,9 @@ let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicResta
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
 let currentBuildVersion='',latestRelease=null,latestFactoryAsset=null,releaseCheckInFlight=false,releaseAutoCheckStarted=false;
 let otaSupported=false,otaUploadInFlight=false,otaLeaveAction=null,otaAllowNavigation=false;
+let retainedAxeosPresent=false,otaPreserveAxeosPossible=true,axeosPreserveInitialized=false;
+let axeosUploadInFlight=false;
+let axeosReturnInFlight=false;
 function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
 $('dashboard-view').classList.toggle('hidden',view!=='stats');
 $('overclock-view').classList.toggle('hidden',view!=='overclock');
@@ -51,7 +54,7 @@ $('update-view').classList.toggle('hidden',view!=='update');
 $('logs-view').classList.toggle('hidden',view!=='logs');
 $('settings-view').classList.toggle('hidden',view!=='settings');
 }
-function guardOtaNavigation(action){if(!otaUploadInFlight){action();return}
+function guardOtaNavigation(action){if(!otaUploadInFlight&&!axeosUploadInFlight){action();return}
 otaLeaveAction=action;$('ota-leave-modal').classList.remove('hidden')}
 function navigateTo(path){if(location.pathname!==path)guardOtaNavigation(()=>{otaAllowNavigation=true;location.href=path})}
 $('status-btn').onclick=()=>navigateTo('/');
@@ -76,7 +79,7 @@ $('update-privacy-modal').onclick=e=>{if(e.target===$('update-privacy-modal'))$(
 $('ota-leave-cancel').onclick=()=>{otaLeaveAction=null;$('ota-leave-modal').classList.add('hidden')};
 $('ota-leave-confirm').onclick=()=>{const action=otaLeaveAction;otaLeaveAction=null;otaAllowNavigation=true;$('ota-leave-modal').classList.add('hidden');if(action)action()};
 $('ota-leave-modal').onclick=e=>{if(e.target===$('ota-leave-modal'))$('ota-leave-cancel').click()};
-window.addEventListener('beforeunload',e=>{if(!otaUploadInFlight||otaAllowNavigation)return;
+window.addEventListener('beforeunload',e=>{if((!otaUploadInFlight&&!axeosUploadInFlight)||otaAllowNavigation)return;
 e.preventDefault();e.returnValue=''});
 let dismissedFault=sessionStorage.getItem('dismissedFault')||'';
 $('fault-close').onclick=()=>{dismissedFault=$('fault-panel').dataset.reason||'';
@@ -354,10 +357,21 @@ $('risk-list').innerHTML=`<div class='risk-row ${r.freqBad?'bad':''}'><span>Cloc
 `<div class='risk-row ${r.voltBad?'bad':''}'><span>Voltage</span><strong>${n(r.volt,0)} mV</strong></div>`;
 $('risk-modal').classList.remove('hidden')}
 function setFault(s){const p=$('fault-panel'),list=$('fault-reasons'),reasons=[];
+if(s.unsupported_board){p.classList.add('hidden');return}
 if(s.hardware_fault)reasons.push(s.hardware_fault_msg||'hardware fault');
 if(s.power_fault&&!reasons.length)reasons.push('power fault');
 const key=reasons.join('|');p.dataset.reason=key;if(!key||key===dismissedFault){p.classList.add('hidden');return}
 list.innerHTML=reasons.map(r=>`<li>${r}</li>`).join('');p.classList.remove('hidden')}
+function setUnsupportedBoard(s){const panel=$('unsupported-board-panel'),unsupported=!!s.unsupported_board;
+panel.classList.toggle('hidden',!unsupported);if(!unsupported)return;
+txt('unsupported-board-version',s.imported_board_version||'unknown');const button=$('axeos-return');
+button.disabled=axeosReturnInFlight||!s.axeos_return_available;button.title=s.axeos_return_available?'Boot the retained AxeOS firmware':'No retained AxeOS image was found';
+if(!s.axeos_return_available)setStatus('axeos-return-status','No retained AxeOS image found; use the USB web flasher.','err')}
+$('axeos-return').onclick=async()=>{if(axeosReturnInFlight||!confirm('Return this device to its retained AxeOS firmware?'))return;
+axeosReturnInFlight=true;const button=$('axeos-return');button.disabled=true;button.textContent='Returning...';setStatus('axeos-return-status','selecting AxeOS firmware...');
+try{const r=await fetch('/api/recovery/axeos',{method:'POST',headers:{'X-Page-Token':PAGE_TOKEN}});const j=await r.json().catch(()=>({}));
+if(!r.ok)throw new Error(j.error||r.status);setStatus('axeos-return-status','rebooting into AxeOS...','ok')}
+catch(e){axeosReturnInFlight=false;button.disabled=false;button.textContent='Return to AxeOS';setStatus('axeos-return-status',`return failed: ${e.message||e}`,'err')}};
 function setBoot(s){const on=s.booting===true;$('boot-panel').classList.toggle('hidden',!on);
 if(on)txt('boot-step',`Hardware init: ${s.hardware||'boot'}`)}
 function setMetric(id,value,d,cfg){const v=num(value),bar=$(id+'-bar'),state=$(id+'-state');
@@ -643,7 +657,7 @@ const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFr
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))throw new Error('refreshing');return s}
 function updateVersionFromStatus(s){currentBuildVersion=s.version||s.build_id||'unknown';otaSupported=s.ota_supported===true;
 txt('update-current',currentBuildVersion);txt('update-build-id',s.build_id||'unknown');txt('update-build-time',s.build_time||'unknown');
-syncOtaControls();if(latestRelease)renderLatestRelease(latestRelease);maybeAutoCheckRelease()}
+syncOtaControls();syncAxeosInstallControls();if(latestRelease)renderLatestRelease(latestRelease);maybeAutoCheckRelease()}
 function releaseCompareVersion(v){return String(v||'').replace(/-dirty$/,'').replace(/\+.*/,'')}
 function currentMatchesReleaseTag(tag){const current=releaseCompareVersion(currentBuildVersion),release=String(tag||'');
 return current===release||current.startsWith(`${release}-`)}
@@ -678,14 +692,16 @@ $('update-privacy-modal').classList.add('hidden');checkLatestRelease()};
 $('update-web-flasher').href=UPDATE_WEB_FLASHER_URL;
 function setOtaState(cls,text){const el=$('ota-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
 function setOtaMessage(msg,cls='',fade=false){setStatus('ota-status',msg,cls,fade)}
-function syncOtaControls(){const file=$('ota-file').files&&$('ota-file').files[0];$('ota-upload').disabled=otaUploadInFlight||!otaSupported||!file;
+function preserveAxeosRequested(){return retainedAxeosPresent&&$('ota-preserve-axeos').checked}
+function syncOtaControls(){const file=$('ota-file').files&&$('ota-file').files[0],preserveBlocked=preserveAxeosRequested()&&!otaPreserveAxeosPossible;$('ota-upload').disabled=otaUploadInFlight||!otaSupported||!file||preserveBlocked;
 const installable=latestRelease&&latestFactoryAsset&&!currentMatchesReleaseTag(latestRelease.tag_name||latestRelease.name);
-$('ota-install-latest').disabled=otaUploadInFlight||!otaSupported||!installable;
+$('ota-install-latest').disabled=otaUploadInFlight||!otaSupported||!installable||preserveBlocked;
 setOtaState(otaSupported?'ok':'warn',otaSupported?'READY':'UNAVAILABLE');
 txt('ota-summary',otaSupported?'Upload a M45 app image or Gamma 602 factory image.':'Flash once with the web flasher to enable OTA partitions.')}
 function uploadOtaBlob(blob,label){return new Promise((resolve,reject)=>{if(otaUploadInFlight){reject(new Error('OTA already running'));return}
 otaUploadInFlight=true;syncOtaControls();$('ota-progress').value=0;setOtaState('warn','UPDATING');setOtaMessage(`uploading ${label}...`);
 const xhr=new XMLHttpRequest();xhr.open('POST','/api/ota');xhr.setRequestHeader('X-Page-Token',PAGE_TOKEN);
+if(preserveAxeosRequested())xhr.setRequestHeader('X-Preserve-AxeOS','1');
 xhr.upload.onprogress=e=>{if(e.lengthComputable){const pct=Math.round(e.loaded*100/e.total);$('ota-progress').value=pct;setOtaMessage(`uploading ${pct}%...`)}};
 xhr.onload=()=>{otaUploadInFlight=false;syncOtaControls();let body={};try{body=JSON.parse(xhr.responseText||'{}')}catch(_){}
 if(xhr.status===409&&body.page_token){reloadFresh(body.page_token);resolve();return}
@@ -699,7 +715,23 @@ async function installLatestOta(){if(!latestRelease||!latestFactoryAsset){setOta
 const url=factoryMirrorUrl(latestRelease,latestFactoryAsset);try{setOtaMessage(`downloading ${latestRelease.tag_name}...`);
 const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`download failed: ${r.status}`);
 const blob=await r.blob();await uploadOtaBlob(blob,latestFactoryAsset.name)}catch(e){setOtaState('bad','FAILED');setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
-$('ota-file').onchange=syncOtaControls;$('ota-upload').onclick=uploadSelectedOta;$('ota-install-latest').onclick=installLatestOta;syncOtaControls();
+$('ota-file').onchange=syncOtaControls;$('ota-preserve-axeos').onchange=syncOtaControls;$('ota-upload').onclick=uploadSelectedOta;$('ota-install-latest').onclick=installLatestOta;syncOtaControls();
+function setAxeosInstallState(cls,text){const el=$('axeos-install-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
+function syncAxeosInstallControls(){const legacy=val('axeos-format')==='legacy';$('axeos-single-picker').classList.toggle('hidden',legacy);$('axeos-legacy-picker').classList.toggle('hidden',!legacy);
+const ready=legacy?$('axeos-app-file').files.length&&$('axeos-www-file').files.length:$('axeos-single-file').files.length;
+$('axeos-install').disabled=axeosUploadInFlight||!otaSupported||!ready;setAxeosInstallState(otaSupported?'warn':'bad',axeosUploadInFlight?'INSTALLING':otaSupported?'READY':'UNAVAILABLE')}
+function uploadAxeosFile(endpoint,file,start,span){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',endpoint);xhr.setRequestHeader('X-Page-Token',PAGE_TOKEN);
+xhr.upload.onprogress=e=>{if(e.lengthComputable)$('axeos-progress').value=start+Math.round(span*e.loaded/e.total)};
+xhr.onload=()=>{let body={};try{body=JSON.parse(xhr.responseText||'{}')}catch(_){}if(xhr.status===409&&body.page_token){reloadFresh(body.page_token);reject(new Error('page reloaded'));return}
+if(xhr.status>=200&&xhr.status<300){$('axeos-progress').value=start+span;resolve(body);return}reject(new Error(body.error||xhr.statusText||`HTTP ${xhr.status}`))};
+xhr.onerror=()=>reject(new Error('upload failed'));xhr.send(file)})}
+async function installAxeos(){if(axeosUploadInFlight)return;const legacy=val('axeos-format')==='legacy';
+const app=legacy?$('axeos-app-file').files[0]:$('axeos-single-file').files[0],www=legacy?$('axeos-www-file').files[0]:null;if(!app||(legacy&&!www))return;
+if(!confirm('Install AxeOS and reboot this Gamma 602 into Bitaxe firmware?'))return;axeosUploadInFlight=true;syncAxeosInstallControls();$('axeos-progress').value=0;setStatus('axeos-install-status',legacy?'uploading www.bin...':'uploading AxeOS firmware...');
+try{if(legacy){await uploadAxeosFile('/api/axeos/www',www,0,35);setStatus('axeos-install-status','www.bin installed; uploading esp-miner.bin...')}
+await uploadAxeosFile('/api/axeos/install',app,legacy?35:0,legacy?65:100);$('axeos-progress').value=100;setAxeosInstallState('ok','REBOOTING');setStatus('axeos-install-status','AxeOS installed; rebooting...','ok')}
+catch(e){axeosUploadInFlight=false;syncAxeosInstallControls();setAxeosInstallState('bad','FAILED');setStatus('axeos-install-status',`AxeOS install failed: ${e.message||e}`,'err')}}
+$('axeos-format').onchange=syncAxeosInstallControls;$('axeos-single-file').onchange=syncAxeosInstallControls;$('axeos-app-file').onchange=syncAxeosInstallControls;$('axeos-www-file').onchange=syncAxeosInstallControls;$('axeos-install').onclick=installAxeos;syncAxeosInstallControls();
 function tuneBody(){let fanMode=val('cfg-fan-mode');const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';return{overclock_enabled:$('cfg-overclock-enabled').checked,
 auto_clock_enabled:autoClock,
 auto_clock_target_temp_c:Number(val('oc-auto-clock-target')),
@@ -879,7 +911,11 @@ $('logs-state').className='pill ok';$('logs-state').textContent='LIVE'}
 catch(e){$('logs-state').className='pill warn';$('logs-state').textContent='OFFLINE'}finally{logsInFlight=false}}
 async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);return}
-if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setFault(s);setBoot(s);
+if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setUnsupportedBoard(s);setFault(s);setBoot(s);
+retainedAxeosPresent=!!s.retained_axeos_present;otaPreserveAxeosPossible=s.ota_preserve_axeos_possible!==false;
+const preserveRow=$('ota-preserve-axeos-row'),preserveBox=$('ota-preserve-axeos');preserveRow.classList.toggle('hidden',!retainedAxeosPresent);
+if(retainedAxeosPresent&&!axeosPreserveInitialized){preserveBox.checked=false;axeosPreserveInitialized=true}
+txt('ota-preserve-axeos-note',otaPreserveAxeosPossible?'Retains a validated Bitaxe firmware image for recovery.':'No spare OTA slot; uncheck to replace the only retained AxeOS image.');syncOtaControls();
 const multiPool=!!s.multi_pool_enabled;
 const device=s.device_name||'M45-Firmware';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
 txt('firmware-version',s.version||'unknown');

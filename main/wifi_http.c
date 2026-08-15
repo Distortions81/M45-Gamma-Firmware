@@ -63,6 +63,8 @@
 #define OTA_UPLOAD_BUFFER_SIZE 4096
 #define OTA_UPLOAD_IDLE_TIMEOUT_MS 30000
 #define OTA_UPLOAD_TOTAL_TIMEOUT_MS (5U * 60U * 1000U)
+#define AXEOS_UPLOAD_MAX_SIZE (16U * 1024U * 1024U)
+#define WWW_ERASE_CHUNK_SIZE (64U * 1024U)
 #define OTA_FACTORY_TABLE_OFFSET 0x8000
 #define OTA_FACTORY_TABLE_SIZE 0xC00
 
@@ -74,6 +76,7 @@ typedef struct {
     char wifi_ssid[80];
     char pool_host[160];
     char hardware_fault_msg[96];
+    char imported_board_version[32];
     char auto_clock_hold_reason[128];
     char tps546_model[24];
     char domain_hashrates_json[512];
@@ -152,6 +155,96 @@ typedef struct {
 
 static void reboot_task(void *arg);
 static void factory_reset_reboot_task(void *arg);
+
+static bool partition_is_axeos(const esp_partition_t *partition)
+{
+    esp_app_desc_t description;
+    return partition != NULL &&
+           esp_ota_get_partition_description(partition, &description) == ESP_OK &&
+           strcmp(description.project_name, "esp-miner") == 0;
+}
+
+static size_t retained_axeos_partition_count(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    size_t count = 0;
+    esp_partition_iterator_t iterator =
+        esp_partition_find(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (iterator != NULL) {
+        const esp_partition_t *partition = esp_partition_get(iterator);
+        if (partition != running && partition_is_axeos(partition)) {
+            ++count;
+        }
+        iterator = esp_partition_next(iterator);
+    }
+    return count;
+}
+
+static const esp_partition_t *select_ota_update_partition(bool preserve_axeos)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *default_target = esp_ota_get_next_update_partition(NULL);
+    if (!preserve_axeos || default_target == NULL ||
+        !partition_is_axeos(default_target) || retained_axeos_partition_count() > 1) {
+        return default_target;
+    }
+
+    for (esp_partition_subtype_t subtype = ESP_PARTITION_SUBTYPE_APP_OTA_MIN;
+         subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MAX; ++subtype) {
+        const esp_partition_t *candidate =
+            esp_partition_find_first(ESP_PARTITION_TYPE_APP, subtype, NULL);
+        if (candidate != NULL && candidate != running && candidate != default_target &&
+            !partition_is_axeos(candidate)) {
+            return candidate;
+        }
+    }
+    return NULL;
+}
+
+static const esp_partition_t *find_retained_axeos_partition(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *factory_candidate = NULL;
+    esp_partition_iterator_t iterator =
+        esp_partition_find(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
+
+    while (iterator != NULL) {
+        const esp_partition_t *partition = esp_partition_get(iterator);
+        if (partition != running) {
+            if (partition_is_axeos(partition)) {
+                if (partition->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+                    esp_partition_iterator_release(iterator);
+                    return partition;
+                }
+                factory_candidate = partition;
+            }
+        }
+        iterator = esp_partition_next(iterator);
+    }
+    return factory_candidate;
+}
+
+bool wifi_http_retained_axeos_available(void)
+{
+    return !m45_config_hardware_identity_allowed() &&
+           find_retained_axeos_partition() != NULL;
+}
+
+esp_err_t wifi_http_select_retained_axeos(void)
+{
+    if (m45_config_hardware_identity_allowed()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_partition_t *partition = find_retained_axeos_partition();
+    if (partition == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    const esp_err_t err = esp_ota_set_boot_partition(partition);
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG, "selected retained AxeOS partition %s", partition->label);
+    }
+    return err;
+}
 
 static esp_err_t set_wifi_low_latency_mode(void)
 {
@@ -586,6 +679,22 @@ static bool ota_factory_app_range(const uint8_t *table, size_t *image_offset,
         return true;
     }
     return false;
+}
+
+static esp_err_t validate_axeos_identity(const esp_partition_t *partition,
+                                         char *message, size_t message_size)
+{
+    esp_app_desc_t description;
+    const esp_err_t err = esp_ota_get_partition_description(partition, &description);
+    if (err != ESP_OK) {
+        snprintf(message, message_size, "unable to read AxeOS firmware identity");
+        return err;
+    }
+    if (strcmp(description.project_name, "esp-miner") != 0) {
+        snprintf(message, message_size, "firmware is not an AxeOS esp-miner image");
+        return ESP_ERR_INVALID_VERSION;
+    }
+    return ESP_OK;
 }
 
 static bool firmware_config_epoch(const char *version, uint32_t *epoch)
@@ -1754,6 +1863,11 @@ static esp_err_t status_handler(httpd_req_t *req)
                                            : (float)m45_config_effective_asic_frequency_mhz(config);
     const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
     const bool ota_supported = ota_partition != NULL;
+    const size_t retained_axeos_count = retained_axeos_partition_count();
+    const bool ota_preserve_axeos_possible =
+        retained_axeos_count == 0 || select_ota_update_partition(true) != NULL;
+    const bool unsupported_board = !m45_config_hardware_identity_allowed();
+    const bool axeos_return_available = wifi_http_retained_axeos_available();
     const uint8_t expected_chip_count =
         chip_count > 0 ? chip_count : g_state->DEVICE_CONFIG.family.asic_count;
     const double expected_hashrate_ghs =
@@ -1784,6 +1898,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     json_escape(scratch->hardware_fault_msg, sizeof(scratch->hardware_fault_msg),
                 g_state->SYSTEM_MODULE.hardware_fault ? g_state->SYSTEM_MODULE.hardware_fault_msg
                                                        : "");
+    json_escape(scratch->imported_board_version,
+                sizeof(scratch->imported_board_version),
+                m45_config_imported_board_version());
     json_escape(scratch->auto_clock_hold_reason, sizeof(scratch->auto_clock_hold_reason),
                 auto_clock->hold_reason);
     json_escape(scratch->tps546_model, sizeof(scratch->tps546_model),
@@ -1900,6 +2017,9 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"build_id\":\"%s\","
                  "\"build_time\":\"%s\","
                  "\"ota_supported\":%s,"
+                 "\"retained_axeos_present\":%s,"
+                 "\"retained_axeos_count\":%u,"
+                 "\"ota_preserve_axeos_possible\":%s,"
                  "\"wifi_connected\":%s,"
                  "\"ip\":\"%s\","
                  "\"wifi_rssi_dbm\":%d,"
@@ -1965,6 +2085,9 @@ static esp_err_t status_handler(httpd_req_t *req)
                  "\"power_fault\":%u,"
                  "\"hardware_fault\":%s,"
                  "\"hardware_fault_msg\":\"%s\","
+                 "\"unsupported_board\":%s,"
+                 "\"imported_board_version\":\"%s\","
+                 "\"axeos_return_available\":%s,"
                  "\"pool\":\"%s\","
                  "\"pool_port\":%u,"
                  "\"pool_using_backup\":%s,"
@@ -2023,6 +2146,9 @@ static esp_err_t status_handler(httpd_req_t *req)
                  g_page_token, M45_DEVICE_NAME, APP_BUILD_VERSION, APP_BUILD_ID,
                  APP_BUILD_TIME_UTC,
                  ota_supported ? "true" : "false",
+                 retained_axeos_count > 0 ? "true" : "false",
+                 (unsigned)retained_axeos_count,
+                 ota_preserve_axeos_possible ? "true" : "false",
                  g_connected ? "true" : "false", g_ip, wifi_rssi,
                  hardware_status, booting ? "true" : "false",
                  g_setup_ap_active ? "true" : "false", g_setup_ssid, g_setup_ip,
@@ -2071,6 +2197,9 @@ static esp_err_t status_handler(httpd_req_t *req)
                  asic_efficiency_j_per_th, g_state->SYSTEM_MODULE.power_fault,
                  g_state->SYSTEM_MODULE.hardware_fault ? "true" : "false",
                  scratch->hardware_fault_msg,
+                 unsupported_board ? "true" : "false",
+                 scratch->imported_board_version,
+                 axeos_return_available ? "true" : "false",
                  scratch->pool_host,
                  stats->pool_port > 0 ? stats->pool_port : config->pool_port,
                  stats->using_backup_pool ? "true" : "false",
@@ -3177,7 +3306,7 @@ static esp_err_t block_alert_dismiss_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true,\"block_alert_active\":false}");
 }
 
-static esp_err_t ota_update_handler(httpd_req_t *req)
+static esp_err_t ota_install_handler(httpd_req_t *req, bool install_axeos)
 {
     if (request_has_bad_page_token(req)) {
         return send_page_token_reload(req);
@@ -3185,12 +3314,22 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     if (g_setup_ap_active) {
         return send_json_error(req, "409 Conflict", "OTA is unavailable in setup mode");
     }
-    if (req->content_len <= 0 || req->content_len > (9 * 1024 * 1024)) {
+    const size_t maximum_upload_size =
+        install_axeos ? AXEOS_UPLOAD_MAX_SIZE : (9U * 1024U * 1024U);
+    if (req->content_len <= 0 || (size_t)req->content_len > maximum_upload_size) {
         return send_json_error(req, "413 Payload Too Large", "invalid firmware size");
     }
 
-    const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+    const bool preserve_axeos = !install_axeos &&
+        http_header_equals(req, "X-Preserve-AxeOS", "1");
+    const esp_partition_t *ota_partition =
+        install_axeos ? esp_ota_get_next_update_partition(NULL)
+                      : select_ota_update_partition(preserve_axeos);
     if (ota_partition == NULL) {
+        if (preserve_axeos && retained_axeos_partition_count() > 0) {
+            return send_json_error(req, "409 Conflict",
+                                   "update would overwrite the only retained AxeOS image");
+        }
         return send_json_error(req, "409 Conflict", "OTA partition is unavailable");
     }
 
@@ -3358,8 +3497,12 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     }
     char identity_error[128] = "";
     uint32_t candidate_config_epoch = 0;
-    err = validate_ota_identity(ota_partition, identity_error, sizeof(identity_error),
-                                &candidate_config_epoch);
+    err = install_axeos
+              ? validate_axeos_identity(ota_partition, identity_error,
+                                        sizeof(identity_error))
+              : validate_ota_identity(ota_partition, identity_error,
+                                      sizeof(identity_error),
+                                      &candidate_config_epoch);
     if (err != ESP_OK) {
         return send_json_error(req, "400 Bad Request", identity_error);
     }
@@ -3370,7 +3513,7 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
                  esp_err_to_name(err));
         return send_json_error(req, "500 Internal Server Error", message);
     }
-    if (candidate_config_epoch < M45_FIRMWARE_CONFIG_EPOCH) {
+    if (!install_axeos && candidate_config_epoch < M45_FIRMWARE_CONFIG_EPOCH) {
         ESP_LOGW(TAG,
                  "OTA targets config epoch %lu; erasing newer settings before reboot",
                  (unsigned long)candidate_config_epoch);
@@ -3397,6 +3540,98 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
 }
 
+static esp_err_t ota_update_handler(httpd_req_t *req)
+{
+    return ota_install_handler(req, false);
+}
+
+static esp_err_t axeos_install_handler(httpd_req_t *req)
+{
+    return ota_install_handler(req, true);
+}
+
+static esp_err_t axeos_www_install_handler(httpd_req_t *req)
+{
+    if (request_has_bad_page_token(req)) {
+        return send_page_token_reload(req);
+    }
+    if (g_setup_ap_active) {
+        return send_json_error(req, "409 Conflict",
+                               "AxeOS installation is unavailable in setup mode");
+    }
+
+    const esp_partition_t *www_partition =
+        esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                 ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "www");
+    if (www_partition == NULL) {
+        return send_json_error(req, "409 Conflict", "www partition is unavailable");
+    }
+    if (req->content_len <= 0 || (size_t)req->content_len > www_partition->size) {
+        return send_json_error(req, "413 Payload Too Large", "invalid www.bin size");
+    }
+
+    uint8_t *buffer = malloc(OTA_UPLOAD_BUFFER_SIZE);
+    if (buffer == NULL) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    for (size_t offset = 0; offset < www_partition->size;
+         offset += WWW_ERASE_CHUNK_SIZE) {
+        const size_t erase_size =
+            www_partition->size - offset < WWW_ERASE_CHUNK_SIZE
+                ? www_partition->size - offset
+                : WWW_ERASE_CHUNK_SIZE;
+        const esp_err_t err = esp_partition_erase_range(www_partition, offset,
+                                                        erase_size);
+        if (err != ESP_OK) {
+            free(buffer);
+            return send_json_error(req, "500 Internal Server Error",
+                                   "www partition erase failed");
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    int remaining = req->content_len;
+    size_t written = 0;
+    int chunks = 0;
+    const uint64_t upload_started_us = http_now_us();
+    uint64_t last_progress_us = upload_started_us;
+    while (remaining > 0) {
+        const uint64_t now_us = http_now_us();
+        if (now_us - upload_started_us >=
+                (uint64_t)OTA_UPLOAD_TOTAL_TIMEOUT_MS * 1000ULL ||
+            now_us - last_progress_us >=
+                (uint64_t)OTA_UPLOAD_IDLE_TIMEOUT_MS * 1000ULL) {
+            free(buffer);
+            return send_json_error(req, "408 Request Timeout",
+                                   "www.bin upload timed out");
+        }
+        const int received = httpd_req_recv(
+            req, (char *)buffer,
+            remaining < OTA_UPLOAD_BUFFER_SIZE ? remaining : OTA_UPLOAD_BUFFER_SIZE);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (received <= 0 ||
+            esp_partition_write(www_partition, written, buffer,
+                                (size_t)received) != ESP_OK) {
+            free(buffer);
+            return send_json_error(req, "500 Internal Server Error",
+                                   "www.bin upload failed");
+        }
+        written += (size_t)received;
+        remaining -= received;
+        last_progress_us = http_now_us();
+        if (++chunks % 16 == 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    free(buffer);
+
+    httpd_resp_set_type(req, "application/json");
+    set_no_store_headers(req);
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 static void reboot_task(void *arg)
 {
     (void)arg;
@@ -3420,6 +3655,39 @@ static esp_err_t reboot_handler(httpd_req_t *req)
 {
     xTaskCreate(reboot_task, "web_reboot", 2048, NULL, tskIDLE_PRIORITY + 1, NULL);
     httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
+}
+
+static esp_err_t axeos_return_handler(httpd_req_t *req)
+{
+    if (request_has_bad_page_token(req)) {
+        return send_page_token_reload(req);
+    }
+    if (m45_config_hardware_identity_allowed()) {
+        return send_json_error(req, "409 Conflict",
+                               "AxeOS return is only available for an unsupported imported board");
+    }
+
+    if (!wifi_http_retained_axeos_available()) {
+        return send_json_error(req, "404 Not Found",
+                               "no retained AxeOS firmware image was found");
+    }
+    const esp_err_t err = wifi_http_select_retained_axeos();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "failed to select retained AxeOS firmware: %s",
+                 esp_err_to_name(err));
+        return send_json_error(req, "500 Internal Server Error",
+                               "retained AxeOS firmware could not be selected");
+    }
+    if (xTaskCreate(reboot_task, "axeos_return", 2048, NULL,
+                    tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
+        return send_json_error(req, "500 Internal Server Error",
+                               "reboot task failed");
+    }
+
+    ESP_LOGW(TAG, "returning unsupported board to AxeOS");
+    httpd_resp_set_type(req, "application/json");
+    set_no_store_headers(req);
     return httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
 }
 
@@ -4556,7 +4824,13 @@ static esp_err_t start_http_server(void)
         {.uri = "/api/block-alert/dismiss", .method = HTTP_POST,
          .handler = block_alert_dismiss_handler},
         {.uri = "/api/ota", .method = HTTP_POST, .handler = ota_update_handler},
+        {.uri = "/api/axeos/install", .method = HTTP_POST,
+         .handler = axeos_install_handler},
+        {.uri = "/api/axeos/www", .method = HTTP_POST,
+         .handler = axeos_www_install_handler},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = reboot_handler},
+        {.uri = "/api/recovery/axeos", .method = HTTP_POST,
+         .handler = axeos_return_handler},
         {.uri = "/api/logs", .method = HTTP_GET, .handler = logs_handler},
         {.uri = "/api/faults", .method = HTTP_GET, .handler = faults_get_handler},
         {.uri = "/api/faults/remove", .method = HTTP_POST,

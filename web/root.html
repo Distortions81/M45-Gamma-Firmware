@@ -8,6 +8,12 @@
 <section id=block-banner class='panel full block-banner hidden'><div class=banner-row><div>
 <div class=banner-title>BLOCK FOUND</div><div id=block-banner-detail class=subvalue></div></div>
 <button id=block-dismiss class=primary type=button>Dismiss</button></div></section>
+<section id=unsupported-board-panel class='panel full fault hidden'><div class=fault-head><div>
+<div class=label>Unsupported Hardware</div><div class='value small'>AxeOS board <span id=unsupported-board-version>--</span></div></div>
+<span class='pill bad'>ASIC DISABLED</span></div>
+<p class=subvalue>M45 Gamma supports board 602 only. Return to the retained AxeOS firmware to restore this device.</p>
+<div class=unsupported-actions><button id=axeos-return class=danger type=button>Return to AxeOS</button>
+<span id=axeos-return-status class=status-text></span></div></section>
 <section id=fault-panel class='panel full fault hidden'><div class=fault-head><div class=label>Safety Shutdown</div>
 <button id=fault-close class=fault-close type=button aria-label='Dismiss safety shutdown' title=Dismiss>&times;</button></div>
 <ul id=fault-reasons class=fault-reasons></ul></section>
@@ -50,10 +56,26 @@
 <article class='panel full update-card'><div class=metric-head><div class=label>Upload Firmware</div>
 <span id=ota-state class=pill>READY</span></div>
 <div id=ota-summary class=subvalue>Upload a M45 app image or Gamma 602 factory image.</div>
+<label id=ota-preserve-axeos-row class='check ota-preserve hidden' for=ota-preserve-axeos>
+<input id=ota-preserve-axeos type=checkbox><span>Keep one AxeOS firmware slot
+<small id=ota-preserve-axeos-note>Retains a validated Bitaxe firmware image for recovery.</small></span></label>
 <div class=ota-picker><input id=ota-file type=file accept='.bin,application/octet-stream'>
 <button id=ota-upload class=secondary type=button disabled>Upload &amp; Install</button></div>
 <progress id=ota-progress class=ota-progress max=100 value=0></progress>
 <span id=ota-status class=status-text></span></article>
+<article class='panel full update-card axeos-card'><div class=metric-head><div class=label>Install AxeOS</div>
+<span id=axeos-install-state class='pill warn'>READY</span></div>
+<div class=subvalue>Return this Gamma 602 to official Bitaxe firmware. Settings in the AxeOS <code>main</code> namespace are preserved.</div>
+<div class='field axeos-format'><label for=axeos-format>Release format</label><select id=axeos-format>
+<option value=single>New single-file factory image</option><option value=legacy>Legacy esp-miner.bin + www.bin</option></select></div>
+<div id=axeos-single-picker class=axeos-picker><label for=axeos-single-file>Factory image</label>
+<input id=axeos-single-file type=file accept='.bin,application/octet-stream'></div>
+<div id=axeos-legacy-picker class='axeos-picker hidden'><label for=axeos-app-file>esp-miner.bin</label>
+<input id=axeos-app-file type=file accept='.bin,application/octet-stream'><label for=axeos-www-file>www.bin</label>
+<input id=axeos-www-file type=file accept='.bin,application/octet-stream'></div>
+<div class=update-actions><button id=axeos-install class=danger type=button disabled>Install AxeOS</button></div>
+<progress id=axeos-progress class=ota-progress max=100 value=0></progress>
+<span id=axeos-install-status class=status-text></span></article>
 </section>
 </section>
 <section id=overclock-view class=hidden>

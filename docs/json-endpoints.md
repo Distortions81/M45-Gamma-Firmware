@@ -40,6 +40,7 @@ Response fields:
 | `page_token` | string | Token used by the web UI for stale-page detection. |
 | `device_name`, `version`, `build_id`, `build_time` | string | Firmware identity. |
 | `ota_supported` | boolean | Whether an OTA partition is available. |
+| `retained_axeos_present`, `retained_axeos_count`, `ota_preserve_axeos_possible` | mixed | Retained validated AxeOS images and whether an OTA update can keep at least one. |
 | `wifi_connected`, `ip`, `wifi_rssi_dbm` | boolean/string/number | Wi-Fi state. |
 | `hardware`, `booting`, `setup_mode`, `setup_ssid`, `setup_ip` | mixed | Hardware and setup mode state. |
 | `asic_ready`, `asic_power_enabled`, `model`, `asic_model`, `asic_chips` | mixed | ASIC identity and power state. |
@@ -52,6 +53,7 @@ Response fields:
 | `asic_temp_c`, `fan_percent`, `fan_rpm`, `fan_auto`, `fan_auto_off_allowed`, `fan_target_temp_c` | mixed | Cooling state. |
 | `tps546_valid`, `tps546_read_vout`, `tps546_read_vin`, `tps546_read_iout`, `tps546_temp_c`, `tps546_model` | mixed | Regulator telemetry. |
 | `asic_power_watts`, `asic_efficiency_j_per_th`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power, efficiency, and fault state. `asic_efficiency_j_per_th` is computed from ASIC watts and measured hashrate. |
+| `unsupported_board`, `imported_board_version`, `axeos_return_available` | mixed | AxeOS migration hardware check and whether a validated retained AxeOS image can be selected. |
 | `pool`, `pool_port`, `pool_using_backup`, `stratum_connected`, `stratum_connected_seconds`, `stratum_response_ms` | mixed | Pool connection state. |
 | `multi_pool_enabled`, `pool_statuses` | boolean/array | Multi-pool mode and per-pool status. Each pool status includes `pool_id`, `label`, `role`, `host`, `port`, `connected`, `using_backup`, `disabled`, `note`, `weight`, `share_percent`, `connected_seconds`, `response_ms`, `pool_difficulty`, `work_received`, `submitted`, `accepted`, `rejected`, `payout_status`, and `payout_percent_x100`. `weight` is the configured 1-99 scheduling weight. `share_percent` is derived from configured weights. Runtime-disabled, settings-inactive, or recently failed pools include a short `note` such as an unsupported version mask, disabled settings, weight zero, read failure, or idle timeout. |
 | `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us`, `stratum_line_handle_us`, `stratum_line_handle_max_us`, `stratum_job_queue_wait_us`, `stratum_job_queue_wait_max_us`, `stratum_job_dispatch_us`, `stratum_job_dispatch_max_us` | number | Native M45 Stratum timing in microseconds. Share submit tracks nonce-result-to-submit timing and socket write time. Line handle tracks JSON handling time after a Stratum line is received. Job queue wait tracks pool work waiting for the ASIC job task, and job dispatch tracks received pool work to first ASIC send. |
@@ -406,7 +408,8 @@ Response:
 
 Uploads and installs firmware, then reboots.
 
-Supports `X-Page-Token`.
+Supports `X-Page-Token`. Set `X-Preserve-AxeOS: 1` to require that at least one
+validated retained AxeOS/ESP-Miner application remain after the update.
 
 Request body is binary, not JSON. Accepted payloads are:
 
@@ -419,6 +422,8 @@ Limits and errors:
 - Maximum payload size is 9 MiB.
 - Returns `409 Conflict` in setup mode.
 - Returns `409 Conflict` if no OTA partition is available.
+- Returns `409 Conflict` when `X-Preserve-AxeOS: 1` is requested but the only
+  retained AxeOS image occupies the only writable OTA target.
 - Returns `400 Bad Request` for unsupported or invalid firmware images.
 - Returns `408 Request Timeout` after 30 seconds without upload progress or
   after five minutes total.
@@ -431,6 +436,32 @@ Success response:
 
 ```json
 {"ok":true,"rebooting":true}
+```
+
+### `POST /api/axeos/install`
+
+Installs AxeOS into the next OTA application slot and reboots. The binary body
+may be either a raw `esp-miner.bin` application or a merged single-file factory
+image. Merged uploads are parsed only to extract their application; the
+bootloader, partition table, NVS, and other merged regions are not written.
+
+The installed application must have the ESP-IDF project name `esp-miner`.
+Uploads are limited to 16 MiB and support `X-Page-Token`.
+
+```json
+{"ok":true,"rebooting":true}
+```
+
+### `POST /api/axeos/www`
+
+Writes a legacy `www.bin` binary body to the existing `www` SPIFFS partition
+without rebooting. This endpoint is intended to run immediately before
+`POST /api/axeos/install` when installing pre-unified two-file AxeOS releases.
+It supports `X-Page-Token` and rejects files larger than the installed `www`
+partition.
+
+```json
+{"ok":true}
 ```
 
 ### `GET /api/faults`
@@ -460,6 +491,17 @@ Clears the complete fault history. The request has no body.
 Schedules a reboot.
 
 Response:
+
+```json
+{"ok":true,"rebooting":true}
+```
+
+### `POST /api/recovery/axeos`
+
+Available only when a first-boot AxeOS import identifies an unsupported board.
+Selects another valid application partition whose project name is `esp-miner`,
+then reboots into that retained AxeOS firmware. It refuses to run on a supported
+Gamma 602 or when no retained AxeOS image can be validated.
 
 ```json
 {"ok":true,"rebooting":true}

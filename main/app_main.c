@@ -142,7 +142,17 @@ void app_main(void)
 
     ESP_ERROR_CHECK(wifi_http_start(&g_state));
 
-    if (xTaskCreate(hardware_task, "hardware", 8192, &g_state, 8, NULL) != pdPASS) {
+    if (!m45_config_hardware_identity_allowed()) {
+        g_state.SYSTEM_MODULE.hardware_fault = true;
+        g_state.ASIC_initalized = false;
+        snprintf(g_state.SYSTEM_MODULE.hardware_fault_msg,
+                 sizeof(g_state.SYSTEM_MODULE.hardware_fault_msg),
+                 "AxeOS board %s is not Gamma 602",
+                 m45_config_imported_board_version());
+        ESP_LOGE(TAG, "%s; ASIC startup blocked",
+                 g_state.SYSTEM_MODULE.hardware_fault_msg);
+        (void)m45_fault_log_record(g_state.SYSTEM_MODULE.hardware_fault_msg);
+    } else if (xTaskCreate(hardware_task, "hardware", 8192, &g_state, 8, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to start hardware task");
     }
 }
