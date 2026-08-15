@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 
-DEFAULT_REPOSITORY = "Distortions81/M45-Gamma-Firmware"
+DEFAULT_REPOSITORY = "M45Core/M45-Gamma-Firmware"
 DEFAULT_BOARD_VERSION = "602"
 NVS_START = 0x9000
 NVS_SIZE = 0x6000

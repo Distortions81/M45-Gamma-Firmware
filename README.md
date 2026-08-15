@@ -6,7 +6,7 @@ M45 is experimental firmware for Bitaxe Gamma 602 miners. It boots at stock
 ASIC settings, exposes a local web dashboard, and lets you opt in to fan,
 pool, and overclock controls from the browser.
 
-[Open the Web Flasher](https://distortions81.github.io/M45-Gamma-Firmware/)
+[Open the Web Flasher](https://m45core.github.io/M45-Gamma-Firmware/)
 to flash a prepared build from Chrome or Edge using USB serial.
 
 Use it at your own risk. Overclocking or bad cooling can permanently damage
@@ -14,7 +14,7 @@ the ASIC, regulator, fan, wiring, or power supply, and can create a fire risk.
 
 ## Updates And OTA
 
-Use the [Web Flasher](https://distortions81.github.io/M45-Gamma-Firmware/) for
+Use the [Web Flasher](https://m45core.github.io/M45-Gamma-Firmware/) for
 the first install or when you need to recover a device over USB serial.
 
 OTA accepts either:
@@ -42,7 +42,7 @@ After it is installed into either legacy OTA slot, the bridge release:
 
 The existing GitHub Releases feed must remain frozen with this bridge as its
 last production release. After migration, the Update page reads
-`https://distortions81.github.io/M45-Gamma-Firmware/canonical-releases.json`.
+`https://m45core.github.io/M45-Gamma-Firmware/canonical-releases.json`.
 That manifest advertises raw application images so future updates remain small:
 
 ```json
