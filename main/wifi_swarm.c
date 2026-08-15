@@ -1,4 +1,5 @@
 #include "wifi_swarm.h"
+#include "wifi_http_limits.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -19,13 +20,21 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
+#include "sdkconfig.h"
 
 #define SWARM_MAX_DEVICES 32
-#define SWARM_SCAN_BATCH 8
+#define SWARM_SCAN_BATCH 2
 #define SWARM_CONNECT_TIMEOUT_MS 180
 #define SWARM_FETCH_TIMEOUT_MS 1000
-#define SWARM_RESPONSE_MAX 16384
+#define SWARM_INFO_RESPONSE_MAX (24U * 1024U)
+#define SWARM_POST_BODY_MAX 256
 #define SWARM_TASK_STACK 6144
+
+_Static_assert(SWARM_SCAN_BATCH + M45_HTTP_MAX_OPEN_SOCKETS +
+                       M45_HTTP_LISTEN_SOCKET_RESERVE +
+                       M45_STRATUM_SOCKET_RESERVE <=
+                   CONFIG_LWIP_MAX_SOCKETS,
+               "swarm scan batch exhausts configured lwIP sockets");
 
 typedef struct {
     char ip[16];
@@ -272,20 +281,27 @@ static bool fetch_device(const char *ip, swarm_device_t *device)
         sent += (size_t)written;
     }
 
-    char *response = malloc(SWARM_RESPONSE_MAX + 1);
+    char *response = malloc(SWARM_INFO_RESPONSE_MAX + 1);
     if (response == NULL) {
         close(sock);
         return false;
     }
     size_t used = 0;
-    while (used < SWARM_RESPONSE_MAX) {
-        const int received = recv(sock, response + used, SWARM_RESPONSE_MAX - used, 0);
+    while (used < SWARM_INFO_RESPONSE_MAX) {
+        const int received =
+            recv(sock, response + used, SWARM_INFO_RESPONSE_MAX - used, 0);
         if (received <= 0) {
             break;
         }
         used += (size_t)received;
     }
     close(sock);
+    if (used == SWARM_INFO_RESPONSE_MAX) {
+        ESP_LOGW(TAG, "peer response from %s reached the %u-byte limit", ip,
+                 (unsigned)SWARM_INFO_RESPONSE_MAX);
+        free(response);
+        return false;
+    }
     response[used] = '\0';
 
     char *body = strstr(response, "\r\n\r\n");
@@ -680,11 +696,11 @@ esp_err_t wifi_swarm_get_handler(httpd_req_t *req)
 
 esp_err_t wifi_swarm_post_handler(httpd_req_t *req, const char *local_ip)
 {
-    if (req->content_len <= 0 || req->content_len > 256) {
+    if (req->content_len <= 0 || req->content_len > SWARM_POST_BODY_MAX) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid request\"}");
     }
-    char body[257] = {0};
+    char body[SWARM_POST_BODY_MAX + 1] = {0};
     int received = 0;
     while (received < req->content_len) {
         const int result = httpd_req_recv(req, body + received,

@@ -1,4 +1,5 @@
 #include "wifi_http.h"
+#include "wifi_http_limits.h"
 #include "wifi_http_status.h"
 #include "wifi_swarm.h"
 
@@ -4273,7 +4274,7 @@ static esp_err_t start_http_server(void)
     config.stack_size = 8192;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = HTTP_URI_HANDLER_SLOTS;
-    config.max_open_sockets = 4;
+    config.max_open_sockets = M45_HTTP_MAX_OPEN_SOCKETS;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -4372,6 +4373,8 @@ static esp_err_t start_http_server(void)
          .handler = captive_portal_redirect_handler},
         {.uri = "/*", .method = HTTP_GET, .handler = redirect_handler},
     };
+    _Static_assert(sizeof(routes) / sizeof(routes[0]) <= HTTP_URI_HANDLER_SLOTS,
+                   "HTTP_URI_HANDLER_SLOTS is smaller than the route table");
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
         const httpd_uri_t handler = {
             .uri = routes[i].uri,
