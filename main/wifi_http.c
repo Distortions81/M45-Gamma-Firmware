@@ -33,6 +33,9 @@
 #include "lwip/sockets.h"
 #include "m45_config.h"
 #include "m45_log_buffer.h"
+#include "m45_firmware_identity.h"
+#include "m45_fault_log.h"
+#include "nvs_flash.h"
 #include "m45_oled.h"
 #include "stratum_minimal.h"
 #include "web_assets.h"
@@ -53,7 +56,7 @@
 #endif
 #define SETTINGS_JSON_BUFFER_SIZE 4700
 #define M45_DEVICE_NAME "M45-Firmware"
-#define HTTP_URI_HANDLER_SLOTS 58
+#define HTTP_URI_HANDLER_SLOTS 62
 #define HTTP_HANDLER_WARN_MS 100
 #define HTTP_JSON_BODY_DEADLINE_MS 30000
 #define LOG_CAPTURE_TIMEOUT_MS 5000
@@ -99,6 +102,7 @@ static esp_netif_t *g_ap_netif;
 static int g_retry_count;
 static bool g_connected;
 static bool g_setup_ap_active;
+static bool g_force_recovery_ap;
 static volatile bool g_wifi_retry_backoff_pending;
 static volatile bool g_wifi_test_active;
 static volatile bool g_wifi_test_waiting;
@@ -582,6 +586,50 @@ static bool ota_factory_app_range(const uint8_t *table, size_t *image_offset,
         return true;
     }
     return false;
+}
+
+static bool firmware_config_epoch(const char *version, uint32_t *epoch)
+{
+    if (version == NULL || epoch == NULL ||
+        strncmp(version, M45_FIRMWARE_VERSION_PREFIX,
+                strlen(M45_FIRMWARE_VERSION_PREFIX)) != 0) {
+        return false;
+    }
+    const char *number = version + strlen(M45_FIRMWARE_VERSION_PREFIX);
+    char *end = NULL;
+    const unsigned long parsed = strtoul(number, &end, 10);
+    if (end == number || (*end != '\0' && *end != '-' && *end != '+') ||
+        parsed == 0 || parsed > UINT32_MAX) {
+        return false;
+    }
+    *epoch = (uint32_t)parsed;
+    return true;
+}
+
+static esp_err_t validate_ota_identity(const esp_partition_t *partition,
+                                       char *message, size_t message_size,
+                                       uint32_t *config_epoch)
+{
+    esp_app_desc_t candidate = {0};
+    if (esp_ota_get_partition_description(partition, &candidate) != ESP_OK) {
+        strlcpy(message, "firmware identity is unreadable", message_size);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (strcmp(candidate.project_name, "M45-Firmware") == 0) {
+        *config_epoch = 0;
+        return ESP_OK;
+    }
+    if (strcmp(candidate.project_name, M45_FIRMWARE_PROJECT_NAME) != 0) {
+        snprintf(message, message_size, "firmware is not for %s",
+                 M45_FIRMWARE_PROJECT_NAME);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!firmware_config_epoch(candidate.version, config_epoch)) {
+        strlcpy(message, "firmware has an unsupported config version", message_size);
+        return ESP_ERR_INVALID_VERSION;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t send_json_error(httpd_req_t *req, const char *status, const char *error)
@@ -1362,8 +1410,10 @@ static void apply_runtime_state(const m45_config_t *config)
     if (g_state == NULL || config == NULL) {
         return;
     }
-    g_state->SYSTEM_MODULE.pool_user = (char *)config->pool_user;
-    g_state->SYSTEM_MODULE.pool_pass = (char *)config->pool_pass;
+    strlcpy(g_state->SYSTEM_MODULE.pool_user, config->pool_user,
+            sizeof(g_state->SYSTEM_MODULE.pool_user));
+    strlcpy(g_state->SYSTEM_MODULE.pool_pass, config->pool_pass,
+            sizeof(g_state->SYSTEM_MODULE.pool_pass));
 }
 
 static bool safety_settings_changed(const m45_config_t *old_config,
@@ -1633,6 +1683,12 @@ static esp_err_t styles_css_handler(httpd_req_t *req)
 {
     return send_gzip_asset(req, "text/css; charset=utf-8", WEB_STYLES_CSS_GZ,
                            WEB_STYLES_CSS_GZ_LEN);
+}
+
+static esp_err_t root_js_handler(httpd_req_t *req)
+{
+    return send_gzip_asset(req, "text/javascript; charset=utf-8", WEB_ROOT_JS_GZ,
+                           WEB_ROOT_JS_GZ_LEN);
 }
 
 static esp_err_t favicon_handler(httpd_req_t *req)
@@ -3300,12 +3356,36 @@ static esp_err_t ota_update_handler(httpd_req_t *req)
         snprintf(message, sizeof(message), "OTA validation failed: %s", esp_err_to_name(err));
         return send_json_error(req, "500 Internal Server Error", message);
     }
+    char identity_error[128] = "";
+    uint32_t candidate_config_epoch = 0;
+    err = validate_ota_identity(ota_partition, identity_error, sizeof(identity_error),
+                                &candidate_config_epoch);
+    if (err != ESP_OK) {
+        return send_json_error(req, "400 Bad Request", identity_error);
+    }
     err = esp_ota_set_boot_partition(ota_partition);
     if (err != ESP_OK) {
         char message[96];
         snprintf(message, sizeof(message), "OTA boot selection failed: %s",
                  esp_err_to_name(err));
         return send_json_error(req, "500 Internal Server Error", message);
+    }
+    if (candidate_config_epoch < M45_FIRMWARE_CONFIG_EPOCH) {
+        ESP_LOGW(TAG,
+                 "OTA targets config epoch %lu; erasing newer settings before reboot",
+                 (unsigned long)candidate_config_epoch);
+        err = nvs_flash_deinit();
+        if (err == ESP_OK) {
+            err = nvs_flash_erase();
+        }
+        if (err != ESP_OK) {
+            const esp_partition_t *running = esp_ota_get_running_partition();
+            if (running != NULL) {
+                (void)esp_ota_set_boot_partition(running);
+            }
+            return send_json_error(req, "500 Internal Server Error",
+                                   "firmware installed but incompatible settings erase failed");
+        }
     }
     if (xTaskCreate(reboot_task, "ota_reboot", 2048, NULL,
                     tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
@@ -4336,6 +4416,76 @@ static esp_err_t health_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "ok");
 }
 
+static esp_err_t faults_get_handler(httpd_req_t *req)
+{
+    m45_fault_entry_t entries[M45_FAULT_LOG_CAPACITY];
+    const size_t count = m45_fault_log_snapshot(entries, M45_FAULT_LOG_CAPACITY);
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    cJSON *array = cJSON_AddArrayToObject(root, "faults");
+    if (array == NULL) {
+        cJSON_Delete(root);
+        return send_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    for (size_t i = 0; i < count; ++i) {
+        cJSON *item = cJSON_CreateObject();
+        if (item == NULL) {
+            cJSON_Delete(root);
+            return send_json_error(req, "500 Internal Server Error", "out of memory");
+        }
+        cJSON_AddNumberToObject(item, "id", entries[i].id);
+        cJSON_AddNumberToObject(item, "epoch_seconds", (double)entries[i].epoch_seconds);
+        cJSON_AddNumberToObject(item, "uptime_seconds", entries[i].uptime_seconds);
+        cJSON_AddStringToObject(item, "message", entries[i].message);
+        cJSON_AddItemToArray(array, item);
+    }
+    return send_cjson_response(req, root);
+}
+
+static esp_err_t fault_remove_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > 96) {
+        return send_json_error(req, "400 Bad Request", "invalid fault id");
+    }
+    char body[97] = {0};
+    int received = 0;
+    while (received < req->content_len) {
+        const int len = httpd_req_recv(req, body + received, req->content_len - received);
+        if (len <= 0) {
+            return ESP_FAIL;
+        }
+        received += len;
+    }
+    cJSON *json = cJSON_Parse(body);
+    cJSON *id = json != NULL ? cJSON_GetObjectItem(json, "id") : NULL;
+    if (!cJSON_IsNumber(id) || id->valuedouble < 1 || id->valuedouble > UINT32_MAX) {
+        cJSON_Delete(json);
+        return send_json_error(req, "400 Bad Request", "invalid fault id");
+    }
+    const esp_err_t err = m45_fault_log_remove((uint32_t)id->valuedouble);
+    cJSON_Delete(json);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return send_json_error(req, "404 Not Found", "fault not found");
+    }
+    if (err != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", "fault remove failed");
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+static esp_err_t faults_clear_handler(httpd_req_t *req)
+{
+    const esp_err_t err = m45_fault_log_clear();
+    if (err != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", "fault clear failed");
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 static esp_err_t start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -4357,6 +4507,7 @@ static esp_err_t start_http_server(void)
         {.uri = "/update", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/logs", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_handler},
+        {.uri = "/root.js", .method = HTTP_GET, .handler = root_js_handler},
         {.uri = "/favicon.svg", .method = HTTP_GET, .handler = favicon_handler},
         {.uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler},
@@ -4407,6 +4558,11 @@ static esp_err_t start_http_server(void)
         {.uri = "/api/ota", .method = HTTP_POST, .handler = ota_update_handler},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = reboot_handler},
         {.uri = "/api/logs", .method = HTTP_GET, .handler = logs_handler},
+        {.uri = "/api/faults", .method = HTTP_GET, .handler = faults_get_handler},
+        {.uri = "/api/faults/remove", .method = HTTP_POST,
+         .handler = fault_remove_handler},
+        {.uri = "/api/faults/clear", .method = HTTP_POST,
+         .handler = faults_clear_handler},
         {.uri = "/health", .method = HTTP_GET, .handler = health_handler},
         {.uri = "/generate_204", .method = HTTP_GET,
          .handler = captive_portal_redirect_handler},
@@ -4443,7 +4599,7 @@ static esp_err_t start_http_server(void)
 esp_err_t wifi_http_start(GlobalState *state)
 {
     const m45_config_t *config = m45_config_get();
-    const bool setup_mode = config->wifi_ssid[0] == '\0';
+    const bool setup_mode = g_force_recovery_ap || config->wifi_ssid[0] == '\0';
     g_state = state;
     g_wifi_events = xEventGroupCreate();
     if (g_wifi_events == NULL) {
@@ -4504,6 +4660,11 @@ esp_err_t wifi_http_start(GlobalState *state)
     xEventGroupWaitBits(g_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
                         pdMS_TO_TICKS(15000));
     return ESP_OK;
+}
+
+void wifi_http_set_recovery_ap(bool enabled)
+{
+    g_force_recovery_ap = enabled;
 }
 
 bool wifi_http_connected(void)

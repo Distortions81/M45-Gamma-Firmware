@@ -230,8 +230,8 @@ limit_iout_fault_deciamps
 Saves and applies full runtime settings.
 
 Passwords are optional. Omit them, or omit masked UI values, to keep existing
-passwords. Weighted pool passwords default to `x` when no saved or submitted
-password exists. If Wi-Fi credentials change, the same credentials must first
+passwords. Empty Stratum passwords and the conventional default `x` are not
+stored. If Wi-Fi credentials change, the same credentials must first
 pass `POST /api/wifi-test`.
 
 Request body includes the fields returned by `GET /api/settings`, plus optional
@@ -422,12 +422,38 @@ Limits and errors:
 - Returns `400 Bad Request` for unsupported or invalid firmware images.
 - Returns `408 Request Timeout` after 30 seconds without upload progress or
   after five minutes total.
+- Rejects images without the Gamma 602 firmware identity (legacy
+  `M45-Firmware` images remain accepted for rollback).
+- Allows lower firmware releases. If the uploaded image has an older
+  configuration epoch, all settings are erased before reboot.
 
 Success response:
 
 ```json
 {"ok":true,"rebooting":true}
 ```
+
+### `GET /api/faults`
+
+Returns up to eight persistent hardware/safety faults, newest first. A valid
+wall-clock timestamp is included when available; `uptime_seconds` is always
+included.
+
+```json
+{"faults":[{"id":4,"epoch_seconds":1786801200,"uptime_seconds":32,"message":"ASIC temperature safety shutdown"}]}
+```
+
+### `POST /api/faults/remove`
+
+Removes one fault by id.
+
+```json
+{"id":4}
+```
+
+### `POST /api/faults/clear`
+
+Clears the complete fault history. The request has no body.
 
 ### `POST /api/reboot`
 

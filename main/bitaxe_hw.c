@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "i2c_bitaxe.h"
 #include "m45_config.h"
+#include "m45_fault_log.h"
 #include "mining.h"
 #include "asic_serial.h"
 #include "stratum_minimal.h"
@@ -735,6 +736,9 @@ static void safety_shutdown(GlobalState *state, const char *reason)
                  esp_err_to_name(shutdown_err));
     }
     set_hw_status("safety shutdown");
+    if (m45_fault_log_record(reason) != ESP_OK) {
+        ESP_LOGW(TAG, "failed to persist safety fault");
+    }
 }
 
 static esp_err_t shutdown_and_return(GlobalState *state, const char *reason, esp_err_t result)
@@ -1661,9 +1665,12 @@ void bitaxe_gamma602_init_state(GlobalState *state)
         config, state->DEVICE_CONFIG.family.asic.small_core_count,
         state->DEVICE_CONFIG.family.asic_count);
     state->version_mask = STRATUM_DEFAULT_VERSION_MASK;
-    state->SYSTEM_MODULE.pool_user = (char *)config->pool_user;
-    state->SYSTEM_MODULE.pool_pass = (char *)config->pool_pass;
-    state->SYSTEM_MODULE.pool_url = (char *)config->pool_host;
+    strlcpy(state->SYSTEM_MODULE.pool_user, config->pool_user,
+            sizeof(state->SYSTEM_MODULE.pool_user));
+    strlcpy(state->SYSTEM_MODULE.pool_pass, config->pool_pass,
+            sizeof(state->SYSTEM_MODULE.pool_pass));
+    strlcpy(state->SYSTEM_MODULE.pool_url, config->pool_host,
+            sizeof(state->SYSTEM_MODULE.pool_url));
     state->SYSTEM_MODULE.pool_port = config->pool_port;
     state->send_uid = 10;
     state->stratum_mux = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;

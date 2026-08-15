@@ -1,0 +1,5 @@
+#pragma once
+
+#define M45_FIRMWARE_PROJECT_NAME "M45-Gamma-602"
+#define M45_FIRMWARE_CONFIG_EPOCH 1U
+#define M45_FIRMWARE_VERSION_PREFIX "cfg"

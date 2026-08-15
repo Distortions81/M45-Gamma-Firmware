@@ -59,6 +59,7 @@
 #define M45_SAFETY_IOUT_WARN_MIN_DA 50
 #define M45_SAFETY_IOUT_FAULT_MIN_DA 60
 #define M45_SAFETY_IOUT_FAULT_MAX_DA 330
+#define M45_CONFIG_SCHEMA_VERSION 1U
 
 typedef struct {
     char host[M45_POOL_HOST_MAX + 1];
@@ -133,6 +134,7 @@ esp_err_t m45_config_set_aux_pool_ip_cache(size_t aux_index, const char *expecte
 esp_err_t m45_config_set_best_diff(double best_diff);
 esp_err_t m45_config_reset_best_diff(void);
 const m45_config_t *m45_config_get(void);
+uint32_t m45_config_schema_version(void);
 void m45_config_apply_auto_clock_policy(m45_config_t *config);
 uint16_t m45_config_auto_pool_difficulty(uint16_t frequency_mhz,
                                          uint16_t small_core_count,

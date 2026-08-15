@@ -41,6 +41,8 @@
 #define OLED_ALERT_REFRESH_MS 100
 #define OLED_STATUS_REFRESH_MS 1000
 #define OLED_MINING_REFRESH_MS 4000
+#define OLED_RECOVERY_HOLD_MS 5000
+#define OLED_RECOVERY_POLL_MS 50
 #ifndef CONFIG_GPIO_BUTTON_BOOT
 #define CONFIG_GPIO_BUTTON_BOOT 0
 #endif
@@ -379,6 +381,16 @@ static void oled_draw_factory_reset_view(void)
     const int x = text_width < OLED_WIDTH ? (OLED_WIDTH - text_width) / 2 : 0;
     const int y = (OLED_HEIGHT - FONT_HEIGHT) / 2;
     oled_draw_text_clipped(x, y, text, OLED_WIDTH - x);
+}
+
+static void oled_draw_recovery_view(uint32_t remaining_seconds)
+{
+    char countdown[24];
+    snprintf(countdown, sizeof(countdown), "HOLD %lu SEC TO RESET",
+             (unsigned long)remaining_seconds);
+    oled_draw_centered_scaled(2, "FULL SETTINGS RESET", 1);
+    oled_draw_centered_scaled(12, "RELEASE TO CANCEL", 1);
+    oled_draw_centered_scaled(22, countdown, 1);
 }
 
 static void draw_block_found_alert(void)
@@ -784,6 +796,47 @@ void m45_oled_start_status_task(GlobalState *state)
     xTaskCreate(oled_status_task, "oled_status", 6144, state, 2, NULL);
 }
 
+m45_oled_recovery_action_t m45_oled_recovery_action(void)
+{
+    if (g_panel == NULL || !oled_alert_button_pressed()) {
+        return M45_OLED_RECOVERY_NONE;
+    }
+
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t hold_ticks = pdMS_TO_TICKS(OLED_RECOVERY_HOLD_MS);
+    while (oled_alert_button_pressed()) {
+        const TickType_t elapsed = xTaskGetTickCount() - started;
+        if (elapsed >= hold_ticks) {
+            memset(g_frame, 0, sizeof(g_frame));
+            oled_draw_centered_scaled(8, "RECOVERY MODE", 1);
+            oled_draw_centered_scaled(18, "RESETTING SETTINGS", 1);
+            g_full_refresh = true;
+            oled_flush();
+            return M45_OLED_RECOVERY_FACTORY_RESET;
+        }
+        const uint32_t remaining_ms = OLED_RECOVERY_HOLD_MS - pdTICKS_TO_MS(elapsed);
+        memset(g_frame, 0, sizeof(g_frame));
+        oled_draw_recovery_view((remaining_ms + 999U) / 1000U);
+        g_full_refresh = true;
+        oled_flush();
+        vTaskDelay(pdMS_TO_TICKS(OLED_RECOVERY_POLL_MS));
+    }
+
+    return M45_OLED_RECOVERY_NONE;
+}
+
+void m45_oled_show_wifi_recovery(void)
+{
+    if (g_panel == NULL) {
+        return;
+    }
+    memset(g_frame, 0, sizeof(g_frame));
+    oled_draw_centered_scaled(8, "SETUP AP MODE", 1);
+    oled_draw_centered_scaled(18, "SET NEW WIFI", 1);
+    g_full_refresh = true;
+    oled_flush();
+}
+
 void m45_oled_show_factory_reset(void)
 {
     if (g_panel == NULL) {
@@ -812,6 +865,15 @@ void m45_oled_start_status_task(GlobalState *state)
 
 void m45_oled_show_factory_reset(void)
 {
+}
+
+void m45_oled_show_wifi_recovery(void)
+{
+}
+
+m45_oled_recovery_action_t m45_oled_recovery_action(void)
+{
+    return M45_OLED_RECOVERY_NONE;
 }
 
 #endif

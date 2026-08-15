@@ -26,6 +26,9 @@ the ASIC, regulator, fan, wiring, or power supply, and can create a fire risk.
   enabled.
 - Runtime safety-limit controls, including TPS546 PMBus limit updates.
 - OLED QR codes for first-boot Wi-Fi setup and the post-setup dashboard URL.
+- BOOT-button Wi-Fi recovery and five-second full settings reset with OLED
+  instructions.
+- Fixed-size, removable hardware fault history.
 - Wallet payout detection from coinbase data when the pool exposes enough
   information, block-found alerting, and best-diff reset.
 - Native M45 JSON endpoints plus ESP-Miner-compatible JSON routes for existing
@@ -57,6 +60,21 @@ network, open the displayed setup address, then enter Wi-Fi and pool settings.
 After the device joins Wi-Fi, the OLED shows the local dashboard address and an
 HTTP QR code.
 
+### Physical Recovery
+
+The two physical buttons have separate recovery actions:
+
+- Press RESET to reboot directly into the temporary `m-XXXX` setup network.
+  Existing settings are preserved so only Wi-Fi needs to be replaced. The OLED
+  displays `SETUP AP MODE` and `SET NEW WIFI`.
+- Hold BOOT while starting or resetting the device, and keep holding it for the
+  full five-second OLED countdown, to erase all settings. Releasing BOOT early
+  cancels the erase and boots normally.
+
+RESET drives the ESP32-S3 enable pin rather than a readable GPIO. Firmware
+distinguishes it from a cold power-up with a retained RTC boot marker; this
+behavior should be verified on each supported board revision.
+
 ### Updates And OTA
 
 Use the web flasher above for first install or USB recovery.
@@ -69,6 +87,35 @@ OTA accepts either:
 
 Release builds publish a merged factory image and update the GitHub Pages web
 flasher so older release images can be selected.
+
+OTA images carry a Gamma 602 board identity and a configuration epoch. Firmware
+release numbers may move forward or backward. When installing firmware with an
+older configuration epoch, settings are erased before it boots. At startup,
+firmware also checks the stored settings schema before reading any setting; a
+schema newer than it supports is erased and the device returns to setup mode.
+
+Application OTA never rewrites the device partition table. Existing M45 devices
+with 3 MB slots and devices transitioned from AxeOS with 4 MB slots therefore
+keep their installed layout. New M45 factory images use the AxeOS/ESP-Miner
+16 MB partition layout verbatim, including its 4 MB factory and OTA app slots
+and retained `www` partition. Normal M45 application images are checked against
+the actual target slot size at upload time.
+
+A newly installed OTA image remains rollback-pending until Gamma 602 hardware
+initialization succeeds. If initialization fails, the bootloader returns to the
+previous image and settings are erased so that older firmware never tries to
+open a newer configuration.
+
+### Stored Credentials
+
+Empty Stratum passwords and the conventional default password `x` are not
+written to NVS. Wi-Fi passwords and non-default Stratum passwords remain stored
+in ordinary NVS; this firmware does not provision eFuses or enable encrypted
+NVS.
+
+The Logs page keeps the eight most recent persistent hardware/safety faults.
+Each entry has the best available date/time (or boot uptime before time sync),
+an individual remove button, and a Clear All action.
 
 ### Network Trust And Exposure
 

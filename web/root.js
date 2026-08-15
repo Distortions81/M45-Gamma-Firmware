@@ -1,0 +1,919 @@
+
+let PAGE_TOKEN='';
+const $=id=>document.getElementById(id);
+const n=(v,d=0)=>Number.isFinite(Number(v))?Number(v).toFixed(d):'--';
+const num=v=>Number.isFinite(Number(v))?Number(v):NaN;
+const pct=(v,min,max)=>Math.max(0,Math.min(100,((v-min)/(max-min))*100));
+const fmt=v=>Number.isFinite(Number(v))?Number(v).toLocaleString():'--';
+const txt=(id,v)=>{const el=$(id);if(el)el.textContent=v==null||v===''?'--':v};
+const asicName=s=>s.asic_chips===1?s.asic_model:`${s.asic_chips} ${s.asic_model}`;
+const PASSWORD_MASK='........';
+const STOCK_FREQUENCY=525,STOCK_VOLTAGE=1150,MAX_FREQUENCY=1500;
+const AUTO_CLOCK_MAX_WATTS_DEFAULT=40,AUTO_CLOCK_MAX_WATTS_MIN=1,AUTO_CLOCK_MAX_WATTS_MAX=100;
+const LIMIT_DEFAULTS={inputMin:4800,inputExpectedMin:4950,inputExpectedMax:5400,inputMax:5500,
+asicMin:700,asicMax:1400,asicTempExpected:65,asicTempMax:69,tpsTempExpected:90,tpsTempMax:110,
+ioutWarnDa:290,ioutFaultDa:330};
+const LIMIT_MAX_U16=65535,LIMIT_MAX_DECIAMPS_A=6553.5;
+const LIMIT_RANGES={
+'limit-input-voltage-min':[4500,5200,0,LIMIT_MAX_U16],
+'limit-input-voltage-expected-min':[4500,5500,0,LIMIT_MAX_U16],
+'limit-input-voltage-expected-max':[4500,5500,0,LIMIT_MAX_U16],
+'limit-input-voltage-max':[5000,5500,0,LIMIT_MAX_U16],
+'limit-asic-voltage-min':[700,1200,0,LIMIT_MAX_U16],
+'limit-asic-voltage-max':[800,1400,0,LIMIT_MAX_U16],
+'limit-asic-temp-expected':[35,69,0,LIMIT_MAX_U16],
+'limit-asic-temp-max':[45,69,0,LIMIT_MAX_U16],
+'limit-tps546-temp-expected':[40,110,0,LIMIT_MAX_U16],
+'limit-tps546-temp-max':[60,110,0,LIMIT_MAX_U16],
+'limit-iout-warn':[5,33,0,LIMIT_MAX_DECIAMPS_A],
+'limit-iout-fault':[6,33,0,LIMIT_MAX_DECIAMPS_A]};
+const REFRESH_WARN_MS=10000;
+const UPDATE_REPO='Distortions81/M45-Gamma-Firmware',UPDATE_ASSET_PREFIX='esp-miner-factory-602-';
+const UPDATE_RELEASES_URL=`https://api.github.com/repos/${UPDATE_REPO}/releases`;
+const UPDATE_WEB_FLASHER_URL='https://distortions81.github.io/M45-Gamma-Firmware/';
+const UPDATE_PRIVACY_KEY='m45_ignore_release_check_warning';
+const CAL_BASE_TIMEOUT_MS=180000,CAL_STEP_TIMEOUT_MS=90000,CAL_SAMPLE_POLL_MS=1000,CAL_BASE_SAMPLE_MS=20000,CAL_STEP_SAMPLE_MS=15000;
+const CAL_START_MV=1200,CAL_MIN_MV=750,CAL_DOWN_STEP_MV=10,CAL_UP_STEP_MV=5,CAL_SAFETY_MV=10;
+const CAL_TARGET_TEMP_C=61,CAL_TEMP_MARGIN_C=2;
+const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MIN_SAMPLE_RESULTS=3;
+const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
+const AUX_POOL_COUNT=2,POOL_WEIGHT_MIN=1,POOL_WEIGHT_MAX=99;
+let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
+let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
+let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
+let currentBuildVersion='',latestRelease=null,latestFactoryAsset=null,releaseCheckInFlight=false,releaseAutoCheckStarted=false;
+let otaSupported=false,otaUploadInFlight=false,otaLeaveAction=null,otaAllowNavigation=false;
+function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
+$('dashboard-view').classList.toggle('hidden',view!=='stats');
+$('overclock-view').classList.toggle('hidden',view!=='overclock');
+$('calibration-view').classList.toggle('hidden',view!=='calibration');
+$('update-view').classList.toggle('hidden',view!=='update');
+$('logs-view').classList.toggle('hidden',view!=='logs');
+$('settings-view').classList.toggle('hidden',view!=='settings');
+}
+function guardOtaNavigation(action){if(!otaUploadInFlight){action();return}
+otaLeaveAction=action;$('ota-leave-modal').classList.remove('hidden')}
+function navigateTo(path){if(location.pathname!==path)guardOtaNavigation(()=>{otaAllowNavigation=true;location.href=path})}
+$('status-btn').onclick=()=>navigateTo('/');
+$('overclock-btn').onclick=()=>navigateTo('/overclock');
+$('calibration-btn').onclick=()=>navigateTo('/calibration');
+$('settings-btn').onclick=()=>navigateTo('/settings');
+$('update-btn').onclick=()=>navigateTo('/update');
+$('logs-btn').onclick=()=>navigateTo('/logs');
+$('reboot-btn').onclick=()=>{$('reboot-modal').classList.remove('hidden')};
+$('reboot-cancel').onclick=()=>{$('reboot-modal').classList.add('hidden')};
+$('reboot-modal').onclick=e=>{if(e.target===$('reboot-modal'))$('reboot-cancel').click()};
+$('best-reset').onclick=()=>{$('best-reset-modal').classList.remove('hidden')};
+$('best-reset-cancel').onclick=()=>{$('best-reset-modal').classList.add('hidden')};
+$('best-reset-modal').onclick=e=>{if(e.target===$('best-reset-modal'))$('best-reset-modal').classList.add('hidden')};
+$('settings-reset').onclick=()=>{$('settings-reset-modal').classList.remove('hidden')};
+$('settings-reset-cancel').onclick=()=>{$('settings-reset-modal').classList.add('hidden')};
+$('settings-reset-modal').onclick=e=>{if(e.target===$('settings-reset-modal'))$('settings-reset-cancel').click()};
+$('settings-validation-close').onclick=()=>{$('settings-validation-modal').classList.add('hidden')};
+$('settings-validation-modal').onclick=e=>{if(e.target===$('settings-validation-modal'))$('settings-validation-close').click()};
+$('update-privacy-cancel').onclick=()=>{$('update-privacy-modal').classList.add('hidden')};
+$('update-privacy-modal').onclick=e=>{if(e.target===$('update-privacy-modal'))$('update-privacy-cancel').click()};
+$('ota-leave-cancel').onclick=()=>{otaLeaveAction=null;$('ota-leave-modal').classList.add('hidden')};
+$('ota-leave-confirm').onclick=()=>{const action=otaLeaveAction;otaLeaveAction=null;otaAllowNavigation=true;$('ota-leave-modal').classList.add('hidden');if(action)action()};
+$('ota-leave-modal').onclick=e=>{if(e.target===$('ota-leave-modal'))$('ota-leave-cancel').click()};
+window.addEventListener('beforeunload',e=>{if(!otaUploadInFlight||otaAllowNavigation)return;
+e.preventDefault();e.returnValue=''});
+let dismissedFault=sessionStorage.getItem('dismissedFault')||'';
+$('fault-close').onclick=()=>{dismissedFault=$('fault-panel').dataset.reason||'';
+sessionStorage.setItem('dismissedFault',dismissedFault);$('fault-panel').classList.add('hidden')};
+$('risk-cancel').onclick=()=>{$('risk-modal').classList.add('hidden');pendingRiskStatus=null};
+$('risk-modal').onclick=e=>{if(e.target===$('risk-modal'))$('risk-cancel').click()};
+$('oc-enable-cancel').onclick=()=>{$('oc-enable-modal').classList.add('hidden');$('cfg-overclock-enabled').checked=false;syncOverclockEnabled()};
+$('oc-enable-confirm').onclick=()=>{$('oc-enable-modal').classList.add('hidden');setStockOverclock();$('cfg-overclock-enabled').checked=true;syncOverclockEnabled()};
+$('oc-enable-modal').onclick=e=>{if(e.target===$('oc-enable-modal'))$('oc-enable-cancel').click()};
+$('block-dismiss').onclick=async()=>{try{await fetch('/api/block-alert/dismiss',{method:'POST'});
+$('block-banner').classList.add('hidden');refresh()}catch(e){alert(`dismiss failed: ${e.message||e}`)}};
+$('payout-info-button').onclick=e=>e.currentTarget.blur();
+$('job-latency-info').onclick=e=>e.currentTarget.blur();
+function routeView(){if(location.pathname==='/calibration')history.replaceState(null,'','/'+location.search+location.hash);
+return location.pathname==='/settings'?'settings':location.pathname==='/overclock'?'overclock':location.pathname==='/update'?'update':location.pathname==='/logs'?'logs':'stats'}
+const val=id=>$(id).value.trim();const setVal=(id,v)=>{$(id).value=v==null?'':v};
+function human(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return'--';
+const u=['','K','M','G','T','P','E'];let i=0;while(v>=1000&&i<u.length-1){v/=1000;i++}
+return `${v>=100?n(v,0):v>=10?n(v,1):n(v,2)}${u[i]}`}
+function rate(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return['--',''];
+if(v>=1000)return[n(v/1000,2),'Th'];if(v>=1)return[n(v,0),'Gh'];
+if(v>=0.001)return[n(v*1000,0),'Mh'];return[n(v*1000000,0),'Kh']}
+function joulesPerTh(watts,ghs){watts=Number(watts);ghs=Number(ghs);
+return Number.isFinite(watts)&&Number.isFinite(ghs)&&watts>0&&ghs>0?watts*1000/ghs:NaN}
+function shortTime(sec){sec=Number(sec);if(!Number.isFinite(sec)||sec<=0)return'';
+const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60);
+if(h>0)return`${h}h ${m}m`;if(m>0)return`${m}m ${s}s`;return`${s}s`}
+function latencyMs(v){v=num(v);if(!Number.isFinite(v)||v<=0)return'--';
+const ms=v/1000;return ms>=10?n(ms,1):n(ms,2).replace(/0$/,'')}
+function jobLatencyText(s){const parts=[s.stratum_job_dispatch_us,s.stratum_share_submit_us,s.stratum_line_handle_us].map(latencyMs);
+return parts.every(x=>x==='--')?'--':`${parts.join(', ')} ms`}
+function sharesPerMinute(s){if(!s.stratum_connected){shareSamples=[];return'--'}
+const total=num(s.shares_accepted)+num(s.shares_rejected);if(!Number.isFinite(total))return'--';
+const now=Date.now(),last=shareSamples[shareSamples.length-1];if(last&&total<last.total)shareSamples=[];
+shareSamples.push({t:now,total});shareSamples=shareSamples.filter(x=>now-x.t<=60000);
+const first=shareSamples[0],elapsed=(now-first.t)/60000;if(!first||elapsed<=0)return'--';
+return n((total-first.total)/elapsed,1)}
+function poolSampleKey(p){return String(p.pool_id??`${p.host||''}:${p.port||''}`)}
+function poolSharesPerMinute(p){const key=poolSampleKey(p);
+if(!p.connected){poolShareSamples.delete(key);return'--'}
+const total=num(p.accepted)+num(p.rejected);if(!Number.isFinite(total))return'--';
+const now=Date.now();let samples=poolShareSamples.get(key)||[],last=samples[samples.length-1];
+if(last&&total<last.total)samples=[];
+samples.push({t:now,total});samples=samples.filter(x=>now-x.t<=60000);
+poolShareSamples.set(key,samples);const first=samples[0],elapsed=(now-first.t)/60000;
+if(!first||samples.length<2||elapsed<=0)return'--';return n((total-first.total)/elapsed,1)}
+function responseText(v){v=num(v);return Number.isFinite(v)&&v>0?`${n(v,0)} ms`:'--'}
+function nonceErrorStats(s){const nominal=num(s.hashrate_nominal_ghs),hash=num(s.hashrate_ghs),apiPct=num(s.asic_error_rate_percent);
+let frac=Number.isFinite(apiPct)&&(nominal>0||hash>0)?apiPct/100:NaN;
+if(!Number.isFinite(frac)){const valid=num(s.valid_nonces),errors=num(s.nonce_errors),total=valid+errors;
+if(Number.isFinite(total)&&total>0)frac=errors/total}if(!Number.isFinite(frac))return{pct:'--',lost:'--'};
+frac=clamp(frac,0,1);
+const base=Number.isFinite(nominal)&&nominal>0?nominal:(Number.isFinite(hash)&&frac<1?hash/(1-frac):hash);
+const lost=Number.isFinite(base)?rate(base*frac):['--',''];
+return{pct:`${n(frac*100,2)}%`,lost:lost[0]==='--'?'--':`${lost[0]} ${lost[1]}`.trim()}}
+function domainHashText(s){const h=rate(s.domain_hashrate_ghs);return h[0]==='--'?'--':`${h[0]} ${h[1]}`.trim()}
+function domainHeatColor(ratio){ratio=clamp(Number(ratio),0,2);const deviation=Math.abs(ratio-1);
+const t=1-Math.pow(1-deviation,1.5),target=ratio>1?255:0,base=[66,211,146];
+const r=(base[0]*(1-t)+target*t)|0,g=(base[1]*(1-t)+target*t)|0,b=(base[2]*(1-t)+target*t)|0;
+return`rgb(${r},${g},${b})`}
+function domainDeltaText(v,e){if(!Number.isFinite(v)||!Number.isFinite(e)||e<=0)return'--';
+const d=((v/e)-1)*100;return`${d>=0?'+':''}${n(d,0)}%`}
+function setDomainGrid(s){const grid=$('domain-grid');if(!grid)return;grid.innerHTML='';
+const rows=Array.isArray(s.domain_hashrates_ghs)?s.domain_hashrates_ghs:[],asicCount=rows.length||Math.max(1,Number(s.asic_chips)||1);
+const domainCount=rows[0]?.length||4,expected=num(s.expected_hashrate_ghs)/(asicCount*domainCount);
+for(let a=0;a<asicCount;a++){const row=document.createElement('div');row.className='domain-row';
+for(let d=0;d<domainCount;d++){const v=num(rows[a]?.[d]),cell=document.createElement('div'),h=rate(v);
+const live=Number.isFinite(v)&&v>0,ratio=live&&Number.isFinite(expected)&&expected>0?v/expected:NaN;
+cell.className=`domain-cell ${live?'':'empty'}`;if(live&&Number.isFinite(ratio)){cell.style.borderColor=domainHeatColor(ratio);
+cell.title=`ASIC ${a+1} domain ${d+1}: ${h.join(' ').trim()}, expected ${rate(expected).join(' ').trim()} (${domainDeltaText(v,expected)})`;
+const top=document.createElement('span');top.className='domain-rate';top.textContent=`D${d+1} `;
+const rateText=document.createElement('em');rateText.textContent=`${h[0]}${h[1]}`;top.appendChild(rateText);
+const sub=document.createElement('small');sub.className='domain-percent';sub.textContent=domainDeltaText(v,expected);
+cell.appendChild(top);cell.appendChild(sub)}else{cell.textContent=`D${d+1} --`}row.appendChild(cell)}grid.appendChild(row)}}
+function wifiQuality(rssi){rssi=Number(rssi);if(!Number.isFinite(rssi)||rssi===0)return{label:'Connected',cls:'ok'};
+if(rssi>=-50)return{label:'Excellent',cls:'ok'};if(rssi>=-60)return{label:'Very Good',cls:'ok'};
+if(rssi>=-70)return{label:'Good',cls:'ok'};return{label:'Weak',cls:'warn'}}
+function diffText(v){v=num(v);if(!Number.isFinite(v)||v<=0)return'--';if(v>=1)return fmt(Math.round(v));return n(v,10)}
+function payoutPercent(s){const px=num(s.payout_percent_x100);return Number.isFinite(px)&&px>0?`${n(px/100,2)}%`:''}
+function payoutInfo(s){const st=s.payout_status||'unchecked',px=num(s.payout_percent_x100);
+const pct=Number.isFinite(px)&&px>0?`${n(px/100,2)}%`:'';
+if(st==='ok')return{label:pct||'In Wallet',cls:'ok'};
+if(st==='low')return{label:`Low ${pct}`.trim(),cls:'warn'};
+if(st==='missing')return{label:'Not in Wallet',cls:'bad'};
+if(st==='unsupported')return{label:'Unsupported Wallet',cls:'warn'};
+if(st==='parse_error')return{label:'Decode Error',cls:'warn'};
+return{label:'Unchecked',cls:''}}
+function payoutStatusText(st){if(st==='missing')return'Warning: wallet was not found in the coinbase outputs.';
+if(st==='low')return'Warning: wallet receives less than 97% of coinbase outputs.';
+if(st==='unsupported')return'Coinbase payout check unavailable for this wallet address.';
+if(st==='parse_error')return'Coinbase payout check could not parse the coinbase transaction.';
+if(st==='ok')return'Coinbase payout matches wallet.';return'Coinbase payout has not been checked yet.'}
+function setPayoutPanel(s){const st=s.payout_status||'unchecked',pct=payoutPercent(s),panel=$('payout-panel'),hidden=!!s.multi_pool_enabled;
+const cls=st==='ok'?'ok':st==='missing'||st==='low'?'bad':st==='unchecked'?'':'warn';
+panel.className=`panel full payout-panel ${hidden?'hidden ':''}${cls}`.trim();txt('payout-warning',payoutStatusText(st));
+txt('payout-percent',st!=='unchecked'&&pct?`${pct} to configured wallet`:'');$('payout-percent').classList.toggle('hidden',!(st!=='unchecked'&&pct))}
+function expectedHashValue(s){const er=rate(s.expected_hashrate_ghs);return er[0]==='--'?'--':`${er[0]} ${er[1]}`.trim()}
+function syncFanPresetButtons(){const group=$('cfg-fan-presets');if(!group)return;
+const pct=Math.round(num(val('cfg-fan-percent'))),fixed=val('cfg-fan-mode')==='fixed';
+[...group.querySelectorAll('button')].forEach(b=>{const active=fixed&&pct===Number(b.dataset.pct);
+b.disabled=!fixed;b.classList.toggle('active',active);b.setAttribute('aria-pressed',active?'true':'false')})}
+function autoClockRequested(){return $('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked}
+function enforceAutoClockFanMode(){if(autoClockRequested()&&val('cfg-fan-mode')==='auto'){
+setVal('cfg-fan-mode','fixed');if(num(val('cfg-fan-percent'))<35)setVal('cfg-fan-percent',100)}}
+function syncFanSetting(){enforceAutoClockFanMode();const mode=val('cfg-fan-mode'),pct=$('cfg-fan-percent'),auto=mode==='auto',fixed=mode==='fixed';
+$('cfg-fan-percent-field').classList.toggle('hidden',!fixed);pct.disabled=!fixed;txt('cfg-fan-percent-value',`${pct.value}%`);
+$('cfg-fan-auto-off-field').classList.toggle('hidden',!auto);$('cfg-fan-auto-off').disabled=!auto;
+$('cfg-fan-target-enabled-field').classList.toggle('hidden',!auto);$('cfg-fan-target-field').classList.toggle('hidden',!auto);
+const tgt=$('cfg-fan-target');tgt.disabled=!auto||!$('cfg-fan-target-enabled').checked;
+txt('cfg-fan-target-value',`${tgt.value}C`);syncFanPresetButtons();syncOverclockWarning();syncAutoClockSetting()}
+function syncAutoClockSetting(s=null){const cb=$('oc-auto-clock-enabled');if(!cb)return;
+const on=$('cfg-overclock-enabled').checked,mode=val('cfg-fan-mode'),fanOff=mode==='off';
+cb.disabled=!on;cb.title=!on?'Enable overclocking first':'Auto Clock Speed';
+const target=$('oc-auto-clock-target'),targetValue=$('oc-auto-clock-target-value'),targetTemp=Number(val('oc-auto-clock-target'))||62;
+if(target)target.disabled=!on;if(targetValue)targetValue.textContent=`${targetTemp}C`;
+const capEnabled=$('oc-auto-clock-max-watts-enabled'),capInput=$('oc-auto-clock-max-watts'),capOn=capEnabled&&capEnabled.checked,capWatts=autoClockMaxWatts();
+if(capEnabled)capEnabled.disabled=!on;if(capInput)capInput.disabled=!on||!capOn;
+txt('oc-auto-clock-max-watts-note',capOn?`${capWatts} W max`:'Off');
+const configured=cb.checked&&!cb.disabled,active=s&&s.auto_clock_active===true,vinLimited=s&&s.auto_clock_input_voltage_limited===true,ampLimited=s&&s.auto_clock_output_current_limited===true,vrLimited=s&&s.auto_clock_vr_temp_limited===true,powerLimited=s&&s.auto_clock_power_limited===true,tempLimited=s&&s.auto_clock_temperature_limited===true,limited=vinLimited||ampLimited||vrLimited||powerLimited||tempLimited,pill=$('oc-auto-clock-state'),reason=s&&s.auto_clock_hold_reason||'',waiting=configured&&!active&&!!reason;
+pill.className=`pill ${limited||waiting?'warn':active?'ok':configured?'warn':''}`.trim();pill.textContent=limited?(vinLimited&&!ampLimited&&!vrLimited&&!powerLimited&&!tempLimited?'VIN LIMIT':ampLimited&&!vinLimited&&!vrLimited&&!powerLimited&&!tempLimited?'AMP LIMIT':vrLimited&&!vinLimited&&!ampLimited&&!powerLimited&&!tempLimited?'VR LIMIT':powerLimited&&!vinLimited&&!ampLimited&&!vrLimited&&!tempLimited?(/max watts/i.test(reason)?'WATT LIMIT':'COOLING'):tempLimited&&!vinLimited&&!ampLimited&&!vrLimited&&!powerLimited?'TEMP':'LIMITS'):active?'ACTIVE':waiting?'WAIT':configured?'ARMED':'OFF';
+let note='Manual preset control';const capNote=capOn?`, max ${capWatts} W`:'';if(!on)note='Overclocking off';else if(configured&&fanOff)note=`No fan, target ${targetTemp}C${capNote}`;else if(configured)note=`Fixed fan ${val('cfg-fan-percent')||'--'}%, target ${targetTemp}C${capNote}`;
+txt('oc-auto-clock-note',note);
+const tf=num(s&&s.auto_clock_target_frequency_mhz),tv=num(s&&s.auto_clock_target_voltage_mv),pn=num(s&&s.auto_clock_power_now_w),pt=num(s&&s.auto_clock_power_target_w),tr=num(s&&s.auto_clock_thermal_resistance_c_per_w);
+const capStatusOn=s&&s.auto_clock_max_watts_enabled===true,capStatusWatts=num(s&&s.auto_clock_max_watts);
+const liveCap=capStatusOn&&Number.isFinite(capStatusWatts)?` | cap ${n(capStatusWatts,0)} W`:s&&s.auto_clock_max_watts_enabled===false?' | cap off':capOn?` | cap ${capWatts} W`:' | cap off';
+const live=$('oc-auto-clock-live'),liveText=active&&Number.isFinite(tf)&&Number.isFinite(tv)?`Target ${n(tf,0)} MHz / ${n(tv,0)} mV | cooling watts ${n(pn,1)} / ${n(pt,1)} W${liveCap} | R ${n(tr,1)} C/W`:'Preset step limit: +1 / -3 levels per tick';
+let holdText='';if(ampLimited)holdText='Holding: IOUT limit';else if(vinLimited)holdText='Holding: VIN low';else if(vrLimited)holdText='Holding: VR temperature';else if(powerLimited)holdText=/max watts/i.test(reason)?'Holding: watt cap':'Holding: cooling/temperature';else if(tempLimited)holdText='Holding: temperature';
+else if(waiting)holdText=reason.replace(/^waiting/,'Waiting');
+live.title=reason;
+live.classList.toggle('oc-auto-clock-limit',limited||!!holdText);live.textContent=holdText?`${holdText} | ${liveText}`:liveText;
+syncClockModePanels()}
+function syncDomainRebootSetting(){const cb=$('oc-domain-reboot-enabled');if(!cb)return;
+txt('oc-domain-reboot-note',cb.checked?'Waits 1 min below 75% expected':'Off')}
+function syncDisplaySleep(){const timer=val('cfg-display-sleep-mode')==='timer',m=$('cfg-display-sleep-minutes');
+$('cfg-display-sleep-minutes-field').classList.toggle('hidden',!timer);m.disabled=!timer;
+if(timer&&Number(val('cfg-display-sleep-minutes'))<1)setVal('cfg-display-sleep-minutes',15)}
+function setLimitRangeMode(unrestricted,clampValues=false){Object.entries(LIMIT_RANGES).forEach(([id,r])=>{
+const el=$(id),min=unrestricted?r[2]:r[0],max=unrestricted?r[3]:r[1];el.min=min;el.max=max;
+if(clampValues){const v=num(el.value);if(Number.isFinite(v))setVal(id,clamp(v,min,max))}});
+$('oc-limits-card').classList.toggle('oc-limits-unrestricted-active',unrestricted)}
+function setLimitAmp(id,deciamps){setVal(id,n((Number(deciamps)||0)/10,1))}
+function limitAmpDa(id){const minDa=Math.round((Number($(id).min)||0)*10),maxDa=Math.round((Number($(id).max)||30)*10);
+return clamp(Math.round((Number(val(id))||0)*10),minDa,maxDa)}
+function setLimitFields(c={}){
+$('limit-unrestricted').checked=!!c.safety_limits_unrestricted;setLimitRangeMode($('limit-unrestricted').checked,false);
+setVal('limit-input-voltage-min',c.limit_input_voltage_min_mv??LIMIT_DEFAULTS.inputMin);
+setVal('limit-input-voltage-expected-min',c.limit_input_voltage_expected_min_mv??LIMIT_DEFAULTS.inputExpectedMin);
+setVal('limit-input-voltage-expected-max',c.limit_input_voltage_expected_max_mv??LIMIT_DEFAULTS.inputExpectedMax);
+setVal('limit-input-voltage-max',c.limit_input_voltage_max_mv??LIMIT_DEFAULTS.inputMax);
+setVal('limit-asic-voltage-min',c.limit_asic_voltage_min_mv??LIMIT_DEFAULTS.asicMin);
+setVal('limit-asic-voltage-max',c.limit_asic_voltage_max_mv??LIMIT_DEFAULTS.asicMax);
+setVal('limit-asic-temp-expected',c.limit_asic_temp_expected_max_c??LIMIT_DEFAULTS.asicTempExpected);
+setVal('limit-asic-temp-max',c.limit_asic_temp_max_c??LIMIT_DEFAULTS.asicTempMax);
+setVal('limit-tps546-temp-expected',c.limit_tps546_temp_expected_max_c??LIMIT_DEFAULTS.tpsTempExpected);
+setVal('limit-tps546-temp-max',c.limit_tps546_temp_max_c??LIMIT_DEFAULTS.tpsTempMax);
+setLimitAmp('limit-iout-warn',c.limit_iout_warn_deciamps??LIMIT_DEFAULTS.ioutWarnDa);
+setLimitAmp('limit-iout-fault',c.limit_iout_fault_deciamps??LIMIT_DEFAULTS.ioutFaultDa)}
+function setDefaultLimits(){setLimitFields({
+limit_input_voltage_min_mv:LIMIT_DEFAULTS.inputMin,limit_input_voltage_expected_min_mv:LIMIT_DEFAULTS.inputExpectedMin,
+limit_input_voltage_expected_max_mv:LIMIT_DEFAULTS.inputExpectedMax,limit_input_voltage_max_mv:LIMIT_DEFAULTS.inputMax,
+limit_asic_voltage_min_mv:LIMIT_DEFAULTS.asicMin,limit_asic_voltage_max_mv:LIMIT_DEFAULTS.asicMax,
+limit_asic_temp_expected_max_c:LIMIT_DEFAULTS.asicTempExpected,limit_asic_temp_max_c:LIMIT_DEFAULTS.asicTempMax,
+limit_tps546_temp_expected_max_c:LIMIT_DEFAULTS.tpsTempExpected,limit_tps546_temp_max_c:LIMIT_DEFAULTS.tpsTempMax,
+limit_iout_warn_deciamps:LIMIT_DEFAULTS.ioutWarnDa,limit_iout_fault_deciamps:LIMIT_DEFAULTS.ioutFaultDa})}
+function syncPoolDifficulty(){const input=$('cfg-pool-diff'),auto=$('cfg-pool-diff-auto').checked;
+if(auto){if(input.value)input.dataset.manual=input.value;input.value=input.dataset.auto||input.value||1000}
+else if(input.dataset.manual)input.value=input.dataset.manual;input.disabled=auto}
+function auxPoolRows(){return Array.from(document.querySelectorAll('.aux-pool-row'))}
+function auxField(row,name){return row.querySelector(`[data-aux-field="${name}"]`)}
+function auxPoolConfigured(p={}){return !!((p.host||'').trim()||(p.user||'').trim()||p.enabled||Number(p.weight)>0||p.password_set)}
+function poolWeightValue(v){return clamp(Math.floor(Number(v)||0),POOL_WEIGHT_MIN,POOL_WEIGHT_MAX)}
+function auxPoolRowWeight(row){return poolWeightValue(auxField(row,'weight').value.trim())}
+function setAuxPoolWeight(row,v){const weight=poolWeightValue(v);
+auxField(row,'weight').value=weight;auxField(row,'weight-slider').value=weight;auxField(row,'weight-value').textContent=weight;return weight}
+function auxPoolFromRow(row){
+return{host:auxField(row,'host').value.trim(),port:Number(auxField(row,'port').value.trim()),
+tls:auxField(row,'tls').checked,enabled:auxField(row,'enabled').checked,
+weight:auxPoolRowWeight(row),user:auxField(row,'user').value.trim(),
+pass:auxField(row,'pass').value.trim(),password_set:row.dataset.passwordSet==='1'}}
+function auxPools(){return auxPoolRows().map(auxPoolFromRow)}
+function auxPoolPayload(){return auxPools().map(p=>({host:p.host,port:p.port,tls:p.tls,enabled:p.enabled,
+weight:p.weight,user:p.user,pass:p.pass}))}
+function syncAuxPoolPassword(row){const input=auxField(row,'pass');
+input.disabled=!auxField(row,'enabled').checked;if(!input.placeholder)input.placeholder='unchanged'}
+function defaultAuxPoolWeight(){return 50}
+function syncAuxPoolEnabled(row){const enabled=auxField(row,'enabled').checked,state=row.querySelector('.aux-pool-state');
+if(enabled&&(Number(auxField(row,'weight').value.trim())||0)<=0)auxField(row,'weight').value=defaultAuxPoolWeight();
+row.classList.toggle('aux-pool-disabled',!enabled);if(state){state.className=`pill aux-pool-state ${enabled?'ok':''}`.trim();state.textContent=enabled?'Enabled':'Disabled'}
+['host','port','tls','weight','weight-slider','user'].forEach(name=>{auxField(row,name).disabled=!enabled});syncAuxPoolPassword(row);syncPoolWeights()}
+function setAuxPoolRow(row,p={}){row.dataset.passwordSet=p.password_set?'1':'0';auxField(row,'enabled').checked=!!p.enabled;
+auxField(row,'host').value=p.host||'';auxField(row,'port').value=p.port||3333;auxField(row,'tls').checked=!!p.tls;
+auxField(row,'weight').value=p.weight||0;auxField(row,'user').value=p.user||'';auxField(row,'pass').value=p.pass||'';
+auxField(row,'pass').placeholder=p.password_set?'Saved password':'x';syncAuxPoolEnabled(row)}
+function renderAuxPools(pools=[]){const list=$('cfg-aux-pools');list.textContent='';
+pools.slice(0,AUX_POOL_COUNT).forEach((p,i)=>list.appendChild(createAuxPoolRow(p,i)));syncPoolMode()}
+function setAuxPools(pools=[]){renderAuxPools(pools.filter(auxPoolConfigured))}
+function createAuxPoolRow(p={},i=0){const row=document.createElement('div');row.className='aux-pool-row';
+row.innerHTML=`<div class=aux-pool-head><div class=aux-pool-title-group><div class=aux-pool-title>Pool ${i+1}</div><span class='pill aux-pool-state'>Disabled</span></div><label class=aux-pool-enable for=cfg-aux-pool-${i}-enabled><input id=cfg-aux-pool-${i}-enabled data-aux-field=enabled type=checkbox><span>Enabled</span></label><button class='danger aux-pool-delete' type=button>Delete</button></div>
+<label class=toggle-row for=cfg-aux-pool-${i}-tls><input id=cfg-aux-pool-${i}-tls data-aux-field=tls type=checkbox><span class=label>TLS</span></label>
+<div class=field><label for=cfg-aux-pool-${i}-host>Pool</label><input id=cfg-aux-pool-${i}-host data-aux-field=host maxlength=96></div>
+<div class=field><label for=cfg-aux-pool-${i}-port>Port</label><input id=cfg-aux-pool-${i}-port data-aux-field=port type=number min=1 max=65535></div>
+<div class='field aux-weight-field'><label for=cfg-aux-pool-${i}-weight>Weight</label><div class=aux-weight-control><input id=cfg-aux-pool-${i}-weight data-aux-field=weight type=number min=1 max=99>
+<div class=range-line><input id=cfg-aux-pool-${i}-weight-slider data-aux-field=weight-slider type=range min=1 max=99 step=1><span data-aux-field=weight-value class=range-value>--</span></div></div></div>
+<div class=field><label for=cfg-aux-pool-${i}-user>Username</label><input id=cfg-aux-pool-${i}-user data-aux-field=user maxlength=128 placeholder='default username'></div>
+<div class=field><label for=cfg-aux-pool-${i}-pass>Password</label><input id=cfg-aux-pool-${i}-pass data-aux-field=pass type=password maxlength=64 placeholder='x'></div>`;
+setAuxPoolRow(row,p);['enabled','host','port','tls','weight','weight-slider','user'].forEach(name=>{
+const el=auxField(row,name);el.addEventListener('input',syncPoolWeights);el.addEventListener('change',syncPoolWeights)});
+auxField(row,'enabled').addEventListener('change',()=>syncAuxPoolEnabled(row));
+row.querySelector('.aux-pool-delete').onclick=()=>{const pools=auxPools();pools.splice(i,1);renderAuxPools(pools)};
+return row}
+function syncAuxPoolLimit(){const btn=$('cfg-add-aux-pool');if(btn)btn.disabled=auxPools().length>=AUX_POOL_COUNT}
+function clampAuxPoolWeight(row,source=null){if(!row||!auxField(row,'enabled').checked)return;
+const slider=auxField(row,'weight-slider'),input=auxField(row,'weight');
+setAuxPoolWeight(row,source===slider?slider.value:input.value)}
+function syncPoolWeights(e=null){const row=e&&e.currentTarget?e.currentTarget.closest('.aux-pool-row'):null;
+if(row)clampAuxPoolWeight(row,e.currentTarget);else auxPoolRows().forEach(clampAuxPoolWeight);
+const total=auxPools().reduce((sum,p)=>sum+(p.enabled?p.weight:0),0);
+const note=$('cfg-pool-weight-summary');if(note)note.textContent=`Configured weight total: ${total}`;
+syncAuxPoolLimit()}
+function multiPoolEnabled(){return val('cfg-pool-mode')==='multi'}
+function syncPoolMode(){const multi=multiPoolEnabled();document.querySelectorAll('.aux-pool-field').forEach(el=>el.classList.toggle('hidden',!multi));
+document.querySelectorAll('.single-pool-field').forEach(el=>el.classList.toggle('hidden',multi));
+txt('cfg-pool-user-label',multi?'Default Username':'Username (wallet.workername)');syncPoolWeights()}
+function syncTempCompensationNote(s=null){const cb=$('oc-temp-compensation'),note=$('oc-temp-compensation-note');if(!cb||!note)return;
+const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested();cb.disabled=!on||auto;
+if(auto){note.textContent='Locked while Auto Clock is armed';return}
+if(!cb.checked){note.textContent='Off';return}
+const extra=s&&Number.isFinite(num(s.voltage_temp_compensation_mv))?num(s.voltage_temp_compensation_mv):NaN;
+const temp=s&&Number.isFinite(num(s.asic_temp_c))&&num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN;
+note.textContent=Number.isFinite(extra)&&Number.isFinite(temp)?`${extra>0?'+':''}${n(extra,0)} mV now at ${n(temp,1)} C`:'25-70 C: +/-5.5 mV/C from 60 C; off outside'}
+function syncClockModePanels(){const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested();
+['oc-preset','oc-voltage-offset','cfg-frequency','cfg-voltage'].forEach(id=>$(id).disabled=!on);
+['oc-preset-card','oc-manual-card'].forEach(id=>$(id).classList.toggle('hidden',auto));
+$('oc-auto-clock-offset-field').classList.toggle('hidden',!auto);
+$('oc-auto-clock-voltage-offset').disabled=!on}
+function syncOverclockEnabled(){const on=$('cfg-overclock-enabled').checked;
+['oc-temp-compensation','oc-auto-clock-enabled','oc-auto-clock-target','oc-auto-clock-max-watts-enabled','oc-auto-clock-max-watts','oc-auto-clock-voltage-offset'].forEach(id=>$(id).disabled=!on);
+syncTempCompensationNote();syncClockModePanels();syncOverclockWarning();syncAutoClockSetting()}
+function setStockOverclock(){setVal('cfg-frequency',STOCK_FREQUENCY);setVal('cfg-voltage',STOCK_VOLTAGE);
+setVoltageOffset(0);syncPreset()}
+function setDefaultOverclockPanel(){setStockOverclock();$('oc-temp-compensation').checked=true;
+$('oc-auto-clock-enabled').checked=false;setVal('oc-auto-clock-target',62);
+$('oc-auto-clock-max-watts-enabled').checked=true;setVal('oc-auto-clock-max-watts',AUTO_CLOCK_MAX_WATTS_DEFAULT);
+$('oc-domain-reboot-enabled').checked=false;
+setDefaultLimits();syncDomainRebootSetting();syncFanSetting()}
+function syncOverclockWarning(){const on=$('cfg-overclock-enabled').checked,auto=autoClockRequested(),f=num(val('cfg-frequency')),fanSet=val('cfg-fan-mode')==='fixed'&&num(val('cfg-fan-percent'))>=100;
+const vr=on&&f>800,psu=on&&f>725,fan=on&&f>800&&!fanSet,cooling=on&&f>975,active=auto||vr||psu||fan||cooling;
+$('oc-auto-clock-warning').classList.toggle('hidden',!auto);
+$('oc-vr-warning').classList.toggle('hidden',!vr);$('oc-psu-warning').classList.toggle('hidden',!psu);
+$('oc-fan-warning').classList.toggle('hidden',!fan);$('oc-cooling-warning').classList.toggle('hidden',!cooling);
+$('oc-safety-panel').classList.toggle('oc-safety-active',active);$('oc-safety-clear').classList.toggle('hidden',active);
+$('oc-safety-state').className=`pill ${active?'warn':'ok'}`;$('oc-safety-state').textContent=active?'CHECK':'OK'}
+function clamp(v,min,max){return Math.max(min,Math.min(max,v))}
+function autoClockMaxWatts(){return clamp(Number(val('oc-auto-clock-max-watts'))||AUTO_CLOCK_MAX_WATTS_DEFAULT,AUTO_CLOCK_MAX_WATTS_MIN,AUTO_CLOCK_MAX_WATTS_MAX)}
+function presetVoltage(f){return clamp(Math.round((1150+.35*(f-850))/5)*5,500,1370)}
+function presetClass(f){return f>975?'hot':f>800?'warn':''}
+function buildPresets(){const s=$('oc-preset');for(let f=50;f<=MAX_FREQUENCY;f+=25){if(f===STOCK_FREQUENCY)continue;const v=presetVoltage(f),o=document.createElement('option');
+o.value=`${f},${v}`;o.textContent=`${f} MHz / ${v} mV`;const c=presetClass(f);if(c)o.className=c;s.appendChild(o)}}
+function presetParts(){const v=val('oc-preset');return v==='custom'?null:v.split(',').map(Number)}
+function voltageOffset(){return clamp(Number(val(autoClockRequested()?'oc-auto-clock-voltage-offset':'oc-voltage-offset'))||0,-500,300)}
+function setVoltageOffset(v){const off=clamp(Number(v)||0,-500,300);
+setVal('oc-voltage-offset',off);setVal('oc-auto-clock-voltage-offset',off);return off}
+function syncVoltageOffset(sourceId){return setVoltageOffset(val(sourceId))}
+function mirrorVoltageOffset(sourceId){setVal(sourceId==='oc-voltage-offset'?'oc-auto-clock-voltage-offset':'oc-voltage-offset',val(sourceId))}
+function applyVoltageOffset(){const p=presetParts();if(!p)return;
+setVal('cfg-voltage',clamp(p[1]+syncVoltageOffset('oc-voltage-offset'),500,1370))}
+function syncPreset(){const f=Number(val('cfg-frequency')),v=Number(val('cfg-voltage')),off=voltageOffset();
+const opt=[...$('oc-preset').options].find(o=>{if(o.value==='custom')return false;const p=o.value.split(',').map(Number);return p[0]===f&&clamp(p[1]+off,500,1370)===v});
+$('oc-preset').value=opt?opt.value:'custom'}
+let pendingRiskStatus=null;
+function overclockRisk(){const f=Number(val('cfg-frequency')),v=Number(val('cfg-voltage'));
+return{freq:f,volt:v,freqBad:Number.isFinite(f)&&f>MAX_FREQUENCY,voltBad:false}}
+function showRiskModal(statusId){const r=overclockRisk();pendingRiskStatus=statusId;
+$('risk-list').innerHTML=`<div class='risk-row ${r.freqBad?'bad':''}'><span>Clock</span><strong>${n(r.freq,0)} MHz</strong></div>`+
+`<div class='risk-row ${r.voltBad?'bad':''}'><span>Voltage</span><strong>${n(r.volt,0)} mV</strong></div>`;
+$('risk-modal').classList.remove('hidden')}
+function setFault(s){const p=$('fault-panel'),list=$('fault-reasons'),reasons=[];
+if(s.hardware_fault)reasons.push(s.hardware_fault_msg||'hardware fault');
+if(s.power_fault&&!reasons.length)reasons.push('power fault');
+const key=reasons.join('|');p.dataset.reason=key;if(!key||key===dismissedFault){p.classList.add('hidden');return}
+list.innerHTML=reasons.map(r=>`<li>${r}</li>`).join('');p.classList.remove('hidden')}
+function setBoot(s){const on=s.booting===true;$('boot-panel').classList.toggle('hidden',!on);
+if(on)txt('boot-step',`Hardware init: ${s.hardware||'boot'}`)}
+function setMetric(id,value,d,cfg){const v=num(value),bar=$(id+'-bar'),state=$(id+'-state');
+const fill=bar.querySelector('.fill'),zone=bar.querySelector('.zone'),range=$(id+'-range');
+$(id).textContent=Number.isFinite(v)?n(v,d):'--';if(range)range.textContent=cfg.text;
+if(!Number.isFinite(v)||!Number.isFinite(cfg.min)||!Number.isFinite(cfg.max)){bar.className='bar';
+fill.style.width='0%';zone.style.width='0%';state.className='pill';state.textContent='NO DATA';return}
+fill.style.width=pct(v,cfg.min,cfg.max)+'%';const z0=pct(cfg.goodMin,cfg.min,cfg.max);
+const z1=pct(cfg.goodMax,cfg.min,cfg.max);zone.style.left=z0+'%';zone.style.width=Math.max(0,z1-z0)+'%';
+let c='ok';if((cfg.badHigh!=null&&v>=cfg.badHigh)||(cfg.badLow!=null&&v<cfg.badLow))c='bad';
+else if((cfg.warnHigh!=null&&v>=cfg.warnHigh)||(cfg.warnLow!=null&&v<cfg.warnLow))c='warn';
+bar.className='bar '+c;state.className='pill '+c;state.textContent=c==='ok'?'OK':c==='warn'?'WATCH':'LIMIT'}
+function setRanges(s){const l=s.limits;if(!l)return;
+const haveTps=s.tps546_valid,asicTemp=num(s.asic_temp_c)>0?s.asic_temp_c:NaN;
+const asicTempTarget=Number.isFinite(num(s.fan_target_temp_c))?num(s.fan_target_temp_c):62;
+$('asic-temp-tick').style.left=pct(asicTempTarget,30,70)+'%';$('asic-temp-tick').title=`${n(asicTempTarget,0)}C target`;
+setMetric('asic-temp',asicTemp,1,{min:30,max:70,goodMin:30,goodMax:l.asic_temp_expected_max_c,
+warnHigh:l.asic_temp_expected_max_c,badHigh:l.asic_temp_max_c,text:`Target ${n(asicTempTarget,0)} C | watch ${n(l.asic_temp_expected_max_c,0)} C | stop ${n(l.asic_temp_max_c,0)} C`});
+setMetric('vr-temp',haveTps?s.tps546_temp_c:NaN,0,{min:30,max:120,goodMin:30,goodMax:l.tps546_temp_expected_max_c,
+warnHigh:l.tps546_temp_expected_max_c,badHigh:l.tps546_temp_max_c,text:`Watch ${n(l.tps546_temp_expected_max_c,0)} C | stop ${n(l.tps546_temp_max_c,0)} C`});
+setMetric('vin',haveTps?s.tps546_read_vin:NaN,2,{min:4.5,max:5.5,
+goodMin:l.input_voltage_expected_min_v,goodMax:l.input_voltage_expected_max_v,warnLow:l.input_voltage_expected_min_v,
+warnHigh:l.input_voltage_expected_max_v,badLow:l.input_voltage_min_v,badHigh:l.input_voltage_max_v,
+text:`Watch ${n(l.input_voltage_expected_min_v,2)}-${n(l.input_voltage_expected_max_v,2)} V | stop <${n(l.input_voltage_min_v,2)} or >=${n(l.input_voltage_max_v,2)} V`});
+setMetric('vout',haveTps?s.tps546_read_vout:NaN,3,{min:0.92,max:1.38,
+goodMin:l.asic_voltage_expected_min_v,goodMax:l.asic_voltage_expected_max_v,warnLow:l.asic_voltage_expected_min_v,
+warnHigh:l.asic_voltage_expected_max_v,badLow:l.asic_voltage_min_v,badHigh:l.asic_voltage_max_v,
+text:`Watch ${n(l.asic_voltage_expected_min_v,3)}-${n(l.asic_voltage_expected_max_v,3)} V | stop <${n(l.asic_voltage_min_v,3)} or >=${n(l.asic_voltage_max_v,3)} V`});
+setMetric('watts',haveTps?s.asic_power_watts:NaN,1,{min:10,max:50,goodMin:0,goodMax:l.power_warn_w,
+warnHigh:l.power_warn_w,badHigh:l.power_fault_w,text:`Watch ${n(l.power_warn_w,1)} W | fault ${n(l.power_fault_w,1)} W`});
+setMetric('iout',haveTps?s.tps546_read_iout:NaN,2,{min:10,max:40,goodMin:0,goodMax:l.iout_warn_a,
+warnHigh:l.iout_warn_a,badHigh:l.iout_fault_a,text:`Watch ${n(l.iout_warn_a,1)} A | fault ${n(l.iout_fault_a,1)} A`});
+const fanAuto=s.fan_auto===true,fanPercent=num(s.fan_percent),fanDisabled=!fanAuto&&fanPercent<=0.5,fanNearMax=fanAuto&&fanPercent>80;
+const fanColdOff=fanAuto&&fanPercent<=0.5&&Number.isFinite(asicTemp)&&asicTemp<(asicTempTarget-1);
+setMetric('fan',s.fan_percent,0,{min:0,max:100,goodMin:fanDisabled?0:20,goodMax:100,warnLow:fanDisabled||fanColdOff?null:20,
+warnHigh:fanDisabled?null:fanAuto?80.000001:null,text:fanDisabled?'disabled':fanColdOff?'Warming to target':fanNearMax?'Near cooling max!':`${s.fan_rpm==null?'--':s.fan_rpm} RPM | expected ${n(l.fan_expected_percent,0)}% fixed`});
+if(fanDisabled){$('fan-state').className='pill';$('fan-state').textContent='DISABLED'}
+txt('fan-rpm',fanDisabled?'disabled':`${fmt(s.fan_rpm)} RPM`);
+setMetric('hashrate',s.hashrate_ghs,0,{min:0,max:2500,goodMin:0,goodMax:2500,text:''});
+const hp=clamp(num(s.asic_error_rate_percent),0,100),hf=$('hashrate-bar').querySelector('.fill'),hl=$('hashrate-loss'),hw=parseFloat(hf.style.width)||0;
+const loss=Number.isFinite(hp)?hw*(hp/100):0;hl.style.left=Math.max(0,hw-loss)+'%';hl.style.width=Math.min(hw,loss)+'%';
+hl.title=Number.isFinite(hp)?`${n(hp,2)}% ASIC error loss`:'';
+txt('hashrate-note','');$('hashrate-note').classList.add('hidden');
+if(s.booting){$('hashrate-state').className='pill warn';$('hashrate-state').textContent='BOOT'}
+}
+function setIssue(s){const label=$('issue-label'),value=$('issue');let issue='',name='Issue';
+if(s.hardware_fault)issue=s.hardware_fault_msg||'hardware fault';
+else if(s.booting){name='Boot';issue=`Starting: ${s.hardware||'boot'}`}
+else if(s.setup_mode&&!s.wifi_connected){name='Setup';issue=`AP ${s.setup_ssid||'--'} at ${s.setup_ip||'--'}`}
+else if(s.wifi_connected&&s.asic_power_enabled!==false&&s.tps546_valid===false)issue='regulator not reporting';
+else if(s.wifi_connected&&s.asic_power_enabled!==false&&s.hardware&&s.hardware!=='ready')issue=s.hardware;
+else if(s.stratum_connected&&s.payout_status==='missing'){name='Wallet';issue='Not in coinbase payout'}
+else if(s.stratum_connected&&s.payout_status==='low'){name='Wallet';issue=`Payout ${payoutInfo(s).label}`}
+else if(s.stratum_connected&&s.payout_status==='unsupported'){name='Wallet';issue='Address type not decoded'}
+else if(s.stratum_connected&&s.payout_status==='parse_error'){name='Wallet';issue='Coinbase payout decode failed'}
+label.textContent=name;
+if(issue){label.classList.remove('hidden');value.classList.remove('hidden');value.textContent=issue}
+else{label.classList.add('hidden');value.classList.add('hidden');value.textContent=''}}
+function setSettings(s){txt('set-wifi',s.wifi_connected?s.wifi_ssid:s.setup_mode?`setup AP ${s.setup_ssid}`:'offline');
+txt('set-ip',s.wifi_connected?s.ip:'--');txt('set-stratum',s.multi_pool_enabled?'multi-pool':s.stratum_connected?'online':'offline');
+txt('set-pool',s.multi_pool_enabled?'weighted pools':s.pool?`${s.pool}:${s.pool_port}`:'--');
+const asicOn=s.booting===true||s.asic_power_enabled!==false;
+txt('set-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
+txt('set-frequency',`${n(s.frequency_mhz,0)} MHz`);txt('set-voltage',`${n(s.voltage_mv,0)} mV`);
+txt('set-hardware',s.hardware)}
+function poolStatusMetric(label,value){const box=document.createElement('div');box.className='pool-status-metric';
+const l=document.createElement('span');l.textContent=label;const v=document.createElement('strong');v.textContent=value;
+box.appendChild(l);box.appendChild(v);return box}
+function setPoolStatusPanel(s){const panel=$('pool-status-panel'),list=$('pool-status-list'),pill=$('pool-status-count');
+if(!panel||!list)return;const pools=(s.pool_statuses||[]).filter(p=>p&&p.host);
+const show=!!s.multi_pool_enabled&&pools.length>0;panel.classList.toggle('hidden',!show);if(!show){list.textContent='';poolShareSamples.clear();return}
+const online=pools.filter(p=>p.connected).length,onlineWeight=pools.reduce((sum,p)=>p.connected&&!p.disabled?sum+(Number(p.weight)||0):sum,0);
+if(pill){pill.className=`pill ${online===pools.length?'ok':online?'warn':'bad'}`;
+pill.textContent=`${online}/${pools.length} online`}list.textContent='';const activeKeys=new Set();
+pools.forEach(p=>{const row=document.createElement('div');row.className='pool-status-row';
+activeKeys.add(poolSampleKey(p));
+const main=document.createElement('div');main.className='pool-status-main';
+const name=document.createElement('div');name.className='pool-status-name';
+const disabled=p.disabled===true,note=(p.note||'').trim();
+const dot=document.createElement('span');dot.className=`status-dot ${disabled?'warn':p.connected?'ok':'bad'}`;
+const label=document.createElement('span');label.textContent=p.label||'Pool';name.appendChild(dot);name.appendChild(label);
+const host=document.createElement('div');host.className='pool-status-host';host.textContent=p.host?`${p.host}:${p.port||'--'}`:'--';
+const age=shortTime(p.connected_seconds);
+const state=disabled?'Disabled':p.connected?`Online${age?` ${age}`:''}`:'Offline';
+const role=document.createElement('div');role.className='pool-status-role';role.textContent=state;
+main.appendChild(name);main.appendChild(host);main.appendChild(role);if(note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
+const metrics=document.createElement('div');metrics.className='pool-status-metrics';
+const liveShare=p.connected&&onlineWeight>0?Math.round((Number(p.weight)||0)*100/onlineWeight):0;
+[['Weight',`${Number(p.weight)||0}`],['Live share',`${liveShare}%`],['Response',responseText(p.response_ms)],['Shares/min',poolSharesPerMinute(p)],
+['Work',fmt(p.work_received)],['Submitted',fmt(p.submitted)],['Accepted',fmt(p.accepted)],['Rejected',fmt(p.rejected)],
+['Diff',diffText(p.pool_difficulty)],['Payout',payoutInfo(p).label]].forEach(m=>metrics.appendChild(poolStatusMetric(m[0],m[1])));
+row.appendChild(main);row.appendChild(metrics);list.appendChild(row)});
+for(const key of poolShareSamples.keys())if(!activeKeys.has(key))poolShareSamples.delete(key)}
+function setOcCard(id,cls,pill,note){const card=$(id+'-card'),state=$(id+'-state'),sub=$(id+'-note');
+if(card)card.className='panel wide oc-card oc-power-panel';if(state){state.className=`pill ${cls||''}`.trim();state.textContent=pill||'--'}
+if(sub)sub.textContent=note||''}
+function setAsicPowerButton(s){const btn=$('oc-asic-power'),restart=$('oc-asic-restart');if(!btn)return;
+const powered=s.booting===true||s.asic_power_enabled!==false,busy=asicPowerBusy||asicRestartBusy,blocked=busy||!!s.booting||!!s.hardware_fault;
+btn.dataset.enabled=powered?'1':'0';btn.className=powered?'secondary':'primary';btn.setAttribute('aria-pressed',powered?'true':'false');
+btn.textContent=asicPowerBusy?(powered?'Turning Off...':'Turning On...'):(powered?'Turn Off':'Turn On');
+btn.title=s.hardware_fault?'Hardware fault latched':powered?'Turn ASIC off':'Turn ASIC on';btn.disabled=blocked;
+if(restart){restart.textContent=asicRestartBusy?'Restarting...':'Restart';restart.title=s.hardware_fault?'Hardware fault latched':powered?'Restart ASIC power':'ASIC is off';
+restart.disabled=blocked||!powered}
+const fan=$('oc-asic-manage-fan');if(fan)fan.disabled=busy||!!s.booting||!!s.hardware_fault}
+function setOverclock(s){
+const asicOn=s.booting===true||s.asic_power_enabled!==false,asicCls=s.hardware_fault?'bad':s.booting?'warn':s.asic_ready?'ok':asicOn?'warn':'';
+txt('oc-asic',s.asic_ready?asicName(s):s.booting?'booting':asicOn?'not ready':'off');
+setOcCard('oc-asic',asicCls,s.hardware_fault?'FAULT':!asicOn?'OFF':s.booting?'BOOT':s.overclock_enabled?'OC':'STOCK',s.hardware||'--');
+syncTempCompensationNote(s);syncAutoClockSetting(s);setAsicPowerButton(s)}
+function calLine(key,min,max){if(calHistory.length<2)return'';const last=calHistory.length-1;
+return calHistory.map((p,i)=>{const v=Number.isFinite(num(p[key]))?p[key]:min;
+return `${last?i*360/last:0},${110-pct(v,min,max)}`}).join(' ')}
+function clearCalibrationTelemetry(){calHistory=[];calRateSamples=[];
+['cal-voltage-line','cal-temp-line','cal-error-line','cal-hash-line'].forEach(id=>$(id).setAttribute('points',''));
+txt('cal-voltage','--');txt('cal-vout','TPS --');txt('cal-temp','--');txt('cal-error-rate','--');txt('cal-error-total','total --');
+txt('cal-hash','--');txt('cal-hash-note','expected --');txt('cal-result-rate','-- J/TH');txt('cal-result-total','valid --');
+txt('cal-fan','--');txt('cal-fan-note','RPM --');
+const live=$('cal-live-state');live.className='pill';live.textContent='--'}
+function setCalibrationTelemetry(s){const now=Date.now(),valid=num(s.valid_nonces),errors=num(s.nonce_errors);let resultRate=0,errRate=0;
+if(Number.isFinite(valid)&&Number.isFinite(errors)){const last=calRateSamples[calRateSamples.length-1];
+if(last&&(valid<last.valid||errors<last.errors))calRateSamples=[];calRateSamples.push({t:now,valid,errors});
+calRateSamples=calRateSamples.slice(-(CAL_RATE_WINDOW_SAMPLES+1));const first=calRateSamples[0];
+if(first&&calRateSamples.length>1){const mins=(now-first.t)/60000;if(mins>0){resultRate=(valid-first.valid)/mins;errRate=(errors-first.errors)/mins}}}
+const setMv=num(s.voltage_mv),readMv=s.tps546_valid?num(s.tps546_read_vout)*1000:NaN;
+const mv=Number.isFinite(readMv)&&readMv>0?readMv:setMv,temp=num(s.asic_temp_c)>0?num(s.asic_temp_c):NaN,hash=num(s.hashrate_ghs);
+const expected=num(s.expected_hashrate_ghs),fan=num(s.fan_percent),rpm=num(s.fan_rpm),jth=joulesPerTh(s.asic_power_watts,hash);
+txt('cal-voltage',Number.isFinite(setMv)?`${n(setMv,0)} mV`:'--');txt('cal-vout',Number.isFinite(readMv)?`TPS ${n(readMv,0)} mV`:'TPS --');
+txt('cal-temp',Number.isFinite(temp)?`${n(temp,1)} C`:'--');txt('cal-error-rate',`${n(errRate,1)}/min`);txt('cal-error-total',`total ${fmt(errors)}`);
+const hr=rate(hash),eh=rate(expected);txt('cal-hash',`${hr[0]} ${hr[1]}`.trim());
+txt('cal-hash-note',eh[0]==='--'?'expected --':`expected ${eh[0]} ${eh[1]}`.trim());
+txt('cal-result-rate',Number.isFinite(jth)?`${n(jth,1)} J/TH`:'-- J/TH');txt('cal-result-total',`valid ${fmt(valid)} | ${n(resultRate,1)}/min`);
+txt('cal-fan',Number.isFinite(fan)?`${n(fan,0)}%`:'--');txt('cal-fan-note',Number.isFinite(rpm)?`RPM ${fmt(rpm)}`:'RPM --');
+calHistory.push({t:now,voltage:mv,temp,errorRate:errRate,hash});calHistory=calHistory.filter(p=>now-p.t<=180000).slice(-90);
+$('cal-voltage-line').setAttribute('points',calLine('voltage',CAL_MIN_MV,1370));$('cal-temp-line').setAttribute('points',calLine('temp',30,80));
+const errMax=Math.max(1,...calHistory.map(p=>Number.isFinite(num(p.errorRate))?p.errorRate:0));$('cal-error-line').setAttribute('points',calLine('errorRate',0,errMax));
+const hashMax=Math.max(1,...calHistory.map(p=>Number.isFinite(num(p.hash))?p.hash:0));$('cal-hash-line').setAttribute('points',calLine('hash',0,hashMax));
+const live=$('cal-live-state');live.className=`pill ${s.hardware_fault?'bad':calibrationActive?'warn':'ok'}`;live.textContent=s.hardware_fault?'FAULT':calibrationActive?'RUN':'LIVE'}
+async function loadSettings(){try{const r=await fetch('/api/settings',{cache:'no-store'});
+if(!r.ok)throw new Error(r.status);const c=await r.json();setVal('cfg-wifi-ssid',c.wifi_ssid);
+setVal('cfg-hostname',c.hostname);setVal('cfg-pool-host',c.pool_host);setVal('cfg-pool-port',c.pool_port);
+$('cfg-pool-tls').checked=!!c.pool_tls;
+setVal('cfg-pool-mode',c.multi_pool_enabled?'multi':'single');
+setAuxPools(c.aux_pools||[]);
+setVal('cfg-pool-user',c.pool_user);$('cfg-pool-diff').dataset.manual=c.pool_difficulty||1000;
+$('cfg-pool-diff').dataset.auto=c.pool_suggested_difficulty||c.pool_difficulty||1000;setVal('cfg-pool-diff',c.pool_difficulty);
+$('cfg-pool-diff-auto').checked=c.pool_difficulty_auto!==false;syncPoolDifficulty();
+$('cfg-display-screensaver').checked=c.display_screensaver_enabled!==false;
+const sleepMinutes=Number(c.display_sleep_minutes)||0;setVal('cfg-display-sleep-mode',sleepMinutes>0?'timer':'off');
+$('cfg-display-sleep-minutes').max=c.display_sleep_max_minutes||65535;setVal('cfg-display-sleep-minutes',sleepMinutes>0?sleepMinutes:15);syncDisplaySleep();
+setLimitFields(c);
+$('cfg-overclock-enabled').checked=!!c.overclock_enabled;
+setVal('cfg-frequency',c.asic_frequency_mhz);setVal('cfg-voltage',c.asic_voltage_mv);setVoltageOffset(c.overclock_voltage_offset_mv||0);
+$('oc-temp-compensation').checked=!!c.asic_voltage_temp_compensation_enabled;
+syncPreset();
+setVal('cfg-fan-mode',!c.fan_override_enabled?'auto':c.fan_override_percent===0?'off':'fixed');
+$('cfg-fan-auto-off').checked=!!c.fan_auto_off_allowed;
+setVal('cfg-fan-percent',c.fan_override_percent>=35?c.fan_override_percent:100);syncFanSetting();
+$('cfg-fan-target-enabled').checked=!!c.fan_target_override_enabled;
+setVal('cfg-fan-target',c.fan_target_temp_c||62);syncFanSetting();
+$('oc-auto-clock-enabled').checked=!!c.auto_clock_enabled;
+setVal('oc-auto-clock-target',c.auto_clock_target_temp_c||62);
+$('oc-auto-clock-max-watts-enabled').checked=c.auto_clock_max_watts_enabled!==false;
+setVal('oc-auto-clock-max-watts',c.auto_clock_max_watts||AUTO_CLOCK_MAX_WATTS_DEFAULT);
+if($('oc-auto-clock-enabled').checked){enforceAutoClockFanMode();syncFanSetting()}
+$('oc-domain-reboot-enabled').checked=!!c.auto_domain_reboot_enabled;syncDomainRebootSetting();syncOverclockEnabled();
+setVal('cfg-wifi-pass',c.wifi_password_set?PASSWORD_MASK:'');setVal('cfg-pool-pass',c.pool_password_set?PASSWORD_MASK:'');
+loadedWifiSsid=val('cfg-wifi-ssid');wifiSettingsTestOk=true;wifiSettingsTestKey=cfgWifiKey();setStatus('wifi-test-status','');syncWifiTest()}
+catch(e){txt('settings-status',`settings error: ${e.message||e}`);txt('overclock-status',`settings error: ${e.message||e}`)}}
+buildPresets();
+['cfg-wifi-pass','cfg-pool-pass'].forEach(id=>{$(id).addEventListener('focus',()=>{if(val(id)===PASSWORD_MASK){setVal(id,'');if(id==='cfg-wifi-pass')resetSettingsWifiTest()}})});
+['cfg-wifi-ssid','cfg-wifi-pass'].forEach(id=>$(id).addEventListener('input',resetSettingsWifiTest));
+$('cfg-wifi-test').onclick=testSettingsWifi;
+$('cfg-fan-mode').onchange=syncFanSetting;$('cfg-fan-percent').oninput=syncFanSetting;
+[...$('cfg-fan-presets').querySelectorAll('button')].forEach(b=>b.onclick=()=>{
+setVal('cfg-fan-mode','fixed');setVal('cfg-fan-percent',b.dataset.pct);syncFanSetting()});
+$('cfg-fan-auto-off').onchange=syncFanSetting;
+$('cfg-fan-target-enabled').onchange=syncFanSetting;$('cfg-fan-target').oninput=syncFanSetting;
+$('cfg-display-sleep-mode').onchange=syncDisplaySleep;$('cfg-display-sleep-minutes').oninput=syncDisplaySleep;
+$('cfg-pool-diff').oninput=e=>{e.currentTarget.dataset.manual=e.currentTarget.value};
+$('cfg-pool-diff-auto').onchange=syncPoolDifficulty;
+$('cfg-pool-mode').onchange=syncPoolMode;
+$('cfg-add-aux-pool').onclick=()=>{
+if(auxPools().length<AUX_POOL_COUNT)renderAuxPools([...auxPools(),{port:3333,enabled:true,weight:defaultAuxPoolWeight()}])};
+$('oc-limits-defaults').onclick=setDefaultLimits;
+$('limit-unrestricted').onchange=e=>setLimitRangeMode(e.currentTarget.checked,true);
+$('cfg-overclock-enabled').onchange=()=>{if($('cfg-overclock-enabled').checked){$('cfg-overclock-enabled').checked=false;
+$('oc-enable-modal').classList.remove('hidden')}else{setDefaultOverclockPanel();syncOverclockEnabled()}};
+$('oc-temp-compensation').onchange=()=>syncTempCompensationNote();
+$('oc-auto-clock-enabled').onchange=()=>{enforceAutoClockFanMode();syncFanSetting();
+syncTempCompensationNote();syncClockModePanels();syncAutoClockSetting();syncOverclockWarning()};
+$('oc-auto-clock-target').oninput=syncAutoClockSetting;
+$('oc-auto-clock-max-watts-enabled').onchange=syncAutoClockSetting;
+$('oc-auto-clock-max-watts').oninput=syncAutoClockSetting;
+$('oc-auto-clock-max-watts').onchange=()=>{setVal('oc-auto-clock-max-watts',autoClockMaxWatts());syncAutoClockSetting()};
+$('oc-domain-reboot-enabled').onchange=syncDomainRebootSetting;
+$('oc-preset').onchange=()=>{const p=presetParts();if(!p)return;
+setVal('cfg-frequency',p[0]);applyVoltageOffset();syncOverclockWarning()};
+$('oc-voltage-offset').oninput=()=>mirrorVoltageOffset('oc-voltage-offset');
+$('oc-voltage-offset').onchange=applyVoltageOffset;
+$('oc-auto-clock-voltage-offset').oninput=()=>mirrorVoltageOffset('oc-auto-clock-voltage-offset');
+$('oc-auto-clock-voltage-offset').onchange=()=>{syncVoltageOffset('oc-auto-clock-voltage-offset');syncAutoClockSetting()};
+$('cfg-frequency').oninput=()=>{syncPreset();syncOverclockWarning()};
+$('cfg-voltage').oninput=()=>{setVoltageOffset(0);syncPreset()};
+function configBody(){
+let fanMode=val('cfg-fan-mode');const sleepMode=val('cfg-display-sleep-mode');
+const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';
+const sleepMax=Number($('cfg-display-sleep-minutes').max)||65535;
+const sleepMinutes=clamp(Number(val('cfg-display-sleep-minutes'))||15,1,sleepMax);
+const weightedMode=multiPoolEnabled();
+const body={wifi_ssid:val('cfg-wifi-ssid'),hostname:val('cfg-hostname'),
+pool_user:val('cfg-pool-user'),
+multi_pool_enabled:multiPoolEnabled(),
+aux_pools:auxPoolPayload(),
+pool_difficulty_auto:$('cfg-pool-diff-auto').checked,
+pool_difficulty:Number(($('cfg-pool-diff-auto').checked?$('cfg-pool-diff').dataset.manual:val('cfg-pool-diff'))||1000),
+display_screensaver_enabled:$('cfg-display-screensaver').checked,display_sleep_minutes:sleepMode==='off'?0:sleepMinutes,
+overclock_enabled:$('cfg-overclock-enabled').checked,asic_frequency_mhz:Number(val('cfg-frequency')),asic_voltage_mv:Number(val('cfg-voltage')),
+auto_clock_enabled:autoClock,
+auto_domain_reboot_enabled:$('oc-domain-reboot-enabled').checked,
+auto_clock_target_temp_c:Number(val('oc-auto-clock-target')),
+auto_clock_max_watts_enabled:$('oc-auto-clock-max-watts-enabled').checked,
+auto_clock_max_watts:autoClockMaxWatts(),
+overclock_voltage_offset_mv:voltageOffset(),
+asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,
+fan_override_enabled:fanMode!=='auto',fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),
+fan_auto_off_allowed:fanMode==='auto'&&$('cfg-fan-auto-off').checked,
+fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,fan_target_temp_c:Number(val('cfg-fan-target')),
+safety_limits_unrestricted:$('limit-unrestricted').checked,
+limit_input_voltage_min_mv:Number(val('limit-input-voltage-min')),
+limit_input_voltage_expected_min_mv:Number(val('limit-input-voltage-expected-min')),
+limit_input_voltage_expected_max_mv:Number(val('limit-input-voltage-expected-max')),
+limit_input_voltage_max_mv:Number(val('limit-input-voltage-max')),
+limit_asic_voltage_min_mv:Number(val('limit-asic-voltage-min')),
+limit_asic_voltage_max_mv:Number(val('limit-asic-voltage-max')),
+limit_asic_temp_expected_max_c:Number(val('limit-asic-temp-expected')),
+limit_asic_temp_max_c:Number(val('limit-asic-temp-max')),
+limit_tps546_temp_expected_max_c:Number(val('limit-tps546-temp-expected')),
+limit_tps546_temp_max_c:Number(val('limit-tps546-temp-max')),
+limit_iout_warn_deciamps:limitAmpDa('limit-iout-warn'),
+limit_iout_fault_deciamps:limitAmpDa('limit-iout-fault')};
+const wifiPass=cfgWifiPasswordForTest();if(wifiPass!=null)body.wifi_password=wifiPass;
+if(!weightedMode){body.pool_host=val('cfg-pool-host');body.pool_port=Number(val('cfg-pool-port'));
+body.pool_tls=$('cfg-pool-tls').checked;
+if(val('cfg-pool-pass')&&val('cfg-pool-pass')!==PASSWORD_MASK)body.pool_pass=val('cfg-pool-pass')}
+return body}
+const statusTimers={};
+function setStatus(id,msg,cls='',fade=false){const el=$(id);if(!el)return;
+clearTimeout(statusTimers[id]);el.className=`status-text ${cls}`.trim();el.textContent=msg;
+if(fade){statusTimers[id]=setTimeout(()=>{el.classList.add('fade');
+statusTimers[id]=setTimeout(()=>{el.textContent='';el.className='status-text'},700)},3500)}}
+function cfgWifiPasswordForTest(){const p=$('cfg-wifi-pass').value;if(p===PASSWORD_MASK)return null;
+if(p===''&&val('cfg-wifi-ssid')===loadedWifiSsid)return null;return p.trim()}
+function cfgWifiKey(){const p=cfgWifiPasswordForTest();return `${val('cfg-wifi-ssid')}\n${p==null?'__saved__':p}`}
+function cfgWifiChanged(){return val('cfg-wifi-ssid')!==loadedWifiSsid||cfgWifiPasswordForTest()!=null}
+function cfgWifiReady(){return !cfgWifiChanged()||(wifiSettingsTestOk&&wifiSettingsTestKey===cfgWifiKey())}
+function invalidWeightedPools(){const defaultUser=val('cfg-pool-user');
+return auxPools().some(p=>p.enabled&&(!p.host||!p.port||(!p.user&&!defaultUser)||p.weight<POOL_WEIGHT_MIN||p.weight>POOL_WEIGHT_MAX))}
+function showSettingsValidationModal(message,tests=[]){txt('settings-validation-message',message||'Check the settings and try again.');
+const list=$('settings-validation-details');list.innerHTML='';
+tests.forEach(t=>{const row=document.createElement('div');row.className=`risk-row ${t.ok?'':'bad'}`;
+const left=document.createElement('span');left.textContent=`${t.label||'Pool'} ${t.tls?'TLS':'TCP'}`;
+const right=document.createElement('strong');right.textContent=t.ok?`${t.host}:${t.port} OK`:`${t.host||'--'}:${t.port||'--'} ${t.error||'failed'}`;
+row.appendChild(left);row.appendChild(right);list.appendChild(row)});
+$('settings-validation-modal').classList.remove('hidden')}
+function syncWifiTest(){const has=!!val('cfg-wifi-ssid'),btn=$('cfg-wifi-test'),save=$('settings-save');
+if(btn)btn.disabled=wifiSettingsTesting||!has;if(save)save.disabled=!cfgWifiReady()}
+function resetSettingsWifiTest(){wifiSettingsTestOk=!cfgWifiChanged();wifiSettingsTestKey=cfgWifiKey();syncWifiTest();
+setStatus('wifi-test-status',cfgWifiChanged()?'Test Wi-Fi before saving.':'')}
+async function testSettingsWifi(){const ssid=val('cfg-wifi-ssid');if(!ssid){resetSettingsWifiTest();setStatus('wifi-test-status','Enter a Wi-Fi SSID.','err');return}
+const btn=$('cfg-wifi-test');wifiSettingsTesting=true;wifiSettingsTestOk=false;syncWifiTest();btn.textContent='Testing...';setStatus('wifi-test-status','testing Wi-Fi...');
+try{const body={wifi_ssid:ssid},p=cfgWifiPasswordForTest();if(p!=null)body.wifi_password=p;
+let r=await fetch('/api/wifi-test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+let j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+for(let i=0;j.running&&i<50;i++){await sleep(800);r=await fetch(`/api/wifi-test?id=${j.id}`,{cache:'no-store'});
+j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status)}
+if(j.running)throw new Error('connection timed out');if(!j.ok)throw new Error(j.error||'connection failed');
+wifiSettingsTestOk=true;wifiSettingsTestKey=cfgWifiKey();setStatus('wifi-test-status',`Wi-Fi test passed${j.ip?` (${j.ip})`:''}.`,'ok')}
+catch(e){wifiSettingsTestOk=false;wifiSettingsTestKey='';setStatus('wifi-test-status',`Wi-Fi test failed: ${e.message||e}`,'err')}
+finally{wifiSettingsTesting=false;btn.textContent='Test Connection';syncWifiTest()}}
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function statusJson(){const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
+const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);throw new Error('refreshing')}
+if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))throw new Error('refreshing');return s}
+function updateVersionFromStatus(s){currentBuildVersion=s.version||s.build_id||'unknown';otaSupported=s.ota_supported===true;
+txt('update-current',currentBuildVersion);txt('update-build-id',s.build_id||'unknown');txt('update-build-time',s.build_time||'unknown');
+syncOtaControls();if(latestRelease)renderLatestRelease(latestRelease);maybeAutoCheckRelease()}
+function releaseCompareVersion(v){return String(v||'').replace(/-dirty$/,'').replace(/\+.*/,'')}
+function currentMatchesReleaseTag(tag){const current=releaseCompareVersion(currentBuildVersion),release=String(tag||'');
+return current===release||current.startsWith(`${release}-`)}
+function setUpdateState(cls,text){const el=$('update-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
+function setUpdateMessage(msg,cls='',fade=false){setStatus('update-status',msg,cls,fade)}
+function localBool(key){try{return localStorage.getItem(key)==='1'}catch(_){return false}}
+function setLocalBool(key,value){try{if(value)localStorage.setItem(key,'1');else localStorage.removeItem(key)}catch(_){}}
+function setUpdateAvailable(available){$('update-badge').classList.toggle('hidden',!available)}
+function matchingFactoryAssets(release){const tag=release&&release.tag_name||'';const assets=Array.isArray(release&&release.assets)?release.assets:[];
+return assets.filter(a=>a&&a.name&&a.name.startsWith(`${UPDATE_ASSET_PREFIX}${tag}`)&&a.name.endsWith('.bin'))}
+function factoryMirrorUrl(release,asset){return `${UPDATE_WEB_FLASHER_URL}firmware/${encodeURIComponent(release.tag_name)}/${encodeURIComponent(asset.name)}`}
+function renderLatestRelease(release){latestRelease=release;const tag=release.tag_name||release.name||'unknown';
+const same=currentMatchesReleaseTag(tag);setUpdateAvailable(!same);setUpdateState(same?'ok':'warn',same?'CURRENT':'NEW');
+const assets=matchingFactoryAssets(release);latestFactoryAsset=assets[0]||null;txt('update-latest',tag);
+txt('update-summary',same?'This device is current.':latestFactoryAsset?`Update available: ${tag}.`:`Update ${tag} is available, but no Gamma 602 image was found.`);
+syncOtaControls()}
+async function checkLatestRelease(){if(releaseCheckInFlight)return;releaseCheckInFlight=true;
+$('update-check').disabled=true;setUpdateState('warn','CHECKING');setUpdateMessage('checking for updates...');
+try{const r=await fetch(UPDATE_RELEASES_URL,{cache:'no-store'});if(!r.ok)throw new Error(`GitHub API ${r.status}`);
+const releases=await r.json();const latest=(Array.isArray(releases)?releases:[]).find(x=>x&&!x.prerelease&&!x.draft);
+if(!latest){setUpdateAvailable(false);latestFactoryAsset=null;syncOtaControls();setUpdateState('warn','NONE');txt('update-latest','--');txt('update-summary','No OTA update was found.');setUpdateMessage('no OTA update found','err');return}
+renderLatestRelease(latest);setUpdateMessage('update check complete','ok',true)}
+catch(e){setUpdateState('bad','FAILED');setUpdateMessage(`update check failed: ${e.message||e}`,'err')}
+finally{releaseCheckInFlight=false;$('update-check').disabled=false}}
+function maybeAutoCheckRelease(){if(releaseAutoCheckStarted||!currentBuildVersion||!localBool(UPDATE_PRIVACY_KEY))return;
+releaseAutoCheckStarted=true;checkLatestRelease()}
+function handleUpdateCheck(){if(localBool(UPDATE_PRIVACY_KEY)){checkLatestRelease();return}
+$('update-privacy-modal').classList.remove('hidden')}
+$('update-check').onclick=handleUpdateCheck;
+$('update-privacy-continue').onclick=()=>{setLocalBool(UPDATE_PRIVACY_KEY,$('update-privacy-ignore').checked);
+$('update-privacy-modal').classList.add('hidden');checkLatestRelease()};
+$('update-web-flasher').href=UPDATE_WEB_FLASHER_URL;
+function setOtaState(cls,text){const el=$('ota-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
+function setOtaMessage(msg,cls='',fade=false){setStatus('ota-status',msg,cls,fade)}
+function syncOtaControls(){const file=$('ota-file').files&&$('ota-file').files[0];$('ota-upload').disabled=otaUploadInFlight||!otaSupported||!file;
+const installable=latestRelease&&latestFactoryAsset&&!currentMatchesReleaseTag(latestRelease.tag_name||latestRelease.name);
+$('ota-install-latest').disabled=otaUploadInFlight||!otaSupported||!installable;
+setOtaState(otaSupported?'ok':'warn',otaSupported?'READY':'UNAVAILABLE');
+txt('ota-summary',otaSupported?'Upload a M45 app image or Gamma 602 factory image.':'Flash once with the web flasher to enable OTA partitions.')}
+function uploadOtaBlob(blob,label){return new Promise((resolve,reject)=>{if(otaUploadInFlight){reject(new Error('OTA already running'));return}
+otaUploadInFlight=true;syncOtaControls();$('ota-progress').value=0;setOtaState('warn','UPDATING');setOtaMessage(`uploading ${label}...`);
+const xhr=new XMLHttpRequest();xhr.open('POST','/api/ota');xhr.setRequestHeader('X-Page-Token',PAGE_TOKEN);
+xhr.upload.onprogress=e=>{if(e.lengthComputable){const pct=Math.round(e.loaded*100/e.total);$('ota-progress').value=pct;setOtaMessage(`uploading ${pct}%...`)}};
+xhr.onload=()=>{otaUploadInFlight=false;syncOtaControls();let body={};try{body=JSON.parse(xhr.responseText||'{}')}catch(_){}
+if(xhr.status===409&&body.page_token){reloadFresh(body.page_token);resolve();return}
+if(xhr.status>=200&&xhr.status<300){$('ota-progress').value=100;setOtaState('ok','REBOOTING');setOtaMessage('update installed, rebooting...','ok');setTimeout(()=>location.reload(),7000);resolve();return}
+setOtaState('bad','FAILED');reject(new Error(body.error||xhr.statusText||`HTTP ${xhr.status}`))};
+xhr.onerror=()=>{otaUploadInFlight=false;syncOtaControls();setOtaState('bad','FAILED');reject(new Error('upload failed'))};
+xhr.send(blob)})}
+async function uploadSelectedOta(){const file=$('ota-file').files&&$('ota-file').files[0];if(!file){setOtaMessage('choose a firmware image first','err');return}
+try{await uploadOtaBlob(file,file.name)}catch(e){setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
+async function installLatestOta(){if(!latestRelease||!latestFactoryAsset){setOtaMessage('check for updates first','err');return}
+const url=factoryMirrorUrl(latestRelease,latestFactoryAsset);try{setOtaMessage(`downloading ${latestRelease.tag_name}...`);
+const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`download failed: ${r.status}`);
+const blob=await r.blob();await uploadOtaBlob(blob,latestFactoryAsset.name)}catch(e){setOtaState('bad','FAILED');setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
+$('ota-file').onchange=syncOtaControls;$('ota-upload').onclick=uploadSelectedOta;$('ota-install-latest').onclick=installLatestOta;syncOtaControls();
+function tuneBody(){let fanMode=val('cfg-fan-mode');const autoClock=$('cfg-overclock-enabled').checked&&$('oc-auto-clock-enabled').checked;if(autoClock&&fanMode==='auto')fanMode='fixed';return{overclock_enabled:$('cfg-overclock-enabled').checked,
+auto_clock_enabled:autoClock,
+auto_clock_target_temp_c:Number(val('oc-auto-clock-target')),
+auto_clock_max_watts_enabled:$('oc-auto-clock-max-watts-enabled').checked,
+auto_clock_max_watts:autoClockMaxWatts(),
+frequency_mhz:Number(val('cfg-frequency')),voltage_mv:Number(val('cfg-voltage')),
+asic_voltage_temp_compensation_enabled:$('oc-temp-compensation').checked,fan_override_enabled:fanMode!=='auto',
+fan_override_percent:fanMode==='off'?0:Number(val('cfg-fan-percent')),fan_target_override_enabled:fanMode==='auto'&&$('cfg-fan-target-enabled').checked,
+fan_auto_off_allowed:fanMode==='auto'&&$('cfg-fan-auto-off').checked,fan_target_temp_c:Number(val('cfg-fan-target'))}}
+function applyTuneFields(t){$('cfg-overclock-enabled').checked=!!t.overclock_enabled;setVal('cfg-frequency',t.frequency_mhz);
+setVal('cfg-voltage',t.voltage_mv);if('asic_voltage_temp_compensation_enabled' in t)$('oc-temp-compensation').checked=!!t.asic_voltage_temp_compensation_enabled;
+if('auto_clock_enabled' in t)$('oc-auto-clock-enabled').checked=!!t.auto_clock_enabled;
+if('auto_clock_target_temp_c' in t)setVal('oc-auto-clock-target',t.auto_clock_target_temp_c);
+if('auto_clock_max_watts_enabled' in t)$('oc-auto-clock-max-watts-enabled').checked=!!t.auto_clock_max_watts_enabled;
+if('auto_clock_max_watts' in t)setVal('oc-auto-clock-max-watts',t.auto_clock_max_watts);
+setVal('cfg-fan-mode',!t.fan_override_enabled?'auto':t.fan_override_percent===0?'off':'fixed');
+if('fan_auto_off_allowed' in t)$('cfg-fan-auto-off').checked=!!t.fan_auto_off_allowed;
+setVal('cfg-fan-percent',t.fan_override_percent>=35?t.fan_override_percent:100);$('cfg-fan-target-enabled').checked=!!t.fan_target_override_enabled;
+setVal('cfg-fan-target',t.fan_target_temp_c||62);syncFanSetting();syncOverclockEnabled();syncPreset()}
+async function runtimeTune(t){const r=await fetch('/api/runtime-tune',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(t)});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);return j}
+async function applyAsicPower(enabled,manageFan){const r=await fetch('/api/asic-power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,manage_fan:manageFan})});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+return j}
+async function setAsicPower(enabled){if(asicPowerBusy||asicRestartBusy)return;asicPowerBusy=true;
+const btn=$('oc-asic-power'),restart=$('oc-asic-restart');if(btn){btn.disabled=true;btn.textContent=enabled?'Turning On...':'Turning Off...'}
+if(restart)restart.disabled=true;setStatus('oc-asic-power-status',enabled?'turning on...':'turning off...');
+setStatus('overclock-status',enabled?'turning ASIC on...':'turning ASIC off...');
+const manageFan=$('oc-asic-manage-fan')?$('oc-asic-manage-fan').checked:true;
+try{await applyAsicPower(enabled,manageFan);
+setStatus('oc-asic-power-status',enabled?'ASIC on':'ASIC off','ok',true);
+setStatus('overclock-status',enabled?'ASIC on':'ASIC off','ok',true)}
+catch(e){setStatus('oc-asic-power-status',`failed: ${e.message||e}`,'err');
+setStatus('overclock-status',`ASIC power failed: ${e.message||e}`,'err')}
+finally{asicPowerBusy=false;refresh()}}
+async function restartAsicPower(){if(asicPowerBusy||asicRestartBusy)return;asicRestartBusy=true;
+const btn=$('oc-asic-power'),restart=$('oc-asic-restart');if(btn)btn.disabled=true;if(restart){restart.disabled=true;restart.textContent='Restarting...'}
+setStatus('oc-asic-power-status','restarting ASIC...');setStatus('overclock-status','restarting ASIC...');
+const manageFan=$('oc-asic-manage-fan')?$('oc-asic-manage-fan').checked:true;
+try{await applyAsicPower(false,manageFan);await sleep(750);await applyAsicPower(true,manageFan);
+setStatus('oc-asic-power-status','ASIC restarted','ok',true);setStatus('overclock-status','ASIC restarted','ok',true)}
+catch(e){setStatus('oc-asic-power-status',`restart failed: ${e.message||e}`,'err');
+setStatus('overclock-status',`ASIC restart failed: ${e.message||e}`,'err')}
+finally{asicRestartBusy=false;refresh()}}
+function calibrationTune(v){return{overclock_enabled:true,auto_clock_enabled:false,frequency_mhz:600,voltage_mv:v,fan_override_enabled:false,
+fan_override_percent:100,fan_target_override_enabled:true,fan_target_temp_c:CAL_TARGET_TEMP_C}}
+function setCalibrationFields(v){applyTuneFields(calibrationTune(v));setVoltageOffset(0);$('oc-preset').value='custom'}
+function setCalibrationResult(v,measured){calibrationOffsetMv=clamp(v-1110,-500,300);setVoltageOffset(calibrationOffsetMv);$('save-calibration').disabled=false}
+function updateCalibrationButton(s){const btn=$('calibrate-base');if(calibrationActive){btn.disabled=false;btn.textContent='Stop Calibration';btn.title='Stop calibration';return}
+const accepted=num(s&&s.shares_accepted);if(!Number.isFinite(accepted)||accepted<CAL_MIN_ACCEPTED_SHARES){
+btn.disabled=true;btn.textContent='Waiting for shares';btn.title=`Accepted shares ${Number.isFinite(accepted)?fmt(accepted):'--'}/${CAL_MIN_ACCEPTED_SHARES}`}
+else{btn.disabled=false;btn.textContent='Calibrate OC Voltage';btn.title='Calibrate overclock voltage'}}
+function calibrationSampleSummary(s){return`results ${fmt(s.valid)}, errors ${fmt(s.errors)}, hash ${rate(s.hashrate).join(' ').trim()}`}
+function calibrationTrendIssue(s,ref){const total=s.valid+s.errors;if(total<CAL_MIN_SAMPLE_RESULTS)return`ASIC results too low ${fmt(total)}/${CAL_MIN_SAMPLE_RESULTS}`;
+const errRatio=total>0?s.errors/total:0;if(s.errors>=CAL_MIN_BAD_ERRORS&&errRatio>=CAL_ERROR_RATIO)return`${fmt(s.errors)} ASIC errors`;
+if(ref&&Number.isFinite(ref.hashrate)&&ref.hashrate>0&&Number.isFinite(s.hashrate)&&s.hashrate<ref.hashrate*CAL_HASH_DROP_RATIO)return'hashrate down >5%';return''}
+function calibrationTempOk(t){return Number.isFinite(t)&&Math.abs(t-CAL_TARGET_TEMP_C)<=CAL_TEMP_MARGIN_C}
+function calibrationSample(a,b,startMs,temps,hashes){const elapsed=Math.max(1,(Date.now()-startMs)/1000);
+const valid=Math.max(0,num(b.valid_nonces)-num(a.valid_nonces)),errors=Math.max(0,num(b.nonce_errors)-num(a.nonce_errors));
+const effective=Math.max(0,valid-errors),temp=temps.length?temps.reduce((x,y)=>x+y,0)/temps.length:NaN;
+const hashrate=hashes.length?hashes.reduce((x,y)=>x+y,0)/hashes.length:num(b.hashrate_ghs);
+return{valid,errors,rate:valid/elapsed,errorRate:errors/elapsed,effectiveRate:effective/elapsed,hashrate,temp,elapsed}}
+async function collectCalibrationSample(maxMs,minMs,label){const deadline=Date.now()+maxMs;let start=null,startMs=0,temps=[],hashes=[];
+while(Date.now()<deadline){if(calibrationAbort)throw new Error('calibration stopped');const s=await statusJson();setCalibrationTelemetry(s);
+if(s.hardware_fault)throw new Error(s.hardware_fault_msg||'hardware fault');const t=num(s.asic_temp_c),h=num(s.hashrate_ghs);
+if(!calibrationTempOk(t)){start=null;temps=[];hashes=[];setStatus('calibration-status',
+`${label}: temp ${Number.isFinite(t)?n(t,1):'--'} C, waiting for ${CAL_TARGET_TEMP_C}+/-${CAL_TEMP_MARGIN_C} C`);
+await sleep(CAL_SAMPLE_POLL_MS);continue}if(!start){start=s;startMs=Date.now();temps=[];hashes=[]}
+temps.push(t);if(Number.isFinite(h))hashes.push(h);const elapsedMs=Date.now()-startMs;
+const vd=Math.max(0,num(s.valid_nonces)-num(start.valid_nonces)),ed=Math.max(0,num(s.nonce_errors)-num(start.nonce_errors)),total=vd+ed;
+const needResults=elapsedMs>=minMs&&total<CAL_MIN_SAMPLE_RESULTS&&elapsedMs<CAL_LOW_RESULT_SAMPLE_MS;
+setStatus('calibration-status',`${label}: sampling ${n(elapsedMs/1000,0)}s, temp ${n(t,1)} C, hash ${rate(h).join(' ').trim()}, results ${fmt(vd)}, errors ${fmt(ed)}${needResults?`, waiting for results ${fmt(total)}/${CAL_MIN_SAMPLE_RESULTS}`:''}`);
+if(elapsedMs>=minMs&&!needResults){return calibrationSample(start,s,startMs,temps,hashes)}await sleep(CAL_SAMPLE_POLL_MS)}
+throw new Error(`${label}: no usable ${CAL_TARGET_TEMP_C}+/-${CAL_TEMP_MARGIN_C} C sample`)}
+async function calibrateBase(){if(calibrationActive){calibrationAbort=true;setStatus('calibration-status','stopping...','warn');return}
+calibrationActive=true;calibrationAbort=false;clearCalibrationTelemetry();const btn=$('calibrate-base'),original=tuneBody(),originalOffset=voltageOffset();
+$('save-calibration').disabled=true;btn.textContent='Stop Calibration';
+try{const now=await statusJson();if(!now.asic_ready||!now.stratum_connected)throw new Error('ASIC and Stratum must be online');
+const accepted=num(now.shares_accepted);if(!Number.isFinite(accepted)||accepted<CAL_MIN_ACCEPTED_SHARES)
+throw new Error(`waiting for accepted shares (${Number.isFinite(accepted)?fmt(accepted):'--'}/${CAL_MIN_ACCEPTED_SHARES})`);
+setCalibrationFields(CAL_START_MV);setStatus('calibration-status',`600 MHz / ${CAL_START_MV} mV: waiting for target temp...`);await runtimeTune(calibrationTune(CAL_START_MV));
+const base=await collectCalibrationSample(CAL_BASE_TIMEOUT_MS,CAL_BASE_SAMPLE_MS,`600 MHz / ${CAL_START_MV} mV baseline`);
+if(base.valid<1||base.effectiveRate<=0)throw new Error('no valid nonce output during baseline');
+if(base.errors>0)throw new Error('baseline has invalid ASIC results');
+let lastGood=CAL_START_MV,lastGoodSample=base,trendStart=null,badRunStart=null,badStreak=0;
+for(let v=CAL_START_MV-CAL_DOWN_STEP_MV;v>=CAL_MIN_MV;v-=CAL_DOWN_STEP_MV){if(calibrationAbort)throw new Error('calibration stopped');
+setCalibrationFields(v);setStatus('calibration-status',`testing ${v} mV...`);await runtimeTune(calibrationTune(v));
+const s=await collectCalibrationSample(CAL_STEP_TIMEOUT_MS,CAL_STEP_SAMPLE_MS,`testing ${v} mV`),issue=calibrationTrendIssue(s,lastGoodSample),bad=issue!=='';
+const nextBadStreak=bad?badStreak+1:0;
+setStatus('calibration-status',`testing ${v} mV: ${bad?`${issue} ${nextBadStreak}/${CAL_TREND_STEPS}`:'ok'} (${calibrationSampleSummary(s)})`,bad?'warn':'');
+if(bad){if(badRunStart==null)badRunStart=v;badStreak=nextBadStreak;if(badStreak>=CAL_TREND_STEPS){trendStart=badRunStart;break}}
+else{badRunStart=null;badStreak=0;lastGood=v;lastGoodSample=s}}
+let result=lastGood;if(trendStart!=null){for(let v=Math.min(CAL_START_MV,trendStart+CAL_UP_STEP_MV);v<=CAL_START_MV;v+=CAL_UP_STEP_MV){
+if(calibrationAbort)throw new Error('calibration stopped');setCalibrationFields(v);
+setStatus('calibration-status',`recovering at ${v} mV...`);await runtimeTune(calibrationTune(v));
+const s=await collectCalibrationSample(CAL_STEP_TIMEOUT_MS,CAL_STEP_SAMPLE_MS,`recovering at ${v} mV`),issue=calibrationTrendIssue(s,lastGoodSample);
+setStatus('calibration-status',`recovering ${v} mV: ${issue||'ok'} (${calibrationSampleSummary(s)})`,issue?'warn':'');if(!issue){result=v;break}}}
+const safeResult=Math.min(1370,result+CAL_SAFETY_MV);setCalibrationFields(safeResult);await runtimeTune(calibrationTune(safeResult));
+try{setCalibrationTelemetry(await statusJson())}catch(_){}
+setCalibrationResult(safeResult,result);await runtimeTune(original);applyTuneFields(original);setVoltageOffset(calibrationOffsetMv);syncPreset();const off=calibrationOffsetMv;
+const resultReason=trendStart==null?`reached ${CAL_MIN_MV} mV floor cleanly`:'performance recovered';setStatus('calibration-status',
+`OC voltage ${safeResult} mV (${off>=0?'+':''}${off} mV offset, +10 mV safety); ${resultReason}; restored previous tune; Save Calibration to keep`,'ok');
+const live=$('cal-live-state');live.className='pill ok';live.textContent='DONE';setStatus('overclock-status','Calibration complete; restored previous tune','ok',true);}
+catch(e){try{await runtimeTune(original)}catch(_){}applyTuneFields(original);setVoltageOffset(originalOffset);syncPreset();
+const live=$('cal-live-state');live.className='pill bad';live.textContent=calibrationAbort?'STOP':'FAIL';
+setStatus('calibration-status',`calibration failed: ${e.message||e}`,'err')}finally{calibrationActive=false;calibrationAbort=false;btn.textContent='Calibrate OC Voltage';refresh()}}
+async function saveConfig(statusId,forceRisk=false){if(!cfgWifiReady()){setStatus(statusId,'test Wi-Fi before saving','err');
+setStatus('wifi-test-status','Test Wi-Fi before saving.','err');showSettingsValidationModal('Test Wi-Fi connection before saving.');syncWifiTest();return}
+if(statusId==='settings-status'&&multiPoolEnabled()&&invalidWeightedPools()){showSettingsValidationModal('Enabled pools need host, port, weight 1-99, and either a row username or default username.');
+setStatus(statusId,'save blocked: invalid weighted pool','err');return}
+if(statusId==='overclock-status'&&!forceRisk&&$('cfg-overclock-enabled').checked){const r=overclockRisk();
+if(r.freqBad){showRiskModal(statusId);return}}
+setStatus(statusId,'saving...');
+try{const body=configBody();
+const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+let msg='Saved';if(j.wifi_reconnect)msg+=', reconnecting Wi-Fi';else if(j.pool_reconnect)msg+=', reconnecting pool';
+setStatus(statusId,msg,'ok',true);loadSettings();refresh()}catch(err){setStatus(statusId,`save failed: ${err.message||err}`,'err')}}
+$('settings-form').onsubmit=e=>{e.preventDefault();saveConfig('settings-status')};
+$('overclock-form').onsubmit=e=>{e.preventDefault();saveConfig('overclock-status')};
+$('oc-asic-power').onclick=()=>{const powered=$('oc-asic-power').dataset.enabled==='1';setAsicPower(!powered)};
+$('oc-asic-restart').onclick=restartAsicPower;
+$('risk-confirm').onclick=()=>{const s=pendingRiskStatus;pendingRiskStatus=null;$('risk-modal').classList.add('hidden');
+if(s)saveConfig(s,true)};
+$('calibrate-base').onclick=calibrateBase;
+$('save-calibration').onclick=()=>saveConfig('calibration-status');
+$('reboot-confirm').onclick=async()=>{txt('reboot-confirm','Rebooting...');
+try{await fetch('/api/reboot',{method:'POST'});setTimeout(()=>location.reload(),5000)}catch(e){alert(`reboot failed: ${e.message||e}`)}};
+$('best-reset-confirm').onclick=async()=>{try{const r=await fetch('/api/best-diff/reset',{method:'POST'});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+$('best-reset-modal').classList.add('hidden');txt('best','--');refresh()}catch(e){alert(`reset failed: ${e.message||e}`)}};
+$('settings-reset-confirm').onclick=async()=>{const btn=$('settings-reset-confirm');btn.disabled=true;btn.textContent='Resetting...';
+try{const r=await fetch('/api/settings/factory-reset',{method:'POST'});
+const j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);
+$('settings-reset-modal').classList.add('hidden');btn.textContent='Rebooting...';
+setStatus('settings-status','Factory reset complete, rebooting...','ok');setTimeout(()=>location.reload(),5000)}
+catch(e){btn.textContent='Reset Settings';btn.disabled=false;setStatus('settings-status',`reset failed: ${e.message||e}`,'err')}};
+$('logs-verbose').onchange=()=>{logSeq=0;refreshLogs(true)};
+function faultTime(f){const epoch=Number(f.epoch_seconds);if(Number.isFinite(epoch)&&epoch>0)return new Date(epoch*1000).toLocaleString();
+return `Boot uptime ${shortTime(f.uptime_seconds)||'0s'}`}
+function renderFaults(items){const list=$('faults-list');list.innerHTML='';if(!items.length){const empty=document.createElement('div');empty.className='subvalue';empty.textContent='No recorded faults.';list.appendChild(empty);return}
+items.forEach(f=>{const row=document.createElement('div');row.className='fault-history-row';const text=document.createElement('div');
+const message=document.createElement('div');message.className='fault-history-message';message.textContent=f.message||'Unknown fault';
+const when=document.createElement('div');when.className='subvalue';when.textContent=faultTime(f);text.append(message,when);
+const remove=document.createElement('button');remove.type='button';remove.className='fault-history-remove';remove.title='Remove fault';remove.setAttribute('aria-label','Remove fault');remove.textContent='×';
+remove.onclick=async()=>{remove.disabled=true;try{const r=await fetch('/api/faults/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:f.id})});if(!r.ok)throw new Error(r.status);await refreshFaults()}catch(e){remove.disabled=false;setLogStatus('FAULT REMOVE FAILED','warn')}};
+row.append(text,remove);list.appendChild(row)})}
+async function refreshFaults(){try{const r=await fetch('/api/faults',{cache:'no-store'});if(!r.ok)throw new Error(r.status);const j=await r.json();renderFaults(Array.isArray(j.faults)?j.faults:[])}catch(e){const list=$('faults-list');list.textContent='Unable to load fault history.'}}
+$('faults-clear').onclick=async()=>{if(!confirm('Clear all recorded faults?'))return;const btn=$('faults-clear');btn.disabled=true;try{const r=await fetch('/api/faults/clear',{method:'POST'});if(!r.ok)throw new Error(r.status);await refreshFaults()}catch(e){setLogStatus('FAULT CLEAR FAILED','warn')}finally{btn.disabled=false}};
+function logText(){return $('logs-output').textContent||''}
+function setLogStatus(msg,cls='ok'){$('logs-state').className=`pill ${cls}`;$('logs-state').textContent=msg}
+$('logs-save').onclick=()=>{const url=URL.createObjectURL(new Blob([logText()],{type:'text/plain'}));
+const a=document.createElement('a');a.href=url;a.download=`m45-log-${new Date().toISOString().replace(/[:.]/g,'-')}.txt`;
+document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);setLogStatus('SAVED')};
+$('logs-copy').onclick=async()=>{try{const text=logText();
+if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(text);
+else{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+document.body.appendChild(ta);ta.focus();ta.select();document.execCommand('copy');ta.remove()}setLogStatus('COPIED')}
+catch(e){setLogStatus('COPY FAILED','warn')}};
+function reloadFresh(token){const u=new URL(location.href);u.searchParams.set('_t',token||Date.now());location.replace(u.pathname+u.search+u.hash)}
+function checkPageToken(token){if(!token)return true;if(!PAGE_TOKEN){PAGE_TOKEN=token;return true}if(token!==PAGE_TOKEN){reloadFresh(token);return false}return true}
+function updateRefreshWarning(){const offlineMs=Date.now()-lastRefreshOk,offline=offlineMs>REFRESH_WARN_MS;
+$('refresh-warning').classList.toggle('hidden',!offline);txt('offline-time',offline?shortTime(Math.floor(offlineMs/1000)):'0s')}
+function markRefreshOk(){lastRefreshOk=Date.now();updateRefreshWarning()}
+function appendLogs(chunk,reset,truncated){const out=$('logs-output');if(reset)out.textContent='';
+if(truncated)chunk='[earlier logs dropped]\n'+chunk;if(!chunk)return;
+const pin=out.scrollTop+out.clientHeight>=out.scrollHeight-24;out.textContent+=chunk;
+if(out.textContent.length>30000)out.textContent=out.textContent.slice(-24000);
+if(pin||reset)out.scrollTop=out.scrollHeight}
+async function refreshLogs(reset=false){if(routeView()!=='logs'||logsInFlight)return;logsInFlight=true;
+const verbose=$('logs-verbose').checked?1:0;
+try{const r=await fetch(`/api/logs?since=${reset?0:logSeq}&verbose=${verbose}`,{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
+if(r.status===409){const s=await r.json().catch(()=>({}));reloadFresh(s.page_token);return}
+if(!r.ok)throw new Error(r.status);const chunk=await r.text();const next=Number(r.headers.get('X-Log-Next'));
+if(Number.isFinite(next))logSeq=next;appendLogs(chunk,reset,r.headers.get('X-Log-Truncated')==='1');
+$('logs-state').className='pill ok';$('logs-state').textContent='LIVE'}
+catch(e){$('logs-state').className='pill warn';$('logs-state').textContent='OFFLINE'}finally{logsInFlight=false}}
+async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
+const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);return}
+if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setFault(s);setBoot(s);
+const multiPool=!!s.multi_pool_enabled;
+const device=s.device_name||'M45-Firmware';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
+txt('firmware-version',s.version||'unknown');
+txt('build-id',s.build_id||'unknown');txt('build-time',s.build_time||'unknown');
+updateVersionFromStatus(s);
+txt('tps-model',s.tps546_model||'--');
+const asicOn=s.booting===true||s.asic_power_enabled!==false;
+txt('asic-model',s.asic_ready?asicName(s):s.booting?'Booting':asicOn?'Not ready':'Off');$('asic-model').className=s.asic_ready?'summary-value':'summary-value muted';
+txt('asic-clock',s.asic_ready?`${n(s.frequency_mhz,0)} MHz`:s.booting?s.hardware||'Boot':asicOn?'--':'ASIC off');$('asic-clock').className=s.asic_ready?'summary-value':'summary-value muted';
+setRanges(s);
+const hr=rate(s.hashrate_ghs);txt('hashrate',hr[0]);txt('hashrate-unit',hr[1]);
+txt('best',human(s.best_diff));txt('accepted',fmt(s.shares_accepted));updateCalibrationButton(s);
+txt('rejected',fmt(s.shares_rejected));txt('difficulty',multiPool?'Per-pool':diffText(s.pool_difficulty));
+txt('shares-min',sharesPerMinute(s));
+const rt=num(s.stratum_response_ms);txt('stratum-response',multiPool?'Per-pool':rt>0?`${n(rt,0)} ms`:'--');
+txt('job-latency',jobLatencyText(s));
+const pi=multiPool?{label:'Per-pool',cls:''}:payoutInfo(s);txt('payout',pi.label);$('payout').className=pi.cls;
+setPayoutPanel(s);
+const ns=nonceErrorStats(s);txt('nonce-error-rate',ns.pct);txt('hash-lost',ns.lost);
+txt('expected-hashrate',expectedHashValue(s));
+const efficiency=num(s.asic_efficiency_j_per_th),jth=Number.isFinite(efficiency)&&efficiency>0?efficiency:joulesPerTh(s.asic_power_watts,s.hashrate_ghs);
+txt('asic-efficiency',Number.isFinite(jth)?`${n(jth,1)} J/TH`:'--');
+txt('domain-hashrate',domainHashText(s));
+setDomainGrid(s);
+const w=s.wifi_connected?wifiQuality(s.wifi_rssi_dbm):s.setup_mode?{label:'Setup AP',cls:'warn'}:{label:'Offline',cls:'bad'};
+txt('wifi-state',w.label);$('wifi-state').className=`signal-state ${w.cls}`;txt('wifi-rssi',s.wifi_connected?`${n(s.wifi_rssi_dbm,0)} dBm`:s.setup_mode?`${s.setup_ssid} ${s.setup_ip}`:'');
+const sc=s.stratum_connected?'ok':'warn';$('stratum-dot').className=`status-dot ${sc}`;$('stratum-state').className=sc;
+const poolLine=multiPool?'multi-pool mode':s.pool?`${s.pool}:${s.pool_port}`:'';
+txt('stratum-state',multiPool?'Multi-pool mode':s.stratum_connected?'Online':'Offline');txt('stratum-time',s.stratum_connected?shortTime(s.stratum_connected_seconds):'');txt('stratum-pool',poolLine);
+$('block-banner').classList.toggle('hidden',!s.block_alert_active);txt('block-banner-detail',`Best candidate diff ${human(s.block_alert_diff)}`);
+setPoolStatusPanel(s);setIssue(s);setSettings(s);setOverclock(s);}
+catch(e){updateRefreshWarning();txt('wifi-state','API error');txt('wifi-rssi','');$('wifi-state').className='signal-state bad';
+$('stratum-dot').className='status-dot bad';txt('stratum-state',String(e.message||e));txt('stratum-time','');
+const panel=$('pool-status-panel');if(panel)panel.classList.add('hidden')}
+finally{refreshInFlight=false}}
+const view=routeView();showView(view);syncOverclockEnabled();syncDisplaySleep();syncPoolDifficulty();syncPoolMode();if(view==='settings'||view==='overclock'||view==='calibration')loadSettings();
+if(view==='logs'){refreshFaults();refreshLogs(true)}refresh();setInterval(refresh,2000);setInterval(()=>refreshLogs(false),1000);setInterval(updateRefreshWarning,1000);

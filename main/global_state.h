@@ -9,6 +9,7 @@
 #include "freertos/portmacro.h"
 #include "freertos/semphr.h"
 #include "mining.h"
+#include "m45_config.h"
 
 typedef struct {
     const char *name;
@@ -53,10 +54,10 @@ typedef struct {
     uint64_t shares_rejected;
     uint64_t work_received;
     uint64_t best_session_nonce_diff;
-    char *pool_url;
+    char pool_url[M45_POOL_HOST_MAX + 1];
     uint16_t pool_port;
-    char *pool_user;
-    char *pool_pass;
+    char pool_user[M45_POOL_USER_MAX + 1];
+    char pool_pass[M45_POOL_PASS_MAX + 1];
     uint16_t power_fault;
     bool hardware_fault;
     char hardware_fault_msg[64];

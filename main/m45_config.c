@@ -1,9 +1,11 @@
 #include "m45_config.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_log.h"
 #include "esp_mac.h"
 #include "nvs.h"
 
@@ -25,6 +27,8 @@
 #define M45_OC_VOLTAGE_OFFSET_MAX_MV 300
 #define M45_STRATUM_TARGET_SHARES_PER_MIN 14ULL
 #define M45_STRATUM_DIFF_HASHES 4294967296ULL
+
+static const char *TAG = "m45_config";
 #ifndef CONFIG_M45_BITAXE_STRATUM_BACKUP_HOST
 #define CONFIG_M45_BITAXE_STRATUM_BACKUP_HOST "public-pool.io"
 #endif
@@ -48,6 +52,32 @@
 #endif
 
 static m45_config_t g_config;
+static pthread_mutex_t g_config_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local m45_config_t g_config_snapshot;
+
+static void config_store_runtime(const m45_config_t *config)
+{
+    pthread_mutex_lock(&g_config_lock);
+    g_config = *config;
+    pthread_mutex_unlock(&g_config_lock);
+}
+
+static void config_copy_runtime(m45_config_t *config)
+{
+    pthread_mutex_lock(&g_config_lock);
+    *config = g_config;
+    pthread_mutex_unlock(&g_config_lock);
+}
+
+static esp_err_t store_optional_password(nvs_handle_t nvs, const char *key,
+                                         const char *password)
+{
+    if (password == NULL || password[0] == '\0' || strcmp(password, "x") == 0) {
+        const esp_err_t err = nvs_erase_key(nvs, key);
+        return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+    }
+    return nvs_set_str(nvs, key, password);
+}
 
 static const char *configured_hostname_base(void)
 {
@@ -456,129 +486,170 @@ static void sanitize_config(m45_config_t *config)
 
 esp_err_t m45_config_load(void)
 {
-    set_defaults(&g_config);
+    m45_config_t loaded;
+    set_defaults(&loaded);
 
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(M45_CONFIG_NAMESPACE, NVS_READONLY, &nvs);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        return ESP_OK;
-    }
+    esp_err_t err = nvs_open(M45_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
         return err;
     }
 
-    load_string(nvs, "wifi_ssid", g_config.wifi_ssid, sizeof(g_config.wifi_ssid));
-    load_string(nvs, "wifi_pass", g_config.wifi_password, sizeof(g_config.wifi_password));
-    load_string(nvs, "hostname", g_config.hostname, sizeof(g_config.hostname));
-    load_string(nvs, "pool_host", g_config.pool_host, sizeof(g_config.pool_host));
-    load_string(nvs, "pool_bak_host", g_config.backup_pool_host,
-                sizeof(g_config.backup_pool_host));
-    load_string(nvs, "pool_ip", g_config.pool_ip, sizeof(g_config.pool_ip));
-    load_string(nvs, "pool_bak_ip", g_config.backup_pool_ip,
-                sizeof(g_config.backup_pool_ip));
-    load_string(nvs, "pool_user", g_config.pool_user, sizeof(g_config.pool_user));
-    load_string(nvs, "pool_pass", g_config.pool_pass, sizeof(g_config.pool_pass));
-    load_u16(nvs, "pool_port", &g_config.pool_port);
-    load_u16(nvs, "pool_bak_port", &g_config.backup_pool_port);
-    uint8_t pool_tls = g_config.pool_tls ? 1 : 0;
+    uint32_t stored_schema = 0;
+    (void)nvs_get_u32(nvs, "cfg_schema", &stored_schema);
+    if (stored_schema > M45_CONFIG_SCHEMA_VERSION) {
+        ESP_LOGW(TAG, "stored config schema %lu is newer than supported schema %lu; erasing settings",
+                 (unsigned long)stored_schema,
+                 (unsigned long)M45_CONFIG_SCHEMA_VERSION);
+        err = nvs_erase_all(nvs);
+        if (err == ESP_OK) {
+            err = nvs_set_u32(nvs, "cfg_schema", M45_CONFIG_SCHEMA_VERSION);
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs);
+        }
+        nvs_close(nvs);
+        if (err != ESP_OK) {
+            return err;
+        }
+        set_defaults(&loaded);
+        loaded.wifi_ssid[0] = '\0';
+        loaded.wifi_password[0] = '\0';
+        config_store_runtime(&loaded);
+        return ESP_OK;
+    }
+
+    load_string(nvs, "wifi_ssid", loaded.wifi_ssid, sizeof(loaded.wifi_ssid));
+    load_string(nvs, "wifi_pass", loaded.wifi_password, sizeof(loaded.wifi_password));
+    load_string(nvs, "hostname", loaded.hostname, sizeof(loaded.hostname));
+    load_string(nvs, "pool_host", loaded.pool_host, sizeof(loaded.pool_host));
+    load_string(nvs, "pool_bak_host", loaded.backup_pool_host,
+                sizeof(loaded.backup_pool_host));
+    load_string(nvs, "pool_ip", loaded.pool_ip, sizeof(loaded.pool_ip));
+    load_string(nvs, "pool_bak_ip", loaded.backup_pool_ip,
+                sizeof(loaded.backup_pool_ip));
+    load_string(nvs, "pool_user", loaded.pool_user, sizeof(loaded.pool_user));
+    load_string(nvs, "pool_pass", loaded.pool_pass, sizeof(loaded.pool_pass));
+    load_u16(nvs, "pool_port", &loaded.pool_port);
+    load_u16(nvs, "pool_bak_port", &loaded.backup_pool_port);
+    uint8_t pool_tls = loaded.pool_tls ? 1 : 0;
     load_u8(nvs, "pool_tls", &pool_tls);
-    g_config.pool_tls = pool_tls != 0;
-    uint8_t backup_pool_tls = g_config.backup_pool_tls ? 1 : 0;
+    loaded.pool_tls = pool_tls != 0;
+    uint8_t backup_pool_tls = loaded.backup_pool_tls ? 1 : 0;
     load_u8(nvs, "pool_bak_tls", &backup_pool_tls);
-    g_config.backup_pool_tls = backup_pool_tls != 0;
-    uint8_t multi_pool_enabled = g_config.multi_pool_enabled ? 1 : 0;
+    loaded.backup_pool_tls = backup_pool_tls != 0;
+    uint8_t multi_pool_enabled = loaded.multi_pool_enabled ? 1 : 0;
     load_u8(nvs, "pool_multi", &multi_pool_enabled);
-    g_config.multi_pool_enabled = multi_pool_enabled != 0;
+    loaded.multi_pool_enabled = multi_pool_enabled != 0;
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
         char key[16];
         snprintf(key, sizeof(key), "aux%u_host", (unsigned)i);
-        load_string(nvs, key, g_config.aux_pools[i].host,
-                    sizeof(g_config.aux_pools[i].host));
+        load_string(nvs, key, loaded.aux_pools[i].host,
+                    sizeof(loaded.aux_pools[i].host));
         snprintf(key, sizeof(key), "aux%u_ip", (unsigned)i);
-        load_string(nvs, key, g_config.aux_pools[i].ip,
-                    sizeof(g_config.aux_pools[i].ip));
+        load_string(nvs, key, loaded.aux_pools[i].ip,
+                    sizeof(loaded.aux_pools[i].ip));
         snprintf(key, sizeof(key), "aux%u_user", (unsigned)i);
-        load_string(nvs, key, g_config.aux_pools[i].user,
-                    sizeof(g_config.aux_pools[i].user));
+        load_string(nvs, key, loaded.aux_pools[i].user,
+                    sizeof(loaded.aux_pools[i].user));
         snprintf(key, sizeof(key), "aux%u_pass", (unsigned)i);
-        load_string(nvs, key, g_config.aux_pools[i].pass,
-                    sizeof(g_config.aux_pools[i].pass));
+        load_string(nvs, key, loaded.aux_pools[i].pass,
+                    sizeof(loaded.aux_pools[i].pass));
         snprintf(key, sizeof(key), "aux%u_port", (unsigned)i);
-        load_u16(nvs, key, &g_config.aux_pools[i].port);
+        load_u16(nvs, key, &loaded.aux_pools[i].port);
         snprintf(key, sizeof(key), "aux%u_tls", (unsigned)i);
-        uint8_t aux_tls = g_config.aux_pools[i].tls ? 1 : 0;
+        uint8_t aux_tls = loaded.aux_pools[i].tls ? 1 : 0;
         load_u8(nvs, key, &aux_tls);
-        g_config.aux_pools[i].tls = aux_tls != 0;
+        loaded.aux_pools[i].tls = aux_tls != 0;
         snprintf(key, sizeof(key), "aux%u_en", (unsigned)i);
-        uint8_t aux_enabled = g_config.aux_pools[i].enabled ? 1 : 0;
+        uint8_t aux_enabled = loaded.aux_pools[i].enabled ? 1 : 0;
         load_u8(nvs, key, &aux_enabled);
-        g_config.aux_pools[i].enabled = aux_enabled != 0;
+        loaded.aux_pools[i].enabled = aux_enabled != 0;
         snprintf(key, sizeof(key), "aux%u_weight", (unsigned)i);
-        uint8_t aux_weight = g_config.aux_pools[i].share_percent;
+        uint8_t aux_weight = loaded.aux_pools[i].share_percent;
         load_u8(nvs, key, &aux_weight);
-        g_config.aux_pools[i].share_percent = aux_weight;
+        loaded.aux_pools[i].share_percent = aux_weight;
     }
-    load_u16(nvs, "pool_diff", &g_config.pool_difficulty);
-    uint8_t pool_difficulty_auto = g_config.pool_difficulty_auto ? 1 : 0;
+    load_u16(nvs, "pool_diff", &loaded.pool_difficulty);
+    uint8_t pool_difficulty_auto = loaded.pool_difficulty_auto ? 1 : 0;
     load_u8(nvs, "pool_diff_auto", &pool_difficulty_auto);
-    g_config.pool_difficulty_auto = pool_difficulty_auto != 0;
-    uint8_t overclock_enabled = g_config.overclock_enabled ? 1 : 0;
+    loaded.pool_difficulty_auto = pool_difficulty_auto != 0;
+    uint8_t overclock_enabled = loaded.overclock_enabled ? 1 : 0;
     load_u8(nvs, "oc_en", &overclock_enabled);
-    g_config.overclock_enabled = overclock_enabled != 0;
-    uint8_t auto_clock_enabled = g_config.auto_clock_enabled ? 1 : 0;
+    loaded.overclock_enabled = overclock_enabled != 0;
+    uint8_t auto_clock_enabled = loaded.auto_clock_enabled ? 1 : 0;
     load_u8(nvs, "auto_clk", &auto_clock_enabled);
-    g_config.auto_clock_enabled = auto_clock_enabled != 0;
-    uint8_t auto_domain_reboot_enabled = g_config.auto_domain_reboot_enabled ? 1 : 0;
+    loaded.auto_clock_enabled = auto_clock_enabled != 0;
+    uint8_t auto_domain_reboot_enabled = loaded.auto_domain_reboot_enabled ? 1 : 0;
     load_u8(nvs, "dom_reboot", &auto_domain_reboot_enabled);
-    g_config.auto_domain_reboot_enabled = auto_domain_reboot_enabled != 0;
-    load_u16(nvs, "auto_clk_tc", &g_config.auto_clock_target_temp_c);
+    loaded.auto_domain_reboot_enabled = auto_domain_reboot_enabled != 0;
+    load_u16(nvs, "auto_clk_tc", &loaded.auto_clock_target_temp_c);
     uint8_t auto_clock_max_watts_enabled =
-        g_config.auto_clock_max_watts_enabled ? 1 : 0;
+        loaded.auto_clock_max_watts_enabled ? 1 : 0;
     load_u8(nvs, "auto_clk_wen", &auto_clock_max_watts_enabled);
-    g_config.auto_clock_max_watts_enabled = auto_clock_max_watts_enabled != 0;
-    load_u16(nvs, "auto_clk_w", &g_config.auto_clock_max_watts);
-    load_u16(nvs, "asic_freq", &g_config.asic_frequency_mhz);
-    load_u16(nvs, "asic_mv", &g_config.asic_voltage_mv);
-    load_i16(nvs, "oc_mv_off", &g_config.overclock_voltage_offset_mv);
+    loaded.auto_clock_max_watts_enabled = auto_clock_max_watts_enabled != 0;
+    load_u16(nvs, "auto_clk_w", &loaded.auto_clock_max_watts);
+    load_u16(nvs, "asic_freq", &loaded.asic_frequency_mhz);
+    load_u16(nvs, "asic_mv", &loaded.asic_voltage_mv);
+    load_i16(nvs, "oc_mv_off", &loaded.overclock_voltage_offset_mv);
     uint8_t asic_voltage_temp_compensation_enabled =
-        g_config.asic_voltage_temp_compensation_enabled ? 1 : 0;
+        loaded.asic_voltage_temp_compensation_enabled ? 1 : 0;
     load_u8(nvs, "asic_mv_tc", &asic_voltage_temp_compensation_enabled);
-    g_config.asic_voltage_temp_compensation_enabled =
+    loaded.asic_voltage_temp_compensation_enabled =
         asic_voltage_temp_compensation_enabled != 0;
-    uint8_t fan_override_enabled = g_config.fan_override_enabled ? 1 : 0;
+    uint8_t fan_override_enabled = loaded.fan_override_enabled ? 1 : 0;
     load_u8(nvs, "fan_ovr_en", &fan_override_enabled);
-    g_config.fan_override_enabled = fan_override_enabled != 0;
-    load_u16(nvs, "fan_ovr_pct", &g_config.fan_override_percent);
-    uint8_t fan_auto_off_allowed = g_config.fan_auto_off_allowed ? 1 : 0;
+    loaded.fan_override_enabled = fan_override_enabled != 0;
+    load_u16(nvs, "fan_ovr_pct", &loaded.fan_override_percent);
+    uint8_t fan_auto_off_allowed = loaded.fan_auto_off_allowed ? 1 : 0;
     load_u8(nvs, "fan_auto_off", &fan_auto_off_allowed);
-    g_config.fan_auto_off_allowed = fan_auto_off_allowed != 0;
-    uint8_t fan_target_override_enabled = g_config.fan_target_override_enabled ? 1 : 0;
+    loaded.fan_auto_off_allowed = fan_auto_off_allowed != 0;
+    uint8_t fan_target_override_enabled = loaded.fan_target_override_enabled ? 1 : 0;
     load_u8(nvs, "fan_tgt_en", &fan_target_override_enabled);
-    g_config.fan_target_override_enabled = fan_target_override_enabled != 0;
-    load_u16(nvs, "fan_tgt_c", &g_config.fan_target_temp_c);
-    uint8_t display_screensaver_enabled = g_config.display_screensaver_enabled ? 1 : 0;
+    loaded.fan_target_override_enabled = fan_target_override_enabled != 0;
+    load_u16(nvs, "fan_tgt_c", &loaded.fan_target_temp_c);
+    uint8_t display_screensaver_enabled = loaded.display_screensaver_enabled ? 1 : 0;
     load_u8(nvs, "screensaver", &display_screensaver_enabled);
-    g_config.display_screensaver_enabled = display_screensaver_enabled != 0;
-    load_u16(nvs, "sleep_min", &g_config.display_sleep_minutes);
-    uint8_t safety_limits_unrestricted = g_config.safety_limits_unrestricted ? 1 : 0;
+    loaded.display_screensaver_enabled = display_screensaver_enabled != 0;
+    load_u16(nvs, "sleep_min", &loaded.display_sleep_minutes);
+    uint8_t safety_limits_unrestricted = loaded.safety_limits_unrestricted ? 1 : 0;
     load_u8(nvs, "lim_unres", &safety_limits_unrestricted);
-    g_config.safety_limits_unrestricted = safety_limits_unrestricted != 0;
-    load_u16(nvs, "lim_vin_min", &g_config.safety_input_voltage_min_mv);
-    load_u16(nvs, "lim_vin_emin", &g_config.safety_input_voltage_expected_min_mv);
-    load_u16(nvs, "lim_vin_emax", &g_config.safety_input_voltage_expected_max_mv);
-    load_u16(nvs, "lim_vin_max", &g_config.safety_input_voltage_max_mv);
-    load_u16(nvs, "lim_av_min", &g_config.safety_asic_voltage_min_mv);
-    load_u16(nvs, "lim_av_max", &g_config.safety_asic_voltage_max_mv);
-    load_u16(nvs, "lim_at_exp", &g_config.safety_asic_temp_expected_max_c);
-    load_u16(nvs, "lim_at_max", &g_config.safety_asic_temp_max_c);
-    load_u16(nvs, "lim_vrt_exp", &g_config.safety_tps546_temp_expected_max_c);
-    load_u16(nvs, "lim_vrt_max", &g_config.safety_tps546_temp_max_c);
-    load_u16(nvs, "lim_iw_da", &g_config.safety_iout_warn_deciamps);
-    load_u16(nvs, "lim_if_da", &g_config.safety_iout_fault_deciamps);
-    load_double(nvs, "best_diff", &g_config.best_diff);
-    sanitize_config(&g_config);
+    loaded.safety_limits_unrestricted = safety_limits_unrestricted != 0;
+    load_u16(nvs, "lim_vin_min", &loaded.safety_input_voltage_min_mv);
+    load_u16(nvs, "lim_vin_emin", &loaded.safety_input_voltage_expected_min_mv);
+    load_u16(nvs, "lim_vin_emax", &loaded.safety_input_voltage_expected_max_mv);
+    load_u16(nvs, "lim_vin_max", &loaded.safety_input_voltage_max_mv);
+    load_u16(nvs, "lim_av_min", &loaded.safety_asic_voltage_min_mv);
+    load_u16(nvs, "lim_av_max", &loaded.safety_asic_voltage_max_mv);
+    load_u16(nvs, "lim_at_exp", &loaded.safety_asic_temp_expected_max_c);
+    load_u16(nvs, "lim_at_max", &loaded.safety_asic_temp_max_c);
+    load_u16(nvs, "lim_vrt_exp", &loaded.safety_tps546_temp_expected_max_c);
+    load_u16(nvs, "lim_vrt_max", &loaded.safety_tps546_temp_max_c);
+    load_u16(nvs, "lim_iw_da", &loaded.safety_iout_warn_deciamps);
+    load_u16(nvs, "lim_if_da", &loaded.safety_iout_fault_deciamps);
+    load_double(nvs, "best_diff", &loaded.best_diff);
+    sanitize_config(&loaded);
+    if (stored_schema < M45_CONFIG_SCHEMA_VERSION) {
+        if (strcmp(loaded.pool_pass, "x") == 0) {
+            (void)nvs_erase_key(nvs, "pool_pass");
+        }
+        for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
+            if (strcmp(loaded.aux_pools[i].pass, "x") == 0) {
+                char key[16];
+                snprintf(key, sizeof(key), "aux%u_pass", (unsigned)i);
+                (void)nvs_erase_key(nvs, key);
+            }
+        }
+        err = nvs_set_u32(nvs, "cfg_schema", M45_CONFIG_SCHEMA_VERSION);
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs);
+        }
+    }
     nvs_close(nvs);
-    return ESP_OK;
+    if (err == ESP_OK) {
+        config_store_runtime(&loaded);
+    }
+    return err;
 }
 
 esp_err_t m45_config_save(const m45_config_t *config)
@@ -588,15 +659,17 @@ esp_err_t m45_config_save(const m45_config_t *config)
     }
 
     m45_config_t clean = *config;
+    m45_config_t current;
+    config_copy_runtime(&current);
     sanitize_config(&clean);
-    if (strcmp(clean.pool_host, g_config.pool_host) != 0) {
+    if (strcmp(clean.pool_host, current.pool_host) != 0) {
         clean.pool_ip[0] = '\0';
     }
-    if (strcmp(clean.backup_pool_host, g_config.backup_pool_host) != 0) {
+    if (strcmp(clean.backup_pool_host, current.backup_pool_host) != 0) {
         clean.backup_pool_ip[0] = '\0';
     }
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
-        if (strcmp(clean.aux_pools[i].host, g_config.aux_pools[i].host) != 0) {
+        if (strcmp(clean.aux_pools[i].host, current.aux_pools[i].host) != 0) {
             clean.aux_pools[i].ip[0] = '\0';
         }
     }
@@ -630,7 +703,7 @@ esp_err_t m45_config_save(const m45_config_t *config)
         err = nvs_set_str(nvs, "pool_user", clean.pool_user);
     }
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "pool_pass", clean.pool_pass);
+        err = store_optional_password(nvs, "pool_pass", clean.pool_pass);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "pool_port", clean.pool_port);
@@ -665,7 +738,7 @@ esp_err_t m45_config_save(const m45_config_t *config)
             break;
         }
         snprintf(key, sizeof(key), "aux%u_pass", (unsigned)i);
-        err = nvs_set_str(nvs, key, clean.aux_pools[i].pass);
+        err = store_optional_password(nvs, key, clean.aux_pools[i].pass);
         if (err != ESP_OK) {
             break;
         }
@@ -791,13 +864,17 @@ esp_err_t m45_config_save(const m45_config_t *config)
         err = nvs_set_u16(nvs, "lim_if_da", clean.safety_iout_fault_deciamps);
     }
     if (err == ESP_OK) {
+        err = nvs_set_u32(nvs, "cfg_schema", M45_CONFIG_SCHEMA_VERSION);
+    }
+    if (err == ESP_OK) {
         err = nvs_commit(nvs);
     }
     nvs_close(nvs);
 
     if (err == ESP_OK) {
-        clean.best_diff = g_config.best_diff;
-        g_config = clean;
+        config_copy_runtime(&current);
+        clean.best_diff = current.best_diff;
+        config_store_runtime(&clean);
     }
     return err;
 }
@@ -810,8 +887,10 @@ esp_err_t m45_config_set_runtime(const m45_config_t *config)
 
     m45_config_t clean = *config;
     sanitize_config(&clean);
-    clean.best_diff = g_config.best_diff;
-    g_config = clean;
+    m45_config_t current;
+    config_copy_runtime(&current);
+    clean.best_diff = current.best_diff;
+    config_store_runtime(&clean);
     return ESP_OK;
 }
 
@@ -836,9 +915,11 @@ esp_err_t m45_config_factory_reset(void)
     nvs_close(nvs);
 
     if (err == ESP_OK) {
-        set_defaults(&g_config);
-        g_config.wifi_ssid[0] = '\0';
-        g_config.wifi_password[0] = '\0';
+        m45_config_t reset;
+        set_defaults(&reset);
+        reset.wifi_ssid[0] = '\0';
+        reset.wifi_password[0] = '\0';
+        config_store_runtime(&reset);
     }
     return err;
 }
@@ -850,8 +931,10 @@ esp_err_t m45_config_set_pool_ip_cache(bool backup_pool, const char *expected_ho
         return ESP_ERR_INVALID_ARG;
     }
 
-    const char *active_host = backup_pool ? g_config.backup_pool_host : g_config.pool_host;
-    char *active_ip = backup_pool ? g_config.backup_pool_ip : g_config.pool_ip;
+    m45_config_t current;
+    config_copy_runtime(&current);
+    const char *active_host = backup_pool ? current.backup_pool_host : current.pool_host;
+    char *active_ip = backup_pool ? current.backup_pool_ip : current.pool_ip;
     const char *nvs_key = backup_pool ? "pool_bak_ip" : "pool_ip";
     if (strcmp(active_host, expected_host) != 0) {
         return ESP_ERR_INVALID_STATE;
@@ -874,6 +957,7 @@ esp_err_t m45_config_set_pool_ip_cache(bool backup_pool, const char *expected_ho
 
     if (err == ESP_OK) {
         strlcpy(active_ip, ip, M45_POOL_IP_MAX + 1);
+        config_store_runtime(&current);
     }
     return err;
 }
@@ -886,7 +970,9 @@ esp_err_t m45_config_set_aux_pool_ip_cache(size_t aux_index, const char *expecte
         return ESP_ERR_INVALID_ARG;
     }
 
-    m45_aux_pool_t *aux = &g_config.aux_pools[aux_index];
+    m45_config_t current;
+    config_copy_runtime(&current);
+    m45_aux_pool_t *aux = &current.aux_pools[aux_index];
     if (strcmp(aux->host, expected_host) != 0) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -911,6 +997,7 @@ esp_err_t m45_config_set_aux_pool_ip_cache(size_t aux_index, const char *expecte
 
     if (err == ESP_OK) {
         strlcpy(aux->ip, ip, sizeof(aux->ip));
+        config_store_runtime(&current);
     }
     return err;
 }
@@ -936,13 +1023,19 @@ esp_err_t m45_config_set_best_diff(double best_diff)
     if (!isfinite(best_diff) || best_diff < 0.0) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (best_diff <= g_config.best_diff) {
+    m45_config_t current;
+    config_copy_runtime(&current);
+    if (best_diff <= current.best_diff) {
         return ESP_OK;
     }
 
     esp_err_t err = write_best_diff(best_diff);
     if (err == ESP_OK) {
-        g_config.best_diff = best_diff;
+        config_copy_runtime(&current);
+        if (best_diff > current.best_diff) {
+            current.best_diff = best_diff;
+            config_store_runtime(&current);
+        }
     }
     return err;
 }
@@ -952,14 +1045,23 @@ esp_err_t m45_config_reset_best_diff(void)
     const double best_diff = 0.0;
     esp_err_t err = write_best_diff(best_diff);
     if (err == ESP_OK) {
-        g_config.best_diff = best_diff;
+        m45_config_t current;
+        config_copy_runtime(&current);
+        current.best_diff = best_diff;
+        config_store_runtime(&current);
     }
     return err;
 }
 
 const m45_config_t *m45_config_get(void)
 {
-    return &g_config;
+    config_copy_runtime(&g_config_snapshot);
+    return &g_config_snapshot;
+}
+
+uint32_t m45_config_schema_version(void)
+{
+    return M45_CONFIG_SCHEMA_VERSION;
 }
 
 uint16_t m45_config_auto_pool_difficulty(uint16_t frequency_mhz,
@@ -988,7 +1090,7 @@ uint16_t m45_config_effective_pool_difficulty(const m45_config_t *config,
                                               uint16_t small_core_count,
                                               uint8_t asic_count)
 {
-    const m45_config_t *active = config != NULL ? config : &g_config;
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     if (!active->pool_difficulty_auto) {
         return active->pool_difficulty >= 1
                    ? active->pool_difficulty
@@ -1000,14 +1102,14 @@ uint16_t m45_config_effective_pool_difficulty(const m45_config_t *config,
 
 uint16_t m45_config_effective_asic_frequency_mhz(const m45_config_t *config)
 {
-    const m45_config_t *active = config != NULL ? config : &g_config;
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     return active->overclock_enabled ? active->asic_frequency_mhz
                                      : CONFIG_M45_BITAXE_ASIC_FREQUENCY_MHZ;
 }
 
 uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config)
 {
-    const m45_config_t *active = config != NULL ? config : &g_config;
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     return active->overclock_enabled ? active->asic_voltage_mv
                                      : CONFIG_M45_BITAXE_ASIC_VOLTAGE_MV;
 }
@@ -1015,7 +1117,7 @@ uint16_t m45_config_effective_asic_voltage_mv(const m45_config_t *config)
 int16_t m45_config_asic_voltage_temp_compensation_mv(const m45_config_t *config,
                                                      float asic_temp_c)
 {
-    const m45_config_t *active = config != NULL ? config : &g_config;
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     if (!active->overclock_enabled || !active->asic_voltage_temp_compensation_enabled ||
         !isfinite(asic_temp_c) || asic_temp_c < M45_ASIC_TEMP_COMP_MIN_C ||
         asic_temp_c > M45_ASIC_TEMP_COMP_MAX_C) {
@@ -1071,7 +1173,7 @@ uint16_t m45_config_effective_asic_voltage_mv_for_temp(const m45_config_t *confi
 
 uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config)
 {
-    const m45_config_t *active = config != NULL ? config : &g_config;
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     if (!active->fan_target_override_enabled) {
         return M45_FAN_TARGET_DEFAULT_C;
     }
@@ -1086,7 +1188,7 @@ uint16_t m45_config_effective_fan_target_temp_c(const m45_config_t *config)
 
 uint16_t m45_config_effective_auto_clock_target_temp_c(const m45_config_t *config)
 {
-    const m45_config_t *active = config != NULL ? config : &g_config;
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     if (active->auto_clock_target_temp_c < M45_AUTO_CLOCK_TARGET_MIN_C) {
         return M45_AUTO_CLOCK_TARGET_MIN_C;
     }
@@ -1098,7 +1200,7 @@ uint16_t m45_config_effective_auto_clock_target_temp_c(const m45_config_t *confi
 
 uint16_t m45_config_effective_auto_clock_max_watts(const m45_config_t *config)
 {
-    const m45_config_t *active = config != NULL ? config : &g_config;
+    const m45_config_t *active = config != NULL ? config : m45_config_get();
     if (active->auto_clock_max_watts < M45_AUTO_CLOCK_MAX_WATTS_MIN) {
         return M45_AUTO_CLOCK_MAX_WATTS_MIN;
     }

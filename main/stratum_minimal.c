@@ -766,7 +766,8 @@ static void set_active_pool_endpoint(const stratum_endpoint_t *endpoint)
     g_active_pool_tls = endpoint->tls;
     g_active_using_backup_pool = endpoint->using_backup;
     if (g_state != NULL) {
-        g_state->SYSTEM_MODULE.pool_url = g_active_pool_host;
+        strlcpy(g_state->SYSTEM_MODULE.pool_url, g_active_pool_host,
+                sizeof(g_state->SYSTEM_MODULE.pool_url));
         g_state->SYSTEM_MODULE.pool_port = g_active_pool_port;
     }
     taskEXIT_CRITICAL(&g_pool_endpoint_mux);

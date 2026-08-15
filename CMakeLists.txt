@@ -1,4 +1,16 @@
 cmake_minimum_required(VERSION 3.16.0)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(M45-Firmware)
+
+execute_process(
+    COMMAND git describe --tags --always --dirty
+    WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+    OUTPUT_VARIABLE M45_RELEASE_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT M45_RELEASE_VERSION)
+    set(M45_RELEASE_VERSION "dev")
+endif()
+set(PROJECT_VER "cfg1-${M45_RELEASE_VERSION}")
+project(M45-Gamma-602)

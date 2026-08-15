@@ -218,6 +218,11 @@ opacity:0;visibility:hidden;pointer-events:none;transition:opacity .12s ease,vis
 .payout-info:hover .payout-info-text,.payout-info:focus-within .payout-info-text{opacity:1;visibility:visible}
 .boot{border-color:#725c22;background:#251f12}.boot-row{display:flex;align-items:center;
 justify-content:space-between;gap:12px}.boot-title{font-size:18px;font-weight:760;color:var(--warn)}
+.fault-history{display:grid;gap:12px;margin-bottom:12px}.fault-history-list{display:grid;gap:8px}
+.fault-history-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;
+border:1px solid var(--line);border-radius:6px;background:#111518}.fault-history-message{font-size:13px;font-weight:650;color:var(--bad)}
+.fault-history-remove{width:28px;height:28px;flex:0 0 auto;border:1px solid #7f2f35;border-radius:6px;
+background:#35191d;color:var(--text);cursor:pointer;font-size:18px;line-height:1}.fault-history-remove:hover{background:#4a2025}
 .log-panel{display:grid;gap:12px}.log-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .log-tools{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .log-action{height:30px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);

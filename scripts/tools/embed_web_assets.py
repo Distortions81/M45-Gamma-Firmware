@@ -105,6 +105,8 @@ def minify_html(text: str) -> str:
 def minify_asset(path: Path, text: str) -> str:
     if path.suffix.lower() == ".css":
         return minify_css(text)
+    if path.suffix.lower() == ".js":
+        return minify_js(text)
     if path.suffix.lower() == ".html":
         return minify_html(text)
     return text.strip()
@@ -179,8 +181,8 @@ def main() -> int:
             lines.append("")
             continue
         text = minified_assets[relative.name]
-        if relative.name == "styles.css":
-            compressed = gzip_bytes(styles_text.encode("utf-8"))
+        if relative.name == "styles.css" or relative.suffix.lower() == ".js":
+            compressed = gzip_bytes(text.encode("utf-8"))
             lines.append(f"static const unsigned char {name}_GZ[] =")
             lines.append(c_byte_array(compressed) + ";")
             lines.append(f"static const unsigned int {name}_GZ_LEN = {len(compressed)}U;")

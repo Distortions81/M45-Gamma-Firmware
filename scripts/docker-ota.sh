@@ -160,7 +160,7 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
 
         rm -rf "$output_dir"
         mkdir -p "$output_dir"
-        cp "$build_dir/M45-Firmware.bin" "$output_dir/M45-Firmware.bin"
+        cp "$build_dir/M45-Gamma-602.bin" "$output_dir/M45-Firmware.bin"
 
         package_dir="$(mktemp -d "$output_dir/.web-flasher.XXXXXX")"
         cleanup() {
