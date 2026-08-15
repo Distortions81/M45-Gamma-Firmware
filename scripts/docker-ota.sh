@@ -157,6 +157,11 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
         board_version="$4"
 
         scripts/build.sh --build-dir "$build_dir" --build
+        python3 scripts/tools/verify_migration_build.py \
+            --app "$build_dir/M45-Firmware.bin" \
+            --legacy-table "$build_dir/partition_table/partition-table.bin" \
+            --canonical-header \
+            "$build_dir/esp-idf/main/migration_partition_table.h"
 
         rm -rf "$output_dir"
         mkdir -p "$output_dir"

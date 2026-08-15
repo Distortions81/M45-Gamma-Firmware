@@ -541,6 +541,9 @@ def main():
 
         firmware = merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args)
         write_release_manifest(output_dir, args.name, version, firmware_name, args.board_version)
+        (output_dir / "canonical-releases.json").write_text(
+            json.dumps({"releases": []}, indent=2) + "\n"
+        )
         write_index(output_dir, args.name, version, firmware_name, args.board_version)
         (output_dir / "version.txt").write_text(version + "\n")
     except (

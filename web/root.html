@@ -233,9 +233,8 @@ const LIMIT_RANGES={
 'limit-iout-warn':[5,33,0,LIMIT_MAX_DECIAMPS_A],
 'limit-iout-fault':[6,33,0,LIMIT_MAX_DECIAMPS_A]};
 const REFRESH_WARN_MS=10000;
-const UPDATE_REPO='Distortions81/M45-Gamma-Firmware',UPDATE_ASSET_PREFIX='esp-miner-factory-602-';
-const UPDATE_RELEASES_URL=`https://api.github.com/repos/${UPDATE_REPO}/releases`;
 const UPDATE_WEB_FLASHER_URL='https://distortions81.github.io/M45-Gamma-Firmware/';
+const UPDATE_RELEASES_URL=`${UPDATE_WEB_FLASHER_URL}canonical-releases.json`,UPDATE_ASSET_PREFIX='esp-miner-factory-602-';
 const UPDATE_PRIVACY_KEY='m45_ignore_release_check_warning';
 const CAL_BASE_TIMEOUT_MS=180000,CAL_STEP_TIMEOUT_MS=90000,CAL_SAMPLE_POLL_MS=1000,CAL_BASE_SAMPLE_MS=20000,CAL_STEP_SAMPLE_MS=15000;
 const CAL_START_MV=1200,CAL_MIN_MV=750,CAL_DOWN_STEP_MV=10,CAL_UP_STEP_MV=5,CAL_SAFETY_MV=10;
@@ -857,18 +856,20 @@ function setUpdateMessage(msg,cls='',fade=false){setStatus('update-status',msg,c
 function localBool(key){try{return localStorage.getItem(key)==='1'}catch(_){return false}}
 function setLocalBool(key,value){try{if(value)localStorage.setItem(key,'1');else localStorage.removeItem(key)}catch(_){}}
 function setUpdateAvailable(available){$('update-badge').classList.toggle('hidden',!available)}
-function matchingFactoryAssets(release){const tag=release&&release.tag_name||'';const assets=Array.isArray(release&&release.assets)?release.assets:[];
+function releaseVersion(release){return release&&String(release.tag_name||release.version||release.name||'')}
+function matchingFactoryAssets(release){const tag=releaseVersion(release),assets=Array.isArray(release&&release.assets)?release.assets:[];
+const otaPath=release&&release.ota_path;if(otaPath){const name=String(otaPath).split('/').pop();return name&&name.endsWith('.bin')?[{name,path:otaPath}]:[]}
 return assets.filter(a=>a&&a.name&&a.name.startsWith(`${UPDATE_ASSET_PREFIX}${tag}`)&&a.name.endsWith('.bin'))}
-function factoryMirrorUrl(release,asset){return `${UPDATE_WEB_FLASHER_URL}firmware/${encodeURIComponent(release.tag_name)}/${encodeURIComponent(asset.name)}`}
-function renderLatestRelease(release){latestRelease=release;const tag=release.tag_name||release.name||'unknown';
+function factoryMirrorUrl(release,asset){return asset.path?new URL(asset.path,UPDATE_WEB_FLASHER_URL).href:`${UPDATE_WEB_FLASHER_URL}firmware/${encodeURIComponent(releaseVersion(release))}/${encodeURIComponent(asset.name)}`}
+function renderLatestRelease(release){latestRelease=release;const tag=releaseVersion(release)||'unknown';
 const same=currentMatchesReleaseTag(tag);setUpdateAvailable(!same);setUpdateState(same?'ok':'warn',same?'CURRENT':'NEW');
 const assets=matchingFactoryAssets(release);latestFactoryAsset=assets[0]||null;txt('update-latest',tag);
 txt('update-summary',same?'This device is current.':latestFactoryAsset?`Update available: ${tag}.`:`Update ${tag} is available, but no Gamma 602 image was found.`);
 syncOtaControls()}
 async function checkLatestRelease(){if(releaseCheckInFlight)return;releaseCheckInFlight=true;
 $('update-check').disabled=true;setUpdateState('warn','CHECKING');setUpdateMessage('checking for updates...');
-try{const r=await fetch(UPDATE_RELEASES_URL,{cache:'no-store'});if(!r.ok)throw new Error(`GitHub API ${r.status}`);
-const releases=await r.json();const latest=(Array.isArray(releases)?releases:[]).find(x=>x&&!x.prerelease&&!x.draft);
+try{const r=await fetch(UPDATE_RELEASES_URL,{cache:'no-store'});if(!r.ok)throw new Error(`release manifest ${r.status}`);
+const payload=await r.json(),releases=Array.isArray(payload)?payload:Array.isArray(payload&&payload.releases)?payload.releases:[];const latest=releases.find(x=>x&&!x.prerelease&&!x.draft);
 if(!latest){setUpdateAvailable(false);latestFactoryAsset=null;syncOtaControls();setUpdateState('warn','NONE');txt('update-latest','--');txt('update-summary','No OTA update was found.');setUpdateMessage('no OTA update found','err');return}
 renderLatestRelease(latest);setUpdateMessage('update check complete','ok',true)}
 catch(e){setUpdateState('bad','FAILED');setUpdateMessage(`update check failed: ${e.message||e}`,'err')}
@@ -884,7 +885,7 @@ $('update-web-flasher').href=UPDATE_WEB_FLASHER_URL;
 function setOtaState(cls,text){const el=$('ota-state');el.className=`pill ${cls||''}`.trim();el.textContent=text}
 function setOtaMessage(msg,cls='',fade=false){setStatus('ota-status',msg,cls,fade)}
 function syncOtaControls(){const file=$('ota-file').files&&$('ota-file').files[0];$('ota-upload').disabled=otaUploadInFlight||!otaSupported||!file;
-const installable=latestRelease&&latestFactoryAsset&&!currentMatchesReleaseTag(latestRelease.tag_name||latestRelease.name);
+const installable=latestRelease&&latestFactoryAsset&&!currentMatchesReleaseTag(releaseVersion(latestRelease));
 $('ota-install-latest').disabled=otaUploadInFlight||!otaSupported||!installable;
 setOtaState(otaSupported?'ok':'warn',otaSupported?'READY':'UNAVAILABLE');
 txt('ota-summary',otaSupported?'Upload a M45 app image or Gamma 602 factory image.':'Flash once with the web flasher to enable OTA partitions.')}
@@ -901,7 +902,7 @@ xhr.send(blob)})}
 async function uploadSelectedOta(){const file=$('ota-file').files&&$('ota-file').files[0];if(!file){setOtaMessage('choose a firmware image first','err');return}
 try{await uploadOtaBlob(file,file.name)}catch(e){setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
 async function installLatestOta(){if(!latestRelease||!latestFactoryAsset){setOtaMessage('check for updates first','err');return}
-const url=factoryMirrorUrl(latestRelease,latestFactoryAsset);try{setOtaMessage(`downloading ${latestRelease.tag_name}...`);
+const url=factoryMirrorUrl(latestRelease,latestFactoryAsset);try{setOtaMessage(`downloading ${releaseVersion(latestRelease)}...`);
 const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`download failed: ${r.status}`);
 const blob=await r.blob();await uploadOtaBlob(blob,latestFactoryAsset.name)}catch(e){setOtaState('bad','FAILED');setOtaMessage(`OTA failed: ${e.message||e}`,'err')}}
 $('ota-file').onchange=syncOtaControls;$('ota-upload').onclick=uploadSelectedOta;$('ota-install-latest').onclick=installLatestOta;syncOtaControls();

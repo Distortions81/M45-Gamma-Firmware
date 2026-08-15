@@ -28,6 +28,38 @@ attaches only that `.bin` to the release, and publishes the web flasher through
 GitHub Pages. The Pages site mirrors matching release images so older releases
 can be selected from the flasher.
 
+### Final v0.0.9 Channel Migration
+
+This branch produces the final release offered by the v0.0.9 update channel.
+After it is installed into either legacy OTA slot, the bridge release:
+
+1. Detects the exact v0.0.9 partition layout and 16 MB flash.
+2. Copies its running application to the canonical factory address.
+3. Verifies the copied ESP image and SHA-256 digest.
+4. Initializes the canonical OTA metadata area.
+5. Writes and reads back the canonical partition table as the final operation.
+6. Reboots on the canonical layout.
+
+The existing GitHub Releases feed must remain frozen with this bridge as its
+last production release. After migration, the Update page reads
+`https://distortions81.github.io/M45-Gamma-Firmware/canonical-releases.json`.
+That manifest advertises raw application images so future updates remain small:
+
+```json
+{
+  "releases": [
+    {
+      "version": "v0.1.0",
+      "name": "v0.1.0",
+      "ota_path": "firmware/v0.1.0/esp-miner.bin"
+    }
+  ]
+}
+```
+
+Future production releases belong only in that canonical manifest, not in the
+legacy GitHub Releases feed.
+
 ## Supported Hardware
 
 This firmware targets Bitaxe Gamma 602 hardware:

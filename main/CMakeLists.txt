@@ -1,5 +1,7 @@
 set(BUILD_INFO_HEADER "${CMAKE_CURRENT_BINARY_DIR}/build_info.h")
 set(WEB_ASSETS_HEADER "${CMAKE_CURRENT_BINARY_DIR}/web_assets.h")
+set(MIGRATION_PARTITION_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/migration_partition_table.h")
 set(APP_SCRIPT_TOOLS_DIR "${CMAKE_CURRENT_LIST_DIR}/../scripts/tools")
 
 if(NOT CMAKE_SCRIPT_MODE_FILE)
@@ -30,6 +32,22 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         VERBATIM
     )
     add_custom_target(web_assets DEPENDS "${WEB_ASSETS_HEADER}")
+
+    add_custom_command(
+        OUTPUT "${MIGRATION_PARTITION_HEADER}"
+        COMMAND "${PYTHON}"
+                "${APP_SCRIPT_TOOLS_DIR}/generate_migration_partition_header.py"
+                --generator
+                "${IDF_PATH}/components/partition_table/gen_esp32part.py"
+                --input "${CMAKE_CURRENT_LIST_DIR}/../partitions_canonical.csv"
+                --output "${MIGRATION_PARTITION_HEADER}"
+        DEPENDS
+            "${APP_SCRIPT_TOOLS_DIR}/generate_migration_partition_header.py"
+            "${CMAKE_CURRENT_LIST_DIR}/../partitions_canonical.csv"
+        VERBATIM
+    )
+    add_custom_target(migration_partition_table
+        DEPENDS "${MIGRATION_PARTITION_HEADER}")
 endif()
 
 idf_component_register(
@@ -45,6 +63,7 @@ idf_component_register(
         "bm1370.c"
         "m45_config.c"
         "m45_log_buffer.c"
+        "m45_partition_migration.c"
         "mining.c"
         "m45_oled.c"
         "i2c_bitaxe.c"
@@ -59,6 +78,7 @@ idf_component_register(
         "third_party/qrcode"
     PRIV_REQUIRES
         app_update
+        bootloader_support
         driver
         esp_driver_i2c
         esp_event
@@ -74,11 +94,12 @@ idf_component_register(
         mbedtls
         nvs_flash
         pthread
+        spi_flash
         tcp_transport
 )
 
 if(NOT CMAKE_SCRIPT_MODE_FILE)
-    add_dependencies(${COMPONENT_LIB} build_info web_assets)
+    add_dependencies(${COMPONENT_LIB} build_info web_assets migration_partition_table)
 endif()
 
 option(M45_ASIC_LOSS_METRICS "Build ASIC feed/RX loss instrumentation into status JSON" OFF)

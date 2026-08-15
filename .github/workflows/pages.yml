@@ -82,6 +82,7 @@ jobs:
         run: |
           test -f site/index.html
           test -f site/firmware-releases.json
+          test -f site/canonical-releases.json
           test ! -e site/manifest.json
           test ! -e site/bootloader.bin
           test ! -e site/partition-table.bin

@@ -7,6 +7,7 @@
 #include "m45_config.h"
 #include "m45_log_buffer.h"
 #include "m45_oled.h"
+#include "m45_partition_migration.h"
 #include "nvs_flash.h"
 #include "stratum_minimal.h"
 #include "wifi_http.h"
@@ -40,6 +41,12 @@ static void hardware_task(void *arg)
 void app_main(void)
 {
     m45_log_buffer_init();
+
+    const esp_err_t migration = m45_partition_migrate_if_needed();
+    if (migration != ESP_OK) {
+        ESP_LOGE(TAG, "partition migration unavailable: %s",
+                 esp_err_to_name(migration));
+    }
 
     ESP_ERROR_CHECK(bitaxe_gamma602_prepare_io());
     esp_err_t ret = bitaxe_gamma602_boot_fan_max();
