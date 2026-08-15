@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "global_state.h"
 #include "m45_config.h"
+#include "stratum_payout.h"
 
 #define STRATUM_HASHRATE_MAX_ASICS 2
 #define STRATUM_HASH_DOMAIN_COUNT 4
@@ -102,15 +103,6 @@ typedef struct {
     stratum_asic_loss_metrics_t asic_loss;
 #endif
 } stratum_minimal_stats_t;
-
-enum {
-    STRATUM_PAYOUT_STATUS_UNCHECKED = 0,
-    STRATUM_PAYOUT_STATUS_OK,
-    STRATUM_PAYOUT_STATUS_LOW,
-    STRATUM_PAYOUT_STATUS_MISSING,
-    STRATUM_PAYOUT_STATUS_UNSUPPORTED_WALLET,
-    STRATUM_PAYOUT_STATUS_PARSE_ERROR,
-};
 
 esp_err_t stratum_minimal_start(GlobalState *state);
 void stratum_minimal_reconnect(void);

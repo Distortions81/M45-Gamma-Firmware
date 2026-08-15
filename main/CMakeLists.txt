@@ -51,9 +51,11 @@ idf_component_register(
         "m45_oled.c"
         "i2c_bitaxe.c"
         "stratum_minimal.c"
+        "stratum_payout.c"
         "tps546.c"
         "utils.c"
         "wifi_http.c"
+        "wifi_http_status.c"
         "third_party/qrcode/qrcode.c"
     INCLUDE_DIRS
         "."
