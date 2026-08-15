@@ -18,6 +18,10 @@ border-radius:6px;background:transparent;color:var(--muted);padding:0 9px;cursor
 border-bottom:2px solid currentColor}.stats-ico:before{content:'';position:absolute;left:3px;
 bottom:3px;width:11px;height:7px;border-left:2px solid currentColor;border-top:2px solid currentColor;
 transform:skew(-25deg)}
+.swarm-ico{position:relative;width:18px;height:18px}.swarm-ico:before{content:'';position:absolute;left:7px;top:1px;
+width:4px;height:4px;border:2px solid currentColor;border-radius:50%;box-shadow:-6px 10px 0 -1px var(--toolbar),-6px 10px 0 1px currentColor,6px 10px 0 -1px var(--toolbar),6px 10px 0 1px currentColor}
+.swarm-ico:after{content:'';position:absolute;left:3px;right:3px;top:8px;height:6px;border-left:2px solid currentColor;
+border-right:2px solid currentColor;border-top:2px solid currentColor}
 .overclock-ico{position:relative;width:18px;height:18px;border:2px solid currentColor;
 border-radius:50%;border-bottom-color:transparent}.overclock-ico:before{content:'';position:absolute;
 left:8px;top:4px;width:2px;height:8px;background:currentColor;transform:rotate(40deg);
@@ -226,6 +230,19 @@ justify-content:space-between;gap:12px}.boot-title{font-size:18px;font-weight:76
 border:1px solid var(--line);border-radius:6px;background:#111518}.fault-history-message{font-size:13px;font-weight:650;color:var(--bad)}
 .fault-history-remove{width:28px;height:28px;flex:0 0 auto;border:1px solid #7f2f35;border-radius:6px;
 background:#35191d;color:var(--text);cursor:pointer;font-size:18px;line-height:1}.fault-history-remove:hover{background:#4a2025}
+.swarm-controls{display:flex;align-items:center;justify-content:space-between;gap:16px}.swarm-actions,.swarm-add{display:flex;align-items:center;gap:8px}
+.swarm-add input{height:32px;width:190px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);padding:0 9px}
+.swarm-add input:focus{outline:1px solid var(--blue);border-color:var(--blue)}.swarm-device-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.swarm-card{display:grid;gap:12px}.swarm-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.swarm-card.swarm-offline{border-color:#644047;opacity:.68}.swarm-card.swarm-offline .swarm-card-rate{color:var(--muted)}
+.swarm-device-name{display:flex;align-items:center;gap:7px;font-size:18px;font-weight:720;color:var(--text);text-decoration:none;overflow-wrap:anywhere}
+.swarm-device-name:hover{text-decoration:underline}.swarm-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:var(--blue)}
+.swarm-ip{color:var(--muted);font-size:12px}.swarm-card-rate{font-size:19px;font-weight:720;white-space:nowrap;text-align:right}
+.swarm-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;border-top:1px solid var(--line);padding-top:10px}
+.swarm-metric{min-width:0}.swarm-metric-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.swarm-metric-value{margin-top:3px;font-size:13px;font-weight:680;overflow-wrap:anywhere}.swarm-card-foot{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}
+.swarm-card-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.swarm-card-actions .secondary{height:30px;padding:0 10px;font-size:12px}
+.swarm-empty{text-align:center;grid-column:1/-1;padding:28px}
 .log-panel{display:grid;gap:12px}.log-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .log-tools{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .log-action{height:30px;border:1px solid var(--line);border-radius:6px;background:#111518;color:var(--text);
@@ -247,6 +264,7 @@ h1{font-size:22px}.value{font-size:24px}dl,dl.compact,.settings-form{grid-templa
 .summary-section:first-child{padding-top:0}.summary-section+.summary-section{border-left:0;border-top:1px solid var(--line)}
 .summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .pool-status-row{grid-template-columns:1fr}.pool-status-main{grid-column:1/-1}.pool-status-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+.swarm-controls{align-items:stretch;display:grid}.swarm-actions{display:grid}.swarm-add input{width:100%}.swarm-device-list{grid-template-columns:1fr}
 .update-asset{display:grid}
 dl.mini-list{grid-template-columns:82px minmax(0,1fr)}}
 

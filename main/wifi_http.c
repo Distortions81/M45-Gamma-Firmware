@@ -1,5 +1,6 @@
 #include "wifi_http.h"
 #include "wifi_http_status.h"
+#include "wifi_swarm.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -51,7 +52,7 @@
 #define WIFI_TEST_ATTEMPTS 2
 #define WIFI_TEST_RESTORE_DELAY_MS 250
 #define SETTINGS_JSON_BUFFER_SIZE 4700
-#define HTTP_URI_HANDLER_SLOTS 62
+#define HTTP_URI_HANDLER_SLOTS 64
 #define HTTP_HANDLER_WARN_MS 100
 #define HTTP_JSON_BODY_DEADLINE_MS 30000
 #define LOG_CAPTURE_TIMEOUT_MS 5000
@@ -3520,6 +3521,8 @@ static esp_err_t espminer_system_info_handler(httpd_req_t *req)
     cJSON_AddStringToObject(
         root, "ASICModel",
         g_state != NULL ? g_state->DEVICE_CONFIG.family.asic.name : "BM1370");
+    cJSON_AddStringToObject(root, "deviceModel", "Gamma");
+    cJSON_AddStringToObject(root, "swarmColor", "blue");
     cJSON_AddNumberToObject(root, "isPSRAMAvailable",
                             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 0 ? 1 : 0);
     cJSON_AddStringToObject(root, "resetReason", espminer_reset_reason());
@@ -4251,6 +4254,19 @@ static esp_err_t faults_clear_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+static esp_err_t swarm_get_handler(httpd_req_t *req)
+{
+    return wifi_swarm_get_handler(req);
+}
+
+static esp_err_t swarm_post_handler(httpd_req_t *req)
+{
+    if (request_has_bad_page_token(req)) {
+        return send_page_token_reload(req);
+    }
+    return wifi_swarm_post_handler(req, g_ip);
+}
+
 static esp_err_t start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -4271,11 +4287,14 @@ static esp_err_t start_http_server(void)
         {.uri = "/calibration", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/update", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/logs", .method = HTTP_GET, .handler = root_handler},
+        {.uri = "/swarm", .method = HTTP_GET, .handler = root_handler},
         {.uri = "/styles.css", .method = HTTP_GET, .handler = styles_css_handler},
         {.uri = "/root.js", .method = HTTP_GET, .handler = root_js_handler},
         {.uri = "/favicon.svg", .method = HTTP_GET, .handler = favicon_handler},
         {.uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_handler},
+        {.uri = "/api/swarm", .method = HTTP_GET, .handler = swarm_get_handler},
+        {.uri = "/api/swarm", .method = HTTP_POST, .handler = swarm_post_handler},
         {.uri = "/api/system/info", .method = HTTP_GET,
          .handler = espminer_system_info_handler},
         {.uri = "/api/system/asic", .method = HTTP_GET,
@@ -4419,6 +4438,7 @@ esp_err_t wifi_http_start(GlobalState *state)
                         "Wi-Fi low-latency mode failed");
 
     init_page_token();
+    ESP_RETURN_ON_ERROR(wifi_swarm_init(), TAG, "swarm init failed");
     ESP_RETURN_ON_ERROR(start_http_server(), TAG, "HTTP server failed");
 
     if (setup_mode) {

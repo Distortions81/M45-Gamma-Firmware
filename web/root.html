@@ -30,6 +30,19 @@
 <article id=pool-status-panel class='panel full pool-status-panel hidden'><div class=metric-head><div class=label>Multi-pool Status</div>
 <span id=pool-status-count class=pill>--</span></div><div id=pool-status-list class=pool-status-list></div></article>
 </section></section>
+<section id=swarm-view class=hidden><section class='grid swarm-grid'>
+<article class=panel><div class=label>Devices</div><div id=swarm-total-devices class=value>--</div><div class=subvalue>Online miners</div></article>
+<article class=panel><div class=label>Hashrate</div><div id=swarm-total-hashrate class=value>--</div><div class=subvalue>Combined</div></article>
+<article class=panel><div class=label>Power</div><div id=swarm-total-power class=value>--</div><div class=subvalue>Combined ASIC power</div></article>
+<article class=panel><div class=label>Best Difficulty</div><div id=swarm-best-diff class=value>--</div><div class=subvalue>Best device result</div></article>
+<article class='panel full swarm-controls'><div><div class=label>Swarm</div>
+<div id=swarm-state class=subvalue>Ready to scan this device's local /24 network.</div></div>
+<div class=swarm-actions><div class=swarm-add><input id=swarm-address type=text maxlength=64 placeholder='IP or hostname' aria-label='Device IP or hostname'>
+<button id=swarm-add-btn class=secondary type=button>Add</button></div>
+<button id=swarm-scan-btn class=secondary type=button>Scan Network</button></div></article>
+<section id=swarm-device-list class='full swarm-device-list'><article class='panel full swarm-empty'><div class='value small'>No devices yet</div>
+<div class=subvalue>Scan the local network or add a miner by address.</div></article></section>
+</section></section>
 <section id=logs-view class=hidden>
 <article class='panel full fault-history'><div class=log-head><div><div class=label>Fault History</div>
 <div class=subvalue>Most recent safety shutdowns, newest first.</div></div>

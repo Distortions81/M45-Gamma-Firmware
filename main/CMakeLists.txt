@@ -56,6 +56,7 @@ idf_component_register(
         "utils.c"
         "wifi_http.c"
         "wifi_http_status.c"
+        "wifi_swarm.c"
         "third_party/qrcode/qrcode.c"
     INCLUDE_DIRS
         "."

@@ -46,8 +46,10 @@ let otaSupported=false,otaUploadInFlight=false,otaLeaveAction=null,otaAllowNavig
 let retainedAxeosPresent=false,otaPreserveAxeosPossible=true,axeosPreserveInitialized=false;
 let axeosUploadInFlight=false;
 let axeosReturnInFlight=false;
+let swarmRefreshInFlight=false,swarmAutoScanRequested=false,swarmLastAutoScan=0;
 function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
 $('dashboard-view').classList.toggle('hidden',view!=='stats');
+$('swarm-view').classList.toggle('hidden',view!=='swarm');
 $('overclock-view').classList.toggle('hidden',view!=='overclock');
 $('calibration-view').classList.toggle('hidden',view!=='calibration');
 $('update-view').classList.toggle('hidden',view!=='update');
@@ -58,6 +60,7 @@ function guardOtaNavigation(action){if(!otaUploadInFlight&&!axeosUploadInFlight)
 otaLeaveAction=action;$('ota-leave-modal').classList.remove('hidden')}
 function navigateTo(path){if(location.pathname!==path)guardOtaNavigation(()=>{otaAllowNavigation=true;location.href=path})}
 $('status-btn').onclick=()=>navigateTo('/');
+$('swarm-btn').onclick=()=>navigateTo('/swarm');
 $('overclock-btn').onclick=()=>navigateTo('/overclock');
 $('calibration-btn').onclick=()=>navigateTo('/calibration');
 $('settings-btn').onclick=()=>navigateTo('/settings');
@@ -94,11 +97,57 @@ $('block-banner').classList.add('hidden');refresh()}catch(e){alert(`dismiss fail
 $('payout-info-button').onclick=e=>e.currentTarget.blur();
 $('job-latency-info').onclick=e=>e.currentTarget.blur();
 function routeView(){if(location.pathname==='/calibration')history.replaceState(null,'','/'+location.search+location.hash);
-return location.pathname==='/settings'?'settings':location.pathname==='/overclock'?'overclock':location.pathname==='/update'?'update':location.pathname==='/logs'?'logs':'stats'}
+return location.pathname==='/settings'?'settings':location.pathname==='/overclock'?'overclock':location.pathname==='/update'?'update':location.pathname==='/logs'?'logs':location.pathname==='/swarm'?'swarm':'stats'}
 const val=id=>$(id).value.trim();const setVal=(id,v)=>{$(id).value=v==null?'':v};
 function human(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return'--';
 const u=['','K','M','G','T','P','E'];let i=0;while(v>=1000&&i<u.length-1){v/=1000;i++}
 return `${v>=100?n(v,0):v>=10?n(v,1):n(v,2)}${u[i]}`}
+function swarmRate(v){const h=rate(v);return h[0]==='--'?'--':`${h[0]} ${h[1]}`.trim()}
+function swarmMetric(label,value){const item=document.createElement('div');item.className='swarm-metric';
+const l=document.createElement('div');l.className='swarm-metric-label';l.textContent=label;
+const v=document.createElement('div');v.className='swarm-metric-value';v.textContent=value;item.append(l,v);return item}
+function renderSwarm(data){const devices=Array.isArray(data.devices)?data.devices.slice():[];
+devices.sort((a,b)=>String(a.ip||'').localeCompare(String(b.ip||''),undefined,{numeric:true}));
+const online=devices.filter(d=>d.online!==false),totalHash=online.reduce((s,d)=>s+(Number(d.hashrate_ghs)||0),0),totalPower=online.reduce((s,d)=>s+(Number(d.power_w)||0),0);
+const best=devices.reduce((m,d)=>Math.max(m,Number(d.best_diff)||0),0);txt('swarm-total-devices',online.length);
+txt('swarm-total-hashrate',swarmRate(totalHash));txt('swarm-total-power',totalPower>0?`${n(totalPower,1)} W`:'--');txt('swarm-best-diff',human(best));
+const scanning=data.scanning===true,progress=`${Number(data.scanned_hosts)||0}/${Number(data.total_hosts)||254}`;
+txt('swarm-state',scanning?`Scanning local network ${progress}`:devices.length?`${devices.length} miner${devices.length===1?'':'s'} discovered.`:'No miners discovered yet.');
+$('swarm-scan-btn').disabled=scanning;$('swarm-scan-btn').textContent=scanning?'Scanning...':'Scan Network';
+const list=$('swarm-device-list');list.innerHTML='';if(!devices.length){const empty=document.createElement('article');empty.className='panel full swarm-empty';
+const title=document.createElement('div');title.className='value small';title.textContent=scanning?'Looking for miners...':'No devices yet';
+const note=document.createElement('div');note.className='subvalue';note.textContent=scanning?'Devices appear as they respond.':'Scan the local network or add a miner by address.';empty.append(title,note);list.appendChild(empty);return}
+devices.forEach(d=>{const card=document.createElement('article');card.className=`panel swarm-card ${d.online===false?'swarm-offline':''}`.trim();const head=document.createElement('div');head.className='swarm-card-head';
+const identity=document.createElement('div'),link=document.createElement('a');link.className='swarm-device-name';link.href=`http://${d.ip}/`;link.target='_blank';link.rel='noopener';
+const dot=document.createElement('span');dot.className='swarm-dot';dot.style.backgroundColor=d.swarm_color||'var(--blue)';
+const name=document.createElement('span');name.textContent=d.hostname||d.ip;link.append(dot,name);const ip=document.createElement('div');ip.className='swarm-ip';ip.textContent=d.ip;identity.append(link,ip);
+const hash=document.createElement('div');hash.className='swarm-card-rate';hash.textContent=swarmRate(d.hashrate_ghs);head.append(identity,hash);
+const metrics=document.createElement('div');metrics.className='swarm-metrics';metrics.append(
+swarmMetric('Power',Number(d.power_w)>0?`${n(d.power_w,1)} W`:'--'),swarmMetric('ASIC Temp',Number(d.temp_c)>0?`${n(d.temp_c,1)} C`:'--'),
+swarmMetric('Best Diff',human(d.best_diff)),swarmMetric('Shares',`${fmt(d.shares_accepted)} / ${fmt(d.shares_rejected)}`),
+swarmMetric('Pool Diff',human(d.pool_difficulty)),swarmMetric('Uptime',shortTime(d.uptime_seconds)||'--'));
+const foot=document.createElement('div');foot.className='swarm-card-foot';const model=document.createElement('span');model.textContent=`${d.device_model||'Bitaxe'} ${d.board_version||''} / ${d.asic_model||'--'}`.trim();
+const version=document.createElement('span');version.textContent=d.online===false?`OFFLINE / ${d.version||'--'}`:d.mining_paused?`PAUSED / ${d.version||'--'}`:d.version||'--';foot.append(model,version);
+const actions=document.createElement('div');actions.className='swarm-card-actions';const pause=document.createElement('button');pause.className='secondary';pause.type='button';pause.disabled=d.online===false;
+pause.textContent=d.mining_paused?'Resume':'Pause';pause.onclick=()=>swarmDeviceAction(d,d.mining_paused?'resume':'pause');const restart=document.createElement('button');restart.className='secondary';restart.type='button';restart.disabled=d.online===false;restart.textContent='Restart';restart.onclick=()=>swarmDeviceAction(d,'restart');
+const open=document.createElement('a');open.className='secondary link-button';open.href=`http://${d.ip}/`;open.target='_blank';open.rel='noopener';open.textContent='Open';actions.append(pause,restart,open);card.append(head,metrics,foot,actions);list.appendChild(card)})}
+async function swarmPost(command,address='',action=''){const body={command};if(address)body.address=address;if(action)body.action=action;
+const r=await fetch('/api/swarm',{method:'POST',headers:{'Content-Type':'application/json','X-Page-Token':PAGE_TOKEN},body:JSON.stringify(body)});
+const j=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(j.page_token);return}if(!r.ok)throw new Error(j.error||r.status)}
+async function scanSwarm(){try{await swarmPost('scan');await refreshSwarm()}catch(e){txt('swarm-state',`Scan failed: ${e.message||e}`)}}
+async function addSwarmDevice(){const input=$('swarm-address'),address=input.value.trim();if(!address)return;
+$('swarm-add-btn').disabled=true;try{await swarmPost('add',address);input.value='';txt('swarm-state',`Checking ${address}...`);setTimeout(refreshSwarm,1100)}
+catch(e){txt('swarm-state',`Add failed: ${e.message||e}`)}finally{$('swarm-add-btn').disabled=false}}
+async function swarmDeviceAction(device,action){if(action==='restart'&&!confirm(`Restart ${device.hostname||device.ip}?`))return;
+try{await swarmPost('action',device.ip,action);txt('swarm-state',`${action==='restart'?'Restarted':action==='pause'?'Paused':'Resumed'} ${device.hostname||device.ip}.`);
+setTimeout(async()=>{try{await swarmPost('scan')}catch(_){}},800)}catch(e){txt('swarm-state',`${action} failed: ${e.message||e}`)}}
+async function refreshSwarm(){if(routeView()!=='swarm'||swarmRefreshInFlight)return;swarmRefreshInFlight=true;
+try{const r=await fetch('/api/swarm',{cache:'no-store'}),j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);renderSwarm(j);
+const now=Date.now(),initial=!j.scanning&&!j.devices?.length&&!swarmAutoScanRequested,refreshDue=!j.scanning&&Number(j.last_scan_seconds)>=30&&now-swarmLastAutoScan>=30000;
+if(initial||refreshDue){swarmAutoScanRequested=true;swarmLastAutoScan=now;await scanSwarm()}}
+catch(e){txt('swarm-state',`Swarm unavailable: ${e.message||e}`)}finally{swarmRefreshInFlight=false}}
+$('swarm-scan-btn').onclick=()=>{swarmAutoScanRequested=true;scanSwarm()};$('swarm-add-btn').onclick=addSwarmDevice;
+$('swarm-address').addEventListener('keydown',e=>{if(e.key==='Enter')addSwarmDevice()});
 function rate(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return['--',''];
 if(v>=1000)return[n(v/1000,2),'Th'];if(v>=1)return[n(v,0),'Gh'];
 if(v>=0.001)return[n(v*1000,0),'Mh'];return[n(v*1000000,0),'Kh']}
@@ -952,4 +1001,4 @@ $('stratum-dot').className='status-dot bad';txt('stratum-state',String(e.message
 const panel=$('pool-status-panel');if(panel)panel.classList.add('hidden')}
 finally{refreshInFlight=false}}
 const view=routeView();showView(view);syncOverclockEnabled();syncDisplaySleep();syncPoolDifficulty();syncPoolMode();if(view==='settings'||view==='overclock'||view==='calibration')loadSettings();
-if(view==='logs'){refreshFaults();refreshLogs(true)}refresh();setInterval(refresh,2000);setInterval(()=>refreshLogs(false),1000);setInterval(updateRefreshWarning,1000);
+if(view==='logs'){refreshFaults();refreshLogs(true)}if(view==='swarm')refreshSwarm();refresh();setInterval(refresh,2000);setInterval(refreshSwarm,1000);setInterval(()=>refreshLogs(false),1000);setInterval(updateRefreshWarning,1000);

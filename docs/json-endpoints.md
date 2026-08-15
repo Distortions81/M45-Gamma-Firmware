@@ -507,6 +507,67 @@ Gamma 602 or when no retained AxeOS image can be validated.
 {"ok":true,"rebooting":true}
 ```
 
+### `GET /api/swarm`
+
+Returns the asynchronous local-network discovery state and the M45 or AxeOS
+miners found through their ESP-Miner-compatible `/api/system/info` endpoint.
+Discovery is performed by the device so peer APIs remain unavailable to
+unrelated browser origins.
+
+```json
+{
+  "scanning": false,
+  "scanned_hosts": 254,
+  "total_hosts": 254,
+  "last_scan_seconds": 12,
+  "devices": [{
+    "ip": "192.168.1.42",
+    "hostname": "gamma-42",
+    "version": "v2.12.0",
+    "board_version": "602",
+    "asic_model": "BM1370",
+    "device_model": "Gamma",
+    "swarm_color": "blue",
+    "hashrate_ghs": 1040.5,
+    "power_w": 18.7,
+    "temp_c": 58.2,
+    "vr_temp_c": 67.0,
+    "best_diff": 412000,
+    "pool_difficulty": 2048,
+    "shares_accepted": 124,
+    "shares_rejected": 1,
+    "uptime_seconds": 7200,
+    "mining_paused": false,
+    "manual": false,
+    "online": true,
+    "last_seen_seconds": 12
+  }]
+}
+```
+
+### `POST /api/swarm`
+
+Starts a scan of the device's local `/24`, asynchronously checks one manual
+IP address or hostname, or sends a pause, resume, or restart command to an
+already-discovered miner. Requests support `X-Page-Token`.
+Up to 32 discovered devices are kept in RAM. The page refreshes the scan while
+it is open; no peer credentials or peer configuration are stored.
+
+```json
+{"command":"scan"}
+```
+
+```json
+{"command":"add","address":"gamma-42.local"}
+```
+
+```json
+{"command":"action","address":"192.168.1.42","action":"pause"}
+```
+
+For device actions, `address` must exactly match an IP already returned by
+`GET /api/swarm`; valid actions are `pause`, `resume`, and `restart`.
+
 ## Non-JSON API Helpers
 
 These endpoints are part of the API surface but do not return JSON.
@@ -543,7 +604,7 @@ Important response fields:
 | Mining | `hashRate`, `hashRate_1m`, `hashRate_10m`, `hashRate_1h`, `errorPercentage`, `sharesAccepted`, `sharesRejected`, `bestDiff`, `bestSessionDiff`, `poolDifficulty`, `responseTime`, `blockFound`, `showNewBlock`, `miningPaused` |
 | Memory and uptime | `freeHeap`, `freeHeapInternal`, `freeHeapSpiram`, `uptimeSeconds`, `cpuUsage` |
 | Wi-Fi | `wifiStatus`, `wifiRSSI`, `ssid`, `wifiPass`, `ipv4`, `ipv6`, `apEnabled` |
-| Firmware and board | `version`, `axeOSVersion`, `idfVersion`, `boardVersion`, `maxPower`, `nominalVoltage`, `smallCoreCount`, `ASICModel`, `isPSRAMAvailable`, `resetReason`, `runningPartition`, `macAddr`, `hostname`, `otaSupported` |
+| Firmware and board | `version`, `axeOSVersion`, `idfVersion`, `boardVersion`, `maxPower`, `nominalVoltage`, `smallCoreCount`, `ASICModel`, `deviceModel`, `swarmColor`, `isPSRAMAvailable`, `resetReason`, `runningPartition`, `macAddr`, `hostname`, `otaSupported` |
 | Stratum | `poolConnectionInfo`, `isUsingFallbackStratum`, `stratumURL`, `stratumPort`, `stratumUser`, `stratumSuggestedDifficulty`, `stratumExtranonceSubscribe`, `stratumTLS`, `stratumCert`, `stratumDecodeCoinbase`, `fallbackStratumURL`, `fallbackStratumPort`, `fallbackStratumUser`, `fallbackStratumSuggestedDifficulty`, `fallbackStratumExtranonceSubscribe`, `fallbackStratumTLS`, `fallbackStratumCert`, `fallbackStratumDecodeCoinbase`, `stratumProtocol`, `activeProtocolLabel`, `activePool`, `activePoolPort` |
 | Tuning and display | `overclockEnabled`, `display`, `rotation`, `invertscreen`, `displayTimeout`, `coreVoltage`, `frequency`, `statsFrequency`, `statsLimit`, `boardtemp1`, `boardtemp2` |
 | Arrays/objects | `hashrateMonitor`, `sharesRejectedReasons`, `blockSignals`, `coinbaseOutputs` |
