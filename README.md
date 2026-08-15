@@ -6,7 +6,7 @@ M45 is experimental firmware for Bitaxe Gamma 602 miners. It gives the Gamma a
 local web dashboard, QR-assisted setup, weighted multi-pool mining, and opt-in
 overclock controls while booting at stock ASIC settings by default.
 
-[Open the Web Flasher](https://distortions81.github.io/M45-Gamma-Firmware/)
+[Open the Web Flasher](https://m45core.github.io/M45-Gamma-Firmware/)
 to flash a prepared build from Chrome or Edge using USB serial.
 
 Use it at your own risk. Overclocking or bad cooling can permanently damage
@@ -93,9 +93,13 @@ OTA accepts either:
 - `M45-Firmware.bin`, a compatibility copy of the raw application image in
   local OTA packages.
 
-Release builds publish both `esp-miner.bin` and the merged factory image, and
-update the GitHub Pages web flasher so older merged release images can be
-selected.
+Canonical releases publish `esp-miner.bin` and the merged factory image directly
+to GitHub Pages. Run the **Web Flasher Pages** workflow on the release branch
+with a required semantic version such as `v0.1.0`; that version is embedded in
+the application and written to `canonical-releases.json`. Do not create a
+GitHub Release for canonical firmware: the GitHub Releases feed is frozen after
+the final v0.0.9-channel migration, while Pages remains the only future update
+channel.
 
 The migration importer runs only when no M45 configuration exists. It reads
 stock settings from AxeOS's `main` NVS namespace and leaves that namespace

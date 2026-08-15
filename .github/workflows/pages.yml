@@ -1,16 +1,11 @@
 name: Web Flasher Pages
 
 on:
-  workflow_run:
-    workflows:
-      - Build & Release Firmware
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       version:
         description: Version label for a manual Pages publish
-        required: false
+        required: true
         type: string
 
 permissions:
@@ -26,10 +21,6 @@ concurrency:
 jobs:
   deploy:
     name: Deploy web flasher
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'release')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -41,7 +32,6 @@ jobs:
           fetch-depth: 0
 
       - name: Build web flasher package
-        if: github.event_name == 'workflow_dispatch'
         env:
           PACKAGE_VERSION: ${{ inputs.version }}
         run: |
@@ -51,26 +41,6 @@ jobs:
             scripts/docker-web-flasher.sh
           fi
           mv dist/web-flasher site
-
-      - name: Download release web flasher package
-        if: github.event_name == 'workflow_run'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          mkdir -p downloaded
-          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name m45-web-flasher --dir downloaded
-          if test -f downloaded/index.html; then
-            mv downloaded site
-          elif test -f downloaded/web-flasher/index.html; then
-            mv downloaded/web-flasher site
-          elif test -f downloaded/dist/web-flasher/index.html; then
-            mv downloaded/dist/web-flasher site
-          else
-            find downloaded -maxdepth 3 -type f -print
-            echo "Could not find web flasher index.html in downloaded artifact" >&2
-            exit 1
-          fi
 
       - name: Sync release firmware mirror
         env:
@@ -82,6 +52,8 @@ jobs:
         run: |
           test -f site/index.html
           test -f site/firmware-releases.json
+          test -f site/canonical-releases.json
+          test -f site/esp-miner.bin
           test ! -e site/manifest.json
           test ! -e site/bootloader.bin
           test ! -e site/partition-table.bin
@@ -91,6 +63,14 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
+
+          canonical = json.loads(Path("site/canonical-releases.json").read_text())
+          canonical_releases = canonical.get("releases") or []
+          if len(canonical_releases) != 1:
+              raise SystemExit("canonical manifest must contain exactly one latest release")
+          canonical_path = Path("site") / canonical_releases[0].get("ota_path", "")
+          if canonical_path != Path("site/esp-miner.bin") or not canonical_path.is_file():
+              raise SystemExit("canonical manifest must point to site/esp-miner.bin")
 
           manifest = json.loads(Path("site/firmware-releases.json").read_text())
           releases = manifest.get("releases") or []

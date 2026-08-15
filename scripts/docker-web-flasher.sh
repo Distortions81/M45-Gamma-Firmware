@@ -134,6 +134,10 @@ RUN_ARGS=(
     --user "$(id -u):$(id -g)"
 )
 
+if [[ -n "$VERSION" ]]; then
+    RUN_ARGS+=(--env "M45_RELEASE_VERSION=$VERSION")
+fi
+
 if [[ -t 0 && -t 1 ]]; then
     RUN_ARGS+=(-it)
 fi

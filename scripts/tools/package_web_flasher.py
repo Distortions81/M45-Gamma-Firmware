@@ -10,8 +10,8 @@ import sys
 
 DEFAULT_NAME = "M45 Gamma Firmware"
 DEFAULT_BOARD_VERSION = "602"
-REPO_URL = "https://github.com/Distortions81/M45-Gamma-Firmware"
-REPOSITORY = "Distortions81/M45-Gamma-Firmware"
+REPO_URL = "https://github.com/M45Core/M45-Gamma-Firmware"
+REPOSITORY = "M45Core/M45-Gamma-Firmware"
 ESPTOOL_JS_URL = "https://unpkg.com/esptool-js@0.4.6/bundle.js"
 NVS_START = 0x9000
 NVS_SIZE = 0x6000
@@ -557,6 +557,18 @@ def main():
         migration_firmware = copy_migration_image(build_dir, output_dir, flasher_args)
         firmware = merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args)
         write_release_manifest(output_dir, args.name, version, firmware_name, args.board_version)
+        canonical_manifest = {
+            "releases": [
+                {
+                    "version": version,
+                    "name": version,
+                    "ota_path": MIGRATION_FIRMWARE_NAME,
+                }
+            ]
+        }
+        (output_dir / "canonical-releases.json").write_text(
+            json.dumps(canonical_manifest, indent=2) + "\n"
+        )
         write_index(output_dir, args.name, version, firmware_name, args.board_version)
         (output_dir / "version.txt").write_text(version + "\n")
     except (
