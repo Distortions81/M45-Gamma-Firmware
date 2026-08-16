@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -611,28 +612,48 @@ esp_err_t wifi_swarm_init(void)
 
 esp_err_t wifi_swarm_get_handler(httpd_req_t *req)
 {
-    swarm_device_t devices[SWARM_MAX_DEVICES];
+    swarm_device_t *devices = NULL;
     size_t count = 0;
     bool scanning = false;
     uint16_t scanned_hosts = 0;
     uint64_t last_scan_us = 0;
+    bool snapshot_alloc_failed = false;
     if (g_swarm_mutex != NULL &&
         xSemaphoreTake(g_swarm_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         count = g_device_count;
-        memcpy(devices, g_devices, count * sizeof(devices[0]));
+        if (count > 0) {
+            devices = heap_caps_malloc(count * sizeof(*devices),
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (devices == NULL) {
+                devices = heap_caps_malloc(count * sizeof(*devices),
+                                           MALLOC_CAP_8BIT);
+            }
+            if (devices != NULL) {
+                memcpy(devices, g_devices, count * sizeof(*devices));
+            } else {
+                snapshot_alloc_failed = true;
+            }
+        }
         scanning = g_scan_running;
         scanned_hosts = g_scanned_hosts;
         last_scan_us = g_last_scan_us;
         xSemaphoreGive(g_swarm_mutex);
     }
 
+    if (snapshot_alloc_failed) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
+        heap_caps_free(devices);
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
     }
     cJSON *array = cJSON_AddArrayToObject(root, "devices");
     if (array == NULL) {
+        heap_caps_free(devices);
         cJSON_Delete(root);
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
@@ -680,6 +701,7 @@ esp_err_t wifi_swarm_get_handler(httpd_req_t *req)
                                     : 0);
         cJSON_AddItemToArray(array, item);
     }
+    heap_caps_free(devices);
 
     char *body = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
