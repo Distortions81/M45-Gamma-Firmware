@@ -38,7 +38,11 @@ const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MI
 const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
 const AUX_POOL_COUNT=2,POOL_WEIGHT_MIN=1,POOL_WEIGHT_MAX=99;
 const SWARM_CACHE_KEY='m45_swarm_devices_v1',SWARM_CACHE_MAX_AGE_MS=7*24*60*60*1000,SWARM_CACHE_MAX_DEVICES=33;
+const STATS_CHART_WINDOW_MS=15*60*1000,STATS_CHART_MAX_SAMPLES=600;
+const STATS_CHART_COLLAPSED_KEY='m45_stats_chart_collapsed';
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
+let statsChartSamples=[],statsChartBestShares=[],statsChartLastBest=null;
+const metricSparklineSamples=new Map(),metricSparklineConfigs=new Map();
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
 let currentBuildVersion='',latestRelease=null,latestFactoryAsset=null,releaseCheckInFlight=false,releaseAutoCheckStarted=false;
@@ -47,6 +51,7 @@ let axeosUploadInFlight=false;
 let axeosReturnInFlight=false;
 let swarmRefreshInFlight=false,swarmAutoScanRequested=false,swarmLastAutoScan=0;
 function showView(view){$('stats-boxes-view').classList.toggle('hidden',view!=='stats'&&view!=='overclock');
+$('stats-chart-view').classList.toggle('hidden',view!=='stats');
 $('dashboard-view').classList.toggle('hidden',view!=='stats');
 $('swarm-view').classList.toggle('hidden',view!=='swarm');
 $('overclock-view').classList.toggle('hidden',view!=='overclock');
@@ -101,6 +106,47 @@ const val=id=>$(id).value.trim();const setVal=(id,v)=>{$(id).value=v==null?'':v}
 function human(v){v=Number(v);if(!Number.isFinite(v)||v<=0)return'--';
 const u=['','K','M','G','T','P','E'];let i=0;while(v>=1000&&i<u.length-1){v/=1000;i++}
 return `${v>=100?n(v,0):v>=10?n(v,1):n(v,2)}${u[i]}`}
+function statsChartHashLabel(ghs){const h=rate(ghs);return h[0]==='--'?'0':`${h[0]}${h[1]}`}
+function drawStatsChart(){const canvas=$('stats-chart');if(!canvas||routeView()!=='stats')return;const rect=canvas.getBoundingClientRect();if(rect.width<10||rect.height<10)return;
+const dpr=window.devicePixelRatio||1,w=Math.floor(rect.width),h=Math.floor(rect.height);if(canvas.width!==Math.floor(w*dpr)||canvas.height!==Math.floor(h*dpr)){canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr)}
+const ctx=canvas.getContext('2d');if(!ctx)return;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+const now=Date.now(),left=44,right=18,top=10,bottom=22,gw=Math.max(10,w-left-right),gh=Math.max(10,h-top-bottom),base=h-bottom;
+const first=statsChartSamples.length?statsChartSamples[0].at:now,minX=Math.max(now-STATS_CHART_WINDOW_MS,Math.min(first,now-60000)),span=Math.max(1,now-minX);
+const rows=statsChartSamples.filter(r=>r.at>=minX),bestRows=statsChartBestShares.filter(r=>r.at>=minX),maxHash=Math.max(1,...rows.map(r=>r.value))*1.15,maxBest=Math.max(1,...bestRows.map(r=>r.value))*1.2;
+const x=at=>left+Math.max(0,Math.min(1,(at-minX)/span))*gw,yHash=value=>top+gh*(1-Math.max(0,value)/maxHash),yBest=value=>top+gh*(1-Math.log10(Math.max(1,value))/Math.log10(Math.max(10,maxBest)));
+ctx.strokeStyle='#2d353d';ctx.lineWidth=1;ctx.fillStyle='#9aa6ad';ctx.font='10px ui-monospace,monospace';ctx.textAlign='right';
+for(let i=0;i<=3;i++){const yy=top+gh*i/3;ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.fillText(statsChartHashLabel(maxHash*(1-i/3)),left-6,yy+3)}
+ctx.textAlign='center';ctx.fillText(`${Math.max(1,Math.round(span/60000))} min`,left+gw/2,h-5);
+if(rows.length){const fill=ctx.createLinearGradient(0,top,0,base);fill.addColorStop(0,'rgba(44,241,194,.28)');fill.addColorStop(1,'rgba(44,241,194,.025)');ctx.beginPath();ctx.moveTo(x(rows[0].at),base);rows.forEach((r,i)=>{const xx=x(r.at),yy=yHash(r.value);if(i===0)ctx.lineTo(xx,yy);else ctx.lineTo(xx,yy)});ctx.lineTo(x(rows[rows.length-1].at),base);ctx.closePath();ctx.fillStyle=fill;ctx.fill();
+ctx.beginPath();rows.forEach((r,i)=>{const xx=x(r.at),yy=yHash(r.value);if(i===0)ctx.moveTo(xx,yy);else ctx.lineTo(xx,yy)});ctx.strokeStyle='#2cf1c2';ctx.lineWidth=2;ctx.lineJoin='round';ctx.lineCap='round';ctx.stroke()}
+bestRows.forEach(r=>{ctx.beginPath();ctx.arc(x(r.at),yBest(r.value),4,0,Math.PI*2);ctx.fillStyle='#f6b34a';ctx.shadowColor='rgba(246,179,74,.55)';ctx.shadowBlur=6;ctx.fill();ctx.shadowBlur=0;ctx.strokeStyle='#fff3c4';ctx.lineWidth=1;ctx.stroke()});
+ctx.strokeStyle='rgba(255,255,255,.7)';ctx.beginPath();ctx.moveTo(left,base+.5);ctx.lineTo(w-right,base+.5);ctx.stroke()}
+function updateStatsChart(s){const now=Date.now(),hash=Math.max(0,Number(s&&s.hashrate_ghs)||0),best=Math.max(0,Number(s&&s.best_diff)||0);
+statsChartSamples.push({at:now,value:hash});if(statsChartSamples.length>STATS_CHART_MAX_SAMPLES)statsChartSamples.splice(0,statsChartSamples.length-STATS_CHART_MAX_SAMPLES);
+statsChartSamples=statsChartSamples.filter(r=>now-r.at<=STATS_CHART_WINDOW_MS);if(statsChartLastBest===null){statsChartLastBest=best;if(best>0)statsChartBestShares.push({at:now,value:best})}
+else if(best>statsChartLastBest){statsChartLastBest=best;statsChartBestShares.push({at:now,value:best})}else if(best<statsChartLastBest){statsChartLastBest=best;statsChartBestShares=[]}
+statsChartBestShares=statsChartBestShares.filter(r=>now-r.at<=STATS_CHART_WINDOW_MS);txt('stats-chart-current',swarmRate(hash));txt('stats-chart-best',`Best ${human(best)}`);drawStatsChart()}
+function setStatsChartCollapsed(collapsed){const panel=document.querySelector('.stats-chart-panel'),button=$('stats-chart-toggle');if(!panel||!button)return;
+panel.classList.toggle('collapsed',collapsed);button.textContent=collapsed?'＋':'−';button.setAttribute('aria-expanded',collapsed?'false':'true');
+button.setAttribute('aria-label',collapsed?'Expand hashrate chart':'Minimize hashrate chart');button.title=collapsed?'Expand chart':'Minimize chart';setLocalBool(STATS_CHART_COLLAPSED_KEY,collapsed);
+if(!collapsed)requestAnimationFrame(drawStatsChart)}
+$('stats-chart-toggle').onclick=()=>setStatsChartCollapsed(!document.querySelector('.stats-chart-panel').classList.contains('collapsed'));
+setStatsChartCollapsed(localBool(STATS_CHART_COLLAPSED_KEY));
+window.addEventListener('resize',drawStatsChart);
+function drawMetricSparkline(id){const canvas=$(id+'-spark'),cfg=metricSparklineConfigs.get(id),rows=metricSparklineSamples.get(id)||[];if(!canvas||!cfg)return;
+const rect=canvas.getBoundingClientRect();if(rect.width<10||rect.height<10)return;const dpr=window.devicePixelRatio||1,w=Math.floor(rect.width),h=Math.floor(rect.height);
+if(canvas.width!==Math.floor(w*dpr)||canvas.height!==Math.floor(h*dpr)){canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr)}const ctx=canvas.getContext('2d');if(!ctx)return;
+ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);const values=rows.map(r=>r.value),normalLo=Number(cfg.min),normalHi=Number(cfg.max);let lo=normalLo,hi=normalHi;
+if(values.length){const seenLo=Math.min(...values),seenHi=Math.max(...values),normalSpan=Math.max(.0001,normalHi-normalLo);if(seenLo<lo)lo=seenLo-normalSpan*.08;if(seenHi>hi)hi=seenHi+normalSpan*.08}
+if(!(hi>lo)){lo-=1;hi+=1}const pad=3,gw=w-pad*2,gh=h-pad*2,now=Date.now(),first=rows.length?rows[0].at:now,minX=Math.max(now-STATS_CHART_WINDOW_MS,Math.min(first,now-60000)),span=Math.max(1,now-minX);
+const x=at=>pad+Math.max(0,Math.min(1,(at-minX)/span))*gw,y=value=>pad+gh*(1-Math.max(0,Math.min(1,(value-lo)/(hi-lo))));ctx.strokeStyle='#27313a';ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(pad,Math.round(h/2)+.5);ctx.lineTo(w-pad,Math.round(h/2)+.5);ctx.stroke();if(rows.length){const color=cfg.state==='bad'?'#ff6b6b':cfg.state==='warn'?'#f6b34a':'#2cf1c2';
+const fill=ctx.createLinearGradient(0,pad,0,h-pad);fill.addColorStop(0,color+'42');fill.addColorStop(1,color+'05');ctx.beginPath();ctx.moveTo(x(rows[0].at),h-pad);rows.forEach((r,i)=>{if(i===0)ctx.lineTo(x(r.at),y(r.value));else ctx.lineTo(x(r.at),y(r.value))});ctx.lineTo(x(rows[rows.length-1].at),h-pad);ctx.closePath();ctx.fillStyle=fill;ctx.fill();
+ctx.beginPath();rows.forEach((r,i)=>{if(i===0)ctx.moveTo(x(r.at),y(r.value));else ctx.lineTo(x(r.at),y(r.value))});ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.lineJoin='round';ctx.lineCap='round';ctx.stroke()}
+canvas.title=`15 minute trend | scale ${n(lo,cfg.decimals)}-${n(hi,cfg.decimals)}`}
+function updateMetricSparkline(id,value,cfg,state){const now=Date.now(),v=Number(value),rows=metricSparklineSamples.get(id)||[];if(Number.isFinite(v))rows.push({at:now,value:v});
+const kept=rows.filter(r=>now-r.at<=STATS_CHART_WINDOW_MS).slice(-STATS_CHART_MAX_SAMPLES);metricSparklineSamples.set(id,kept);metricSparklineConfigs.set(id,{...cfg,state,decimals:cfg.decimals||0});drawMetricSparkline(id)}
+window.addEventListener('resize',()=>metricSparklineConfigs.forEach((_,id)=>drawMetricSparkline(id)));
 function swarmRate(v){const h=rate(v);return h[0]==='--'?'--':`${h[0]} ${h[1]}`.trim()}
 function swarmMetric(label,value){const item=document.createElement('div');item.className='swarm-metric';
 const l=document.createElement('div');l.className='swarm-metric-label';l.textContent=label;
@@ -439,16 +485,16 @@ if(!r.ok)throw new Error(j.error||r.status);setStatus('axeos-return-status','reb
 catch(e){axeosReturnInFlight=false;button.disabled=false;button.textContent='Return to AxeOS';setStatus('axeos-return-status',`return failed: ${e.message||e}`,'err')}};
 function setBoot(s){const on=s.booting===true;$('boot-panel').classList.toggle('hidden',!on);
 if(on)txt('boot-step',`Hardware init: ${s.hardware||'boot'}`)}
-function setMetric(id,value,d,cfg){const v=num(value),bar=$(id+'-bar'),state=$(id+'-state');
+function setMetric(id,value,d,cfg){const v=num(value),bar=$(id+'-bar'),state=$(id+'-state');cfg.decimals=d;
 const fill=bar.querySelector('.fill'),zone=bar.querySelector('.zone'),range=$(id+'-range');
 $(id).textContent=Number.isFinite(v)?n(v,d):'--';if(range)range.textContent=cfg.text;
 if(!Number.isFinite(v)||!Number.isFinite(cfg.min)||!Number.isFinite(cfg.max)){bar.className='bar';
-fill.style.width='0%';zone.style.width='0%';state.className='pill';state.textContent='NO DATA';return}
+fill.style.width='0%';zone.style.width='0%';state.className='pill';state.textContent='NO DATA';updateMetricSparkline(id,NaN,cfg,'');return}
 fill.style.width=pct(v,cfg.min,cfg.max)+'%';const z0=pct(cfg.goodMin,cfg.min,cfg.max);
 const z1=pct(cfg.goodMax,cfg.min,cfg.max);zone.style.left=z0+'%';zone.style.width=Math.max(0,z1-z0)+'%';
 let c='ok';if((cfg.badHigh!=null&&v>=cfg.badHigh)||(cfg.badLow!=null&&v<cfg.badLow))c='bad';
 else if((cfg.warnHigh!=null&&v>=cfg.warnHigh)||(cfg.warnLow!=null&&v<cfg.warnLow))c='warn';
-bar.className='bar '+c;state.className='pill '+c;state.textContent=c==='ok'?'OK':c==='warn'?'WATCH':'LIMIT'}
+bar.className='bar '+c;state.className='pill '+c;state.textContent=c==='ok'?'OK':c==='warn'?'WATCH':'LIMIT';updateMetricSparkline(id,v,cfg,c)}
 function setRanges(s){const l=s.limits;if(!l)return;
 const haveTps=s.tps546_valid,asicTemp=num(s.asic_temp_c)>0?s.asic_temp_c:NaN;
 const asicTempTarget=Number.isFinite(num(s.fan_target_temp_c))?num(s.fan_target_temp_c):62;
@@ -977,6 +1023,7 @@ catch(e){$('logs-state').className='pill warn';$('logs-state').textContent='OFFL
 async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{const r=await fetch('/api/status',{cache:'no-store',headers:{'X-Page-Token':PAGE_TOKEN}});
 const s=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(s.page_token);return}
 if(!r.ok)throw new Error(s.error||r.status);if(!checkPageToken(s.page_token))return;markRefreshOk();setUnsupportedBoard(s);setFault(s);setBoot(s);syncOtaControls();
+updateStatsChart(s);
 const multiPool=!!s.multi_pool_enabled;
 const device=s.device_name||'M45-Firmware';const title=`${device}: ${s.model||s.asic_model||'--'}`;txt('toolbar-title',title);document.title=title;
 txt('firmware-version',s.version||'unknown');
