@@ -1550,7 +1550,17 @@ static void power_monitor_task(void *arg)
         TPS546_StatusSnapshot snapshot;
         esp_err_t err = capture_power_snapshot(&snapshot);
         if (err != ESP_OK) {
+            if (!g_regulator_enabled) {
+                continue;
+            }
             safety_shutdown(state, "TPS546 monitor read failed");
+            continue;
+        }
+
+        // A manual power transition can begin while an I2C snapshot is in
+        // flight. Do not treat the intentional OPERATION_OFF response as a
+        // regulator fault after the transition has disabled the output.
+        if (!g_regulator_enabled) {
             continue;
         }
 

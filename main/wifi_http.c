@@ -61,6 +61,7 @@
 #define OTA_UPLOAD_IDLE_TIMEOUT_MS 30000
 #define OTA_UPLOAD_TOTAL_TIMEOUT_MS (5U * 60U * 1000U)
 #define AXEOS_UPLOAD_MAX_SIZE (16U * 1024U * 1024U)
+#define ASIC_POWER_TASK_STACK_BYTES 12288
 #define WWW_ERASE_CHUNK_SIZE (64U * 1024U)
 #define OTA_FACTORY_TABLE_OFFSET 0x8000
 #define OTA_FACTORY_TABLE_SIZE 0xC00
@@ -2735,6 +2736,53 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true,\"runtime\":true}");
 }
 
+typedef struct {
+    bool enabled;
+    bool manage_fan;
+    SemaphoreHandle_t done;
+    esp_err_t result;
+} asic_power_task_args_t;
+
+static void asic_power_apply_task(void *arg)
+{
+    asic_power_task_args_t *args = (asic_power_task_args_t *)arg;
+    args->result = bitaxe_gamma602_set_asic_power(g_state, args->enabled,
+                                                   args->manage_fan);
+    xSemaphoreGive(args->done);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t apply_asic_power_via_worker(bool enabled, bool manage_fan)
+{
+    // Enabling repeats the cold hardware initialization used at boot. Keep
+    // that driver call chain off the HTTP server task's partially used stack.
+    asic_power_task_args_t *args = calloc(1, sizeof(*args));
+    if (args == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    args->enabled = enabled;
+    args->manage_fan = manage_fan;
+    args->done = xSemaphoreCreateBinary();
+    if (args->done == NULL) {
+        free(args);
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTaskCreate(asic_power_apply_task, "asic_power", ASIC_POWER_TASK_STACK_BYTES,
+                    args, 8, NULL) != pdPASS) {
+        vSemaphoreDelete(args->done);
+        free(args);
+        return ESP_ERR_NO_MEM;
+    }
+
+    xSemaphoreTake(args->done, portMAX_DELAY);
+    const esp_err_t result = args->result;
+    vSemaphoreDelete(args->done);
+    free(args);
+    return result;
+}
+
 static esp_err_t asic_power_handler(httpd_req_t *req)
 {
     if (req->content_len <= 0 || req->content_len > 128) {
@@ -2777,7 +2825,7 @@ static esp_err_t asic_power_handler(httpd_req_t *req)
     }
 
     const uint64_t power_started_us = http_now_us();
-    esp_err_t err = bitaxe_gamma602_set_asic_power(g_state, enabled, manage_fan);
+    esp_err_t err = apply_asic_power_via_worker(enabled, manage_fan);
     log_http_handler_delay("ASIC power apply", power_started_us);
     if (err != ESP_OK) {
         if (err == ESP_ERR_INVALID_STATE) {
