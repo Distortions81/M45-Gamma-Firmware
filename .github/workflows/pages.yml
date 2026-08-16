@@ -42,16 +42,9 @@ jobs:
           fi
           mv dist/web-flasher site
 
-      - name: Sync release firmware mirror
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/tools/sync_web_flasher_releases.py --site-dir site --board-version 602
-
       - name: Validate web flasher package
         run: |
           test -f site/index.html
-          test -f site/firmware-releases.json
           test -f site/canonical-releases.json
           test -f site/esp-miner.bin
           test ! -e site/manifest.json
@@ -68,18 +61,13 @@ jobs:
           canonical_releases = canonical.get("releases") or []
           if len(canonical_releases) != 1:
               raise SystemExit("canonical manifest must contain exactly one latest release")
-          canonical_path = Path("site") / canonical_releases[0].get("ota_path", "")
-          if canonical_path != Path("site/esp-miner.bin") or not canonical_path.is_file():
-              raise SystemExit("canonical manifest must point to site/esp-miner.bin")
-
-          manifest = json.loads(Path("site/firmware-releases.json").read_text())
-          releases = manifest.get("releases") or []
-          if not releases:
-              raise SystemExit("release manifest has no firmware entries")
-          for release in releases:
-              path = Path("site") / release["path"]
-              if not path.exists():
-                  raise SystemExit(f"missing firmware listed in manifest: {path}")
+          release = canonical_releases[0]
+          ota_path = Path("site") / release.get("ota_path", "")
+          flash_path = Path("site") / release.get("flash_path", "")
+          if ota_path != Path("site/esp-miner.bin") or not ota_path.is_file():
+              raise SystemExit("canonical OTA path must point to site/esp-miner.bin")
+          if not flash_path.name.startswith("esp-miner-factory-602-") or not flash_path.is_file():
+              raise SystemExit("canonical flash path must point to the Gamma 602 factory image")
           PY
 
       - name: Configure GitHub Pages

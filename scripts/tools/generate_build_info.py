@@ -38,7 +38,10 @@ def main() -> int:
     git_describe = git_text(root, ["describe", "--tags", "--always"], git_sha)
     dirty = git_text(root, ["status", "--short"], "")
     build_id = f"{git_sha}{'-dirty' if dirty else ''}+{epoch}"
-    build_version = f"{git_describe}-dirty" if dirty else git_describe
+    release_version = os.environ.get("M45_RELEASE_VERSION", "").strip()
+    build_version = release_version or (
+        f"{git_describe}-dirty" if dirty else git_describe
+    )
 
     lines = [
         "#pragma once",

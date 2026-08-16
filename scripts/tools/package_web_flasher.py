@@ -11,14 +11,13 @@ import sys
 DEFAULT_NAME = "M45 Gamma Firmware"
 DEFAULT_BOARD_VERSION = "602"
 REPO_URL = "https://github.com/M45Core/M45-Gamma-Firmware"
-REPOSITORY = "M45Core/M45-Gamma-Firmware"
 ESPTOOL_JS_URL = "https://unpkg.com/esptool-js@0.4.6/bundle.js"
 NVS_START = 0x9000
 NVS_SIZE = 0x6000
 PARTITION_TABLE_OFFSET = 0x8000
 PARTITION_TABLE_MAGIC = b"\xaa\x50"
 ESP_APP_MAGIC = b"\xe9"
-MIGRATION_FIRMWARE_NAME = "esp-miner.bin"
+OTA_FIRMWARE_NAME = "esp-miner.bin"
 
 
 def die(message):
@@ -118,7 +117,7 @@ def validate_factory_image(path):
         raise ValueError(f"{path} does not contain a partition table at 0x{PARTITION_TABLE_OFFSET:x}")
 
 
-def copy_migration_image(build_dir, output_dir, flasher_args):
+def copy_ota_image(build_dir, output_dir, flasher_args):
     app_filename = flasher_args["app"]["file"]
     source = build_dir / app_filename
     if not source.exists():
@@ -126,7 +125,7 @@ def copy_migration_image(build_dir, output_dir, flasher_args):
     with source.open("rb") as app:
         if app.read(1) != ESP_APP_MAGIC:
             raise ValueError(f"{source} is not an ESP application image")
-    destination = output_dir / MIGRATION_FIRMWARE_NAME
+    destination = output_dir / OTA_FIRMWARE_NAME
     shutil.copy2(source, destination)
     return destination
 
@@ -161,38 +160,13 @@ def merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args):
     return firmware
 
 
-def write_release_manifest(output_dir, name, version, firmware_name, board_version):
-    manifest = {
-        "name": name,
-        "repository": REPOSITORY,
-        "board_version": board_version,
-        "asset_prefix": f"esp-miner-factory-{board_version}-",
-        "nvs": {
-            "offset": NVS_START,
-            "size": NVS_SIZE,
-        },
-        "releases": [
-            {
-                "version": version,
-                "name": f"{version} bundled build",
-                "path": firmware_name,
-                "source": "bundled",
-            }
-        ],
-    }
-    (output_dir / "firmware-releases.json").write_text(json.dumps(manifest, indent=2) + "\n")
-
-
 def write_index(output_dir, name, version, firmware_name, board_version):
     config = {
         "name": name,
         "version": version,
         "boardVersion": board_version,
         "firmwareName": firmware_name,
-        "repository": REPOSITORY,
         "repoUrl": REPO_URL,
-        "assetPrefix": f"esp-miner-factory-{board_version}-",
-        "releaseMirrorBase": "firmware",
         "nvsStart": NVS_START,
         "nvsSize": NVS_SIZE,
         "bundledRelease": {
@@ -287,51 +261,21 @@ function releaseLabel(release) {
   return `${release.version}${name}`;
 }
 
-function binaryNameFromUrl(url) {
-  return decodeURIComponent(String(url).split("/").pop() || "");
-}
-
 function normalizeRelease(release) {
-  if (!release || !release.version || !release.path) return null;
+  const path = release && (release.flash_path || release.path);
+  if (!release || !release.version || !path) return null;
   return {
     version: String(release.version),
     name: release.name ? String(release.name) : String(release.version),
-    path: String(release.path),
+    path: String(path),
     digest: release.digest ? String(release.digest) : "",
     size: Number(release.size || 0),
     source: release.source ? String(release.source) : "pages",
   };
 }
 
-async function fetchGitHubReleases() {
-  const apiUrl = `https://api.github.com/repos/${CONFIG.repository}/releases`;
-  const response = await fetch(apiUrl);
-  if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
-  const releases = await response.json();
-  return releases
-    .filter((release) => !release.prerelease && !release.draft)
-    .map((release) => {
-      const assets = release.assets.filter((asset) =>
-        asset.name.startsWith(`${CONFIG.assetPrefix}${release.tag_name}`)
-      );
-      if (!assets.length) return null;
-      const asset = assets[0];
-      const binaryName = binaryNameFromUrl(asset.browser_download_url || asset.name);
-      return {
-        version: release.tag_name,
-        name: release.name || release.tag_name,
-        path: `${CONFIG.releaseMirrorBase}/${release.tag_name}/${binaryName}`,
-        githubUrl: asset.browser_download_url,
-        digest: asset.digest || "",
-        size: asset.size || 0,
-        source: "github-release",
-      };
-    })
-    .filter(Boolean);
-}
-
 async function loadManifestReleases() {
-  const response = await fetch("firmware-releases.json", { cache: "no-store" });
+  const response = await fetch("canonical-releases.json", { cache: "no-store" });
   if (!response.ok) return [];
   const manifest = await response.json();
   return (manifest.releases || []).map(normalizeRelease).filter(Boolean);
@@ -364,13 +308,6 @@ async function loadReleases() {
   for (const release of [CONFIG.bundledRelease, ...(await loadManifestReleases())]) {
     const normalized = normalizeRelease(release);
     if (normalized) byVersion.set(normalized.version, normalized);
-  }
-  try {
-    for (const release of await fetchGitHubReleases()) {
-      if (!byVersion.has(release.version)) byVersion.set(release.version, release);
-    }
-  } catch (error) {
-    console.warn("GitHub release list unavailable", error);
   }
   firmwareOptions = Array.from(byVersion.values());
   renderReleases();
@@ -554,15 +491,15 @@ def main():
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True)
 
-        migration_firmware = copy_migration_image(build_dir, output_dir, flasher_args)
+        ota_firmware = copy_ota_image(build_dir, output_dir, flasher_args)
         firmware = merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args)
-        write_release_manifest(output_dir, args.name, version, firmware_name, args.board_version)
         canonical_manifest = {
             "releases": [
                 {
                     "version": version,
                     "name": version,
-                    "ota_path": MIGRATION_FIRMWARE_NAME,
+                    "ota_path": OTA_FIRMWARE_NAME,
+                    "flash_path": firmware_name,
                 }
             ]
         }
@@ -580,7 +517,7 @@ def main():
         return die(str(err))
 
     print(f"web flasher package: {output_dir}")
-    print(f"AxeOS OTA migration firmware: {migration_firmware}")
+    print(f"OTA firmware: {ota_firmware}")
     print(f"firmware: {firmware}")
     return 0
 

@@ -64,18 +64,9 @@ HTTP QR code.
 
 ### Physical Recovery
 
-The two physical buttons have separate recovery actions:
-
-- Press RESET to reboot directly into the temporary `m-XXXX` setup network.
-  Existing settings are preserved so only Wi-Fi needs to be replaced. The OLED
-  displays `SETUP AP MODE` and `SET NEW WIFI`.
-- Hold BOOT while starting or resetting the device, and keep holding it for the
-  full five-second OLED countdown, to erase all settings. Releasing BOOT early
-  cancels the erase and boots normally.
-
-RESET drives the ESP32-S3 enable pin rather than a readable GPIO. Firmware
-distinguishes it from a cold power-up with a retained RTC boot marker; this
-behavior should be verified on each supported board revision.
+Hold BOOT while starting or resetting the device, and keep holding it for the
+full five-second OLED countdown, to erase all settings. Releasing BOOT early
+cancels the erase and boots normally.
 
 ### Updates And OTA
 
@@ -83,8 +74,8 @@ Use the web flasher above for first install or USB recovery.
 
 OTA accepts either:
 
-- `esp-miner.bin`, the raw application image for migrating a Gamma 602 from
-  the stock AxeOS/ESP-Miner OTA page. On its first M45 boot it imports the
+- `esp-miner.bin`, the raw application image for installing M45 over stock
+  AxeOS/ESP-Miner from its OTA page. On its first M45 boot it imports the
   existing Wi-Fi, hostname, and selected Stratum V1 pool settings before
   writing M45 configuration. Stratum V2 and hardware tuning settings are not
   imported.
@@ -96,12 +87,10 @@ OTA accepts either:
 Canonical releases publish `esp-miner.bin` and the merged factory image directly
 to GitHub Pages. Run the **Web Flasher Pages** workflow on the release branch
 with a required semantic version such as `v0.1.0`; that version is embedded in
-the application and written to `canonical-releases.json`. Do not create a
-GitHub Release for canonical firmware: the GitHub Releases feed is frozen after
-the final v0.0.9-channel migration, while Pages remains the only future update
-channel.
+the application and written to `canonical-releases.json`. GitHub Pages is the
+only update channel for v0.1.0 and later.
 
-The migration importer runs only when no M45 configuration exists. It reads
+The AxeOS settings importer runs only when no M45 configuration exists. It reads
 stock settings from AxeOS's `main` NVS namespace and leaves that namespace
 unchanged. If the imported AxeOS board identity is missing or is not `602`, M45
 still starts Wi-Fi and its dashboard but keeps the ASIC disabled. The OLED
@@ -133,10 +122,9 @@ new merged single-file factory image or the legacy `esp-miner.bin` plus matching
 `www.bin` pair. Merged images contribute only their application image; M45 does
 not rewrite the bootloader, partition table, or NVS during an AxeOS install.
 
-A newly installed OTA image remains rollback-pending until Gamma 602 hardware
-initialization succeeds. If initialization fails, the bootloader returns to the
-previous image and settings are erased so that older firmware never tries to
-open a newer configuration.
+After an OTA reboot, Gamma 602 hardware initialization runs before mining starts.
+Configuration-epoch checks erase incompatible newer settings before older
+firmware reads them.
 
 ### Stored Credentials
 

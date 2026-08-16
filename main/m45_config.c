@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "nvs.h"
@@ -58,7 +59,9 @@ static const char *TAG = "m45_config";
 
 static m45_config_t g_config;
 static pthread_mutex_t g_config_lock = PTHREAD_MUTEX_INITIALIZER;
-static _Thread_local m45_config_t g_config_snapshot;
+static pthread_once_t g_config_snapshot_key_once = PTHREAD_ONCE_INIT;
+static pthread_key_t g_config_snapshot_key;
+static int g_config_snapshot_key_error;
 static char g_imported_board_version[16];
 static bool g_imported_board_identity_present;
 
@@ -76,6 +79,52 @@ static void config_copy_runtime(m45_config_t *config)
     pthread_mutex_lock(&g_config_lock);
     *config = g_config;
     pthread_mutex_unlock(&g_config_lock);
+}
+
+static void config_snapshot_destroy(void *snapshot)
+{
+    heap_caps_free(snapshot);
+}
+
+static void config_snapshot_key_init(void)
+{
+    g_config_snapshot_key_error =
+        pthread_key_create(&g_config_snapshot_key, config_snapshot_destroy);
+}
+
+static m45_config_t *config_snapshot_for_current_task(void)
+{
+    const int once_error =
+        pthread_once(&g_config_snapshot_key_once, config_snapshot_key_init);
+    if (once_error != 0 || g_config_snapshot_key_error != 0) {
+        ESP_LOGE(TAG, "failed to initialize config snapshot TLS: once=%d key=%d",
+                 once_error, g_config_snapshot_key_error);
+        abort();
+    }
+
+    m45_config_t *snapshot = pthread_getspecific(g_config_snapshot_key);
+    if (snapshot != NULL) {
+        return snapshot;
+    }
+
+    snapshot = heap_caps_malloc(sizeof(*snapshot),
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (snapshot == NULL) {
+        snapshot = heap_caps_malloc(sizeof(*snapshot), MALLOC_CAP_8BIT);
+    }
+    if (snapshot == NULL) {
+        ESP_LOGE(TAG, "failed to allocate %u-byte config snapshot",
+                 (unsigned)sizeof(*snapshot));
+        abort();
+    }
+
+    const int set_error = pthread_setspecific(g_config_snapshot_key, snapshot);
+    if (set_error != 0) {
+        heap_caps_free(snapshot);
+        ESP_LOGE(TAG, "failed to attach config snapshot TLS: %d", set_error);
+        abort();
+    }
+    return snapshot;
 }
 
 static esp_err_t store_optional_password(nvs_handle_t nvs, const char *key,
@@ -1267,8 +1316,9 @@ esp_err_t m45_config_reset_best_diff(void)
 
 const m45_config_t *m45_config_get(void)
 {
-    config_copy_runtime(&g_config_snapshot);
-    return &g_config_snapshot;
+    m45_config_t *snapshot = config_snapshot_for_current_task();
+    config_copy_runtime(snapshot);
+    return snapshot;
 }
 
 uint32_t m45_config_schema_version(void)
