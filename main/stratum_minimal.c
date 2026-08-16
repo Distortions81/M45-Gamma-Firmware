@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <math.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <stdarg.h>
@@ -60,6 +61,7 @@
 #define RESPONSE_ID_SLOTS 16
 #define HASHRATE_WINDOW_US 60000000ULL
 #define HASHRATE_SAMPLE_US 2000000ULL
+#define HASHRATE_SANITY_MAX_GHS 1000000.0
 #define ASIC_HASHRATE_POLL_MS 15000
 #define ASIC_HASHRATE_SETTLE_MS 100
 #define ASIC_HASHRATE_STALE_US 45000000ULL
@@ -181,6 +183,31 @@ static portMUX_TYPE g_asic_job_diff_mux = portMUX_INITIALIZER_UNLOCKED;
 static double g_current_asic_job_difficulty;
 static portMUX_TYPE g_best_diff_mux = portMUX_INITIALIZER_UNLOCKED;
 static double g_best_diff;
+static portMUX_TYPE g_share_event_mux = portMUX_INITIALIZER_UNLOCKED;
+static stratum_share_event_t g_share_events[STRATUM_SHARE_EVENT_MAX];
+static uint8_t g_share_event_next;
+static uint8_t g_share_event_count;
+static uint32_t g_share_event_sequence;
+
+static void record_share_event(double difficulty)
+{
+    const uint64_t timestamp_us = (uint64_t)esp_timer_get_time();
+    taskENTER_CRITICAL(&g_share_event_mux);
+    uint32_t sequence = ++g_share_event_sequence;
+    if (sequence == 0) {
+        sequence = ++g_share_event_sequence;
+    }
+    g_share_events[g_share_event_next] = (stratum_share_event_t){
+        .sequence = sequence,
+        .timestamp_us = timestamp_us,
+        .difficulty = difficulty,
+    };
+    g_share_event_next = (uint8_t)((g_share_event_next + 1) % STRATUM_SHARE_EVENT_MAX);
+    if (g_share_event_count < STRATUM_SHARE_EVENT_MAX) {
+        ++g_share_event_count;
+    }
+    taskEXIT_CRITICAL(&g_share_event_mux);
+}
 static portMUX_TYPE g_block_alert_mux = portMUX_INITIALIZER_UNLOCKED;
 static double g_block_alert_diff;
 static portMUX_TYPE g_block_hash_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -1120,6 +1147,36 @@ static void reset_hashrate_window(void)
     taskEXIT_CRITICAL(&g_hashrate_mux);
 }
 
+void stratum_minimal_reset_hashrate(void)
+{
+    reset_hashrate_window();
+    taskENTER_CRITICAL(&g_asic_hashrate_mux);
+    if (g_asic_total_counters != NULL) {
+        memset(g_asic_total_counters, 0,
+               g_asic_hashrate_counter_count * sizeof(*g_asic_total_counters));
+    }
+    if (g_asic_error_counters != NULL) {
+        memset(g_asic_error_counters, 0,
+               g_asic_hashrate_counter_count * sizeof(*g_asic_error_counters));
+    }
+    if (g_asic_domain_counters != NULL) {
+        memset(g_asic_domain_counters, 0,
+               g_asic_hashrate_counter_count * ASIC_HASH_DOMAIN_COUNT *
+                   sizeof(*g_asic_domain_counters));
+    }
+    g_asic_hashrate_total_ghs = 0.0;
+    g_asic_hashrate_error_ghs = 0.0;
+    g_asic_error_rate_percent = 0.0;
+    g_asic_hashrate_updated_us = 0;
+    memset(g_domain_hashrate_samples, 0, sizeof(g_domain_hashrate_samples));
+    g_domain_hashrate_sample_sum = 0.0;
+    g_domain_hashrate_sample_next = 0;
+    g_domain_hashrate_sample_count = 0;
+    g_domain_hashrate_ghs = 0.0;
+    g_domain_hashrate_updated_us = 0;
+    taskEXIT_CRITICAL(&g_asic_hashrate_mux);
+}
+
 static void record_assigned_work(int interval_ms)
 {
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
@@ -1167,7 +1224,12 @@ static double hash_counter_to_ghs(uint64_t duration_us, uint32_t counter)
         return 0.0;
     }
     const double seconds = (double)duration_us / 1000000.0;
-    return ((double)counter * HASH_COUNTER_LSB) / seconds / 1000000000.0;
+    const double hashrate_ghs =
+        ((double)counter * HASH_COUNTER_LSB) / seconds / 1000000000.0;
+    return isfinite(hashrate_ghs) && hashrate_ghs >= 0.0 &&
+                   hashrate_ghs <= HASHRATE_SANITY_MAX_GHS
+               ? hashrate_ghs
+               : 0.0;
 }
 
 static void update_asic_hash_counter(asic_hash_counter_t *counter, uint32_t value,
@@ -1275,6 +1337,10 @@ static void record_domain_hashrate_sample(uint64_t min_timestamp_us)
 
     const size_t expected_domains = g_asic_hashrate_counter_count * ASIC_HASH_DOMAIN_COUNT;
     if (expected_domains > 0 && valid_domains == expected_domains) {
+        if (!isfinite(domain_total_ghs) || domain_total_ghs < 0.0 ||
+            domain_total_ghs > HASHRATE_SANITY_MAX_GHS) {
+            domain_total_ghs = 0.0;
+        }
         const size_t index = g_domain_hashrate_sample_next;
         if (g_domain_hashrate_sample_count == ASIC_DOMAIN_HASHRATE_SAMPLE_COUNT) {
             g_domain_hashrate_sample_sum -= g_domain_hashrate_samples[index];
@@ -4843,6 +4909,7 @@ static void result_task(void *arg)
             mark_share_request(request_id, job_snapshot.pool_id);
             mark_response_request(job_snapshot.pool_id, request_id);
             atomic_fetch_add(&g_submitted, 1);
+            record_share_event(diff);
             if (pool_id_valid(job_snapshot.pool_id)) {
                 atomic_fetch_add(&g_pool_submitted[job_snapshot.pool_id], 1);
             }
@@ -4872,6 +4939,12 @@ esp_err_t stratum_minimal_start(GlobalState *state)
     atomic_store(&g_job_queue_wait_max_us, 0);
     atomic_store(&g_job_dispatch_us, 0);
     atomic_store(&g_job_dispatch_max_us, 0);
+    taskENTER_CRITICAL(&g_share_event_mux);
+    memset(g_share_events, 0, sizeof(g_share_events));
+    g_share_event_next = 0;
+    g_share_event_count = 0;
+    g_share_event_sequence = 0;
+    taskEXIT_CRITICAL(&g_share_event_mux);
     for (size_t i = 0; i < STRATUM_POOL_SESSION_MAX; ++i) {
         atomic_store(&g_pool_work_epoch[i], 0);
         atomic_store(&g_pool_work_received[i], 0);
@@ -5057,12 +5130,41 @@ void stratum_minimal_get_stats(stratum_minimal_stats_t *out)
     out->rejected = atomic_load(&g_rejected);
     out->valid_nonces = atomic_load(&g_valid_nonces);
     out->nonce_errors = atomic_load(&g_nonce_errors);
-    assigned_hashrate_snapshot(&out->measured_hashrate_ghs, &out->nominal_hashrate_ghs,
+    if (g_state != NULL && g_state->ASIC_initalized) {
+        assigned_hashrate_snapshot(&out->measured_hashrate_ghs,
+                                   &out->nominal_hashrate_ghs,
+                                   &out->asic_error_rate_percent);
+        asic_hashrate_snapshot(&out->measured_hashrate_ghs,
+                               &out->nominal_hashrate_ghs,
                                &out->asic_error_rate_percent);
-    asic_hashrate_snapshot(&out->measured_hashrate_ghs, &out->nominal_hashrate_ghs,
-                           &out->asic_error_rate_percent);
-    domain_hashrate_snapshot(&out->domain_hashrate_ghs);
-    domain_hashrate_values_snapshot(out);
+        domain_hashrate_snapshot(&out->domain_hashrate_ghs);
+        domain_hashrate_values_snapshot(out);
+    }
+    if (!isfinite(out->measured_hashrate_ghs) || out->measured_hashrate_ghs < 0.0 ||
+        out->measured_hashrate_ghs > HASHRATE_SANITY_MAX_GHS) {
+        out->measured_hashrate_ghs = 0.0;
+    }
+    if (!isfinite(out->nominal_hashrate_ghs) || out->nominal_hashrate_ghs < 0.0 ||
+        out->nominal_hashrate_ghs > HASHRATE_SANITY_MAX_GHS) {
+        out->nominal_hashrate_ghs = 0.0;
+    }
+    if (!isfinite(out->domain_hashrate_ghs) || out->domain_hashrate_ghs < 0.0 ||
+        out->domain_hashrate_ghs > HASHRATE_SANITY_MAX_GHS) {
+        out->domain_hashrate_ghs = 0.0;
+    }
+    if (!isfinite(out->asic_error_rate_percent) || out->asic_error_rate_percent < 0.0 ||
+        out->asic_error_rate_percent > 100.0) {
+        out->asic_error_rate_percent = 0.0;
+    }
+    for (size_t asic = 0; asic < STRATUM_HASHRATE_MAX_ASICS; ++asic) {
+        for (size_t domain = 0; domain < STRATUM_HASH_DOMAIN_COUNT; ++domain) {
+            double *value = &out->domain_hashrates_ghs[asic][domain];
+            if (!isfinite(*value) || *value < 0.0 ||
+                *value > HASHRATE_SANITY_MAX_GHS) {
+                *value = 0.0;
+            }
+        }
+    }
     out->best_diff = current_best_diff();
     out->pool_diff = current_pool_difficulty();
     out->response_time_ms = atomic_load(&g_response_time_ms);
@@ -5119,4 +5221,25 @@ void stratum_minimal_get_stats(stratum_minimal_stats_t *out)
     out->asic_loss.rx_register_results = atomic_load(&g_metric_rx_register_results);
     out->asic_loss.invalid_job_nonces = atomic_load(&g_metric_invalid_job_nonces);
 #endif
+}
+
+size_t stratum_minimal_get_share_events(stratum_share_event_t *events,
+                                        size_t max_events)
+{
+    if (events == NULL || max_events == 0) {
+        return 0;
+    }
+
+    taskENTER_CRITICAL(&g_share_event_mux);
+    const size_t available = g_share_event_count;
+    const size_t count = available < max_events ? available : max_events;
+    const size_t oldest =
+        (g_share_event_next + STRATUM_SHARE_EVENT_MAX - available) %
+        STRATUM_SHARE_EVENT_MAX;
+    const size_t first = (oldest + available - count) % STRATUM_SHARE_EVENT_MAX;
+    for (size_t i = 0; i < count; ++i) {
+        events[i] = g_share_events[(first + i) % STRATUM_SHARE_EVENT_MAX];
+    }
+    taskEXIT_CRITICAL(&g_share_event_mux);
+    return count;
 }

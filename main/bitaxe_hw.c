@@ -38,6 +38,7 @@
 #define TPS546_OUTPUT_SETTLE_POLL_MS 10
 #define TPS546_OUTPUT_SETTLE_TIMEOUT_MS 300
 #define ASIC_FREQUENCY_SETTLE_MS 50
+#define ASIC_POWER_OFF_MIN_MS 1000
 #define ASIC_TEMP_STARTUP_GRACE_MS 3000
 #define ASIC_TEMP_NO_READING_C 127.0f
 #define ASIC_TEMP_NO_READING_LOG_MS 5000
@@ -75,6 +76,9 @@ static bool g_i2c_ready = false;
 static bool g_power_monitor_started = false;
 static bool g_regulator_enabled = false;
 static bool g_tps546_ready = false;
+static bool g_asic_power_off_recorded = false;
+static TickType_t g_asic_power_off_tick;
+static portMUX_TYPE g_asic_power_off_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t g_asic_transition_lock;
 static portMUX_TYPE g_asic_transition_lock_init_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint16_t g_commanded_voltage_mv = 0;
@@ -118,6 +122,27 @@ static esp_err_t bitaxe_gamma602_set_voltage_mv_for_config_unlocked(GlobalState 
 static void set_hw_status(const char *status)
 {
     strlcpy(g_hw_status, status, sizeof(g_hw_status));
+}
+
+static void record_asic_power_off(void)
+{
+    const TickType_t now = xTaskGetTickCount();
+    taskENTER_CRITICAL(&g_asic_power_off_mux);
+    g_asic_power_off_tick = now;
+    g_asic_power_off_recorded = true;
+    taskEXIT_CRITICAL(&g_asic_power_off_mux);
+}
+
+static bool consume_asic_power_off_tick(TickType_t *off_tick)
+{
+    taskENTER_CRITICAL(&g_asic_power_off_mux);
+    const bool recorded = g_asic_power_off_recorded;
+    if (recorded && off_tick != NULL) {
+        *off_tick = g_asic_power_off_tick;
+    }
+    g_asic_power_off_recorded = false;
+    taskEXIT_CRITICAL(&g_asic_power_off_mux);
+    return recorded;
 }
 
 static bool asic_temp_is_no_reading(float temp_c)
@@ -702,6 +727,7 @@ static esp_err_t shutdown_regulator(GlobalState *state, const char *reason)
     g_regulator_enabled = false;
     g_commanded_voltage_mv = 0;
     g_chip_count = 0;
+    state->POWER_MANAGEMENT_MODULE.actual_frequency = 0.0f;
     clear_power_snapshot();
 
     esp_err_t reset_err = asic_reset_level(0);
@@ -711,10 +737,12 @@ static esp_err_t shutdown_regulator(GlobalState *state, const char *reason)
     }
 
     if (!g_tps546_ready) {
+        record_asic_power_off();
         return ESP_OK;
     }
-
-    return TPS546_set_vout(0.0f);
+    const esp_err_t err = TPS546_set_vout(0.0f);
+    record_asic_power_off();
+    return err;
 }
 
 static void flag_safety_fault(GlobalState *state, const char *reason)
@@ -1847,6 +1875,24 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
         if (state->ASIC_initalized && g_regulator_enabled) {
             goto out;
         }
+        err = asic_reset_level(0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to hold ASIC reset before power-on: %s",
+                     esp_err_to_name(err));
+            goto out;
+        }
+        const m45_config_t *config = m45_config_get();
+        state->POWER_MANAGEMENT_MODULE.frequency_value =
+            (float)m45_config_effective_asic_frequency_mhz(config);
+        state->POWER_MANAGEMENT_MODULE.actual_frequency = 0.0f;
+        TickType_t off_tick = 0;
+        if (consume_asic_power_off_tick(&off_tick)) {
+            const TickType_t minimum_off_ticks = pdMS_TO_TICKS(ASIC_POWER_OFF_MIN_MS);
+            const TickType_t elapsed = xTaskGetTickCount() - off_tick;
+            if (elapsed < minimum_off_ticks) {
+                vTaskDelay(minimum_off_ticks - elapsed);
+            }
+        }
         if (manage_fan) {
             err = bitaxe_fan_start_for_asic(state);
             if (err != ESP_OK) {
@@ -1858,6 +1904,7 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
         g_asic_temp_grace_until =
             xTaskGetTickCount() + pdMS_TO_TICKS(ASIC_TEMP_STARTUP_GRACE_MS);
         bitaxe_gamma602_clear_jobs(state);
+        stratum_minimal_reset_hashrate();
         err = bitaxe_gamma602_start_hardware_unlocked(state);
         if (err != ESP_OK && !state->SYSTEM_MODULE.hardware_fault) {
             set_hw_status("asic off");
@@ -1872,13 +1919,16 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
     g_commanded_voltage_mv = 0;
     g_chip_count = 0;
     state->ASIC_initalized = false;
+    state->POWER_MANAGEMENT_MODULE.actual_frequency = 0.0f;
     if (!state->SYSTEM_MODULE.hardware_fault) {
         state->SYSTEM_MODULE.power_fault = 0;
     }
     bitaxe_gamma602_clear_jobs(state);
+    stratum_minimal_reset_hashrate();
     clear_power_snapshot();
     state->POWER_MANAGEMENT_MODULE.power = 0.0f;
     state->POWER_MANAGEMENT_MODULE.current = 0.0f;
+    state->POWER_MANAGEMENT_MODULE.core_voltage = 0.0f;
     state->POWER_MANAGEMENT_MODULE.chip_temp_avg = 0.0f;
 
     err = asic_reset_level(0);
@@ -1897,6 +1947,7 @@ esp_err_t bitaxe_gamma602_set_asic_power(GlobalState *state, bool enabled, bool 
             }
         }
     }
+    record_asic_power_off();
 
     if (manage_fan) {
         const esp_err_t fan_err = bitaxe_fan_stop_for_asic(state);

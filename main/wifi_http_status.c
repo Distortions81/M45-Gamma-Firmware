@@ -8,15 +8,12 @@
 #include "bitaxe_fan.h"
 #include "bitaxe_hw.h"
 #include "build_info.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "m45_config.h"
 #include "stratum_minimal.h"
 
-#ifdef M45_ASIC_LOSS_METRICS
-#define STATUS_JSON_BUFFER_SIZE 13350
-#else
-#define STATUS_JSON_BUFFER_SIZE 12050
-#endif
+#define STATUS_JSON_BUFFER_SIZE (32 * 1024)
 #define M45_DEVICE_NAME "M45-Firmware"
 
 typedef struct {
@@ -31,11 +28,44 @@ typedef struct {
     char auto_clock_hold_reason[128];
     char tps546_model[24];
     char domain_hashrates_json[512];
-    char pool_statuses_json[3000];
+    char pool_statuses_json[4096];
+    stratum_share_event_t share_events[STRATUM_SHARE_EVENT_MAX];
+    char share_events_json[2048];
 #ifdef M45_ASIC_LOSS_METRICS
-    char asic_loss_json[960];
+    char asic_loss_json[1024];
 #endif
 } status_handler_scratch_t;
+
+static bool format_share_events_json(status_handler_scratch_t *scratch)
+{
+    const size_t count = stratum_minimal_get_share_events(
+        scratch->share_events, STRATUM_SHARE_EVENT_MAX);
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    size_t used = 0;
+    scratch->share_events_json[used++] = '[';
+    for (size_t i = 0; i < count; ++i) {
+        const stratum_share_event_t *event = &scratch->share_events[i];
+        const uint64_t age_ms = now_us > event->timestamp_us
+                                    ? (now_us - event->timestamp_us) / 1000ULL
+                                    : 0;
+        const int written = snprintf(
+            scratch->share_events_json + used,
+            sizeof(scratch->share_events_json) - used,
+            "%s[%" PRIu32 ",%" PRIu64 ",%.6g]",
+            i == 0 ? "" : ",", event->sequence, age_ms, event->difficulty);
+        if (written < 0 ||
+            written >= (int)(sizeof(scratch->share_events_json) - used)) {
+            return false;
+        }
+        used += (size_t)written;
+    }
+    if (used + 2 > sizeof(scratch->share_events_json)) {
+        return false;
+    }
+    scratch->share_events_json[used++] = ']';
+    scratch->share_events_json[used] = '\0';
+    return true;
+}
 
 static void set_no_store_headers(httpd_req_t *req)
 {
@@ -234,6 +264,11 @@ esp_err_t wifi_http_status_send(httpd_req_t *req,
     format_domain_hashrates_json(stats, expected_chip_count,
                                   scratch->domain_hashrates_json,
                                   sizeof(scratch->domain_hashrates_json));
+    if (!format_share_events_json(scratch)) {
+        free(scratch);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"status too large\"}");
+    }
     size_t pool_status_offset = 0;
     scratch->pool_statuses_json[pool_status_offset++] = '[';
     bool first_pool_status = true;
@@ -435,6 +470,7 @@ esp_err_t wifi_http_status_send(httpd_req_t *req,
                  "\"work_received\":%lu,"
                  "\"shares_accepted\":%lu,"
                  "\"shares_rejected\":%lu,"
+                 "\"share_events\":%s,"
                  "\"valid_nonces\":%lu,"
                  "\"nonce_errors\":%lu,"
                  "\"best_diff\":%.2f,"
@@ -541,6 +577,7 @@ esp_err_t wifi_http_status_send(httpd_req_t *req,
                  stats->job_dispatch_us, stats->job_dispatch_max_us,
                  (unsigned long)stats->work_received,
                  (unsigned long)stats->accepted, (unsigned long)stats->rejected,
+                 scratch->share_events_json,
                  (unsigned long)stats->valid_nonces, (unsigned long)stats->nonce_errors,
                  stats->best_diff, stats->pool_diff,
                  config->pool_difficulty_auto ? "true" : "false",

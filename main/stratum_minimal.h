@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -104,11 +105,19 @@ typedef struct {
 #endif
 } stratum_minimal_stats_t;
 
+#define STRATUM_SHARE_EVENT_MAX 32
+typedef struct {
+    uint32_t sequence;
+    uint64_t timestamp_us;
+    double difficulty;
+} stratum_share_event_t;
+
 esp_err_t stratum_minimal_start(GlobalState *state);
 void stratum_minimal_reconnect(void);
 void stratum_minimal_reconnect_pools(uint32_t pool_mask);
 void stratum_minimal_pause_work(void);
 void stratum_minimal_resume_work(void);
+void stratum_minimal_reset_hashrate(void);
 bool stratum_minimal_work_paused(void);
 bool stratum_minimal_started(void);
 bool stratum_minimal_connected(void);
@@ -117,3 +126,5 @@ uint32_t stratum_minimal_valid_nonce_count(void);
 esp_err_t stratum_minimal_reset_best_diff(void);
 void stratum_minimal_dismiss_block_alert(void);
 void stratum_minimal_get_stats(stratum_minimal_stats_t *out);
+size_t stratum_minimal_get_share_events(stratum_share_event_t *events,
+                                        size_t max_events);

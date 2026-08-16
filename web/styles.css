@@ -91,6 +91,7 @@ dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .summary-section .summary-grid:last-child{padding-bottom:0;border-bottom:0}
 .summary-item{min-width:0}.summary-label{color:var(--muted);font-size:10px;letter-spacing:.06em;text-transform:uppercase}
+.summary-label.auto-clock{color:var(--warn)}
 .summary-value{margin-top:4px;font-size:15px;font-weight:720;line-height:1.2;overflow-wrap:anywhere}
 .summary-value.muted{color:var(--muted);font-weight:650}.summary-list{margin:0}
 .domain-map-item{grid-column:1/-1}.domain-metrics{margin-top:6px}.domain-grid{display:grid;gap:6px;margin-top:8px}
