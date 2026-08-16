@@ -92,6 +92,16 @@ static void config_snapshot_key_init(void)
         pthread_key_create(&g_config_snapshot_key, config_snapshot_destroy);
 }
 
+static m45_config_t *config_alloc(void)
+{
+    m45_config_t *config = heap_caps_malloc(sizeof(*config),
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (config == NULL) {
+        config = heap_caps_malloc(sizeof(*config), MALLOC_CAP_8BIT);
+    }
+    return config;
+}
+
 static m45_config_t *config_snapshot_for_current_task(void)
 {
     const int once_error =
@@ -107,11 +117,7 @@ static m45_config_t *config_snapshot_for_current_task(void)
         return snapshot;
     }
 
-    snapshot = heap_caps_malloc(sizeof(*snapshot),
-                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (snapshot == NULL) {
-        snapshot = heap_caps_malloc(sizeof(*snapshot), MALLOC_CAP_8BIT);
-    }
+    snapshot = config_alloc();
     if (snapshot == NULL) {
         ESP_LOGE(TAG, "failed to allocate %u-byte config snapshot",
                  (unsigned)sizeof(*snapshot));
@@ -915,210 +921,214 @@ esp_err_t m45_config_save(const m45_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
-    m45_config_t clean = *config;
-    m45_config_t current;
-    config_copy_runtime(&current);
-    sanitize_config(&clean);
-    if (strcmp(clean.pool_host, current.pool_host) != 0) {
-        clean.pool_ip[0] = '\0';
+    m45_config_t *clean = config_alloc();
+    if (clean == NULL) {
+        return ESP_ERR_NO_MEM;
     }
-    if (strcmp(clean.backup_pool_host, current.backup_pool_host) != 0) {
-        clean.backup_pool_ip[0] = '\0';
+    *clean = *config;
+    const m45_config_t *current = m45_config_get();
+    sanitize_config(clean);
+    if (strcmp(clean->pool_host, current->pool_host) != 0) {
+        clean->pool_ip[0] = '\0';
+    }
+    if (strcmp(clean->backup_pool_host, current->backup_pool_host) != 0) {
+        clean->backup_pool_ip[0] = '\0';
     }
     for (size_t i = 0; i < M45_AUX_POOL_MAX; ++i) {
-        if (strcmp(clean.aux_pools[i].host, current.aux_pools[i].host) != 0) {
-            clean.aux_pools[i].ip[0] = '\0';
+        if (strcmp(clean->aux_pools[i].host, current->aux_pools[i].host) != 0) {
+            clean->aux_pools[i].ip[0] = '\0';
         }
     }
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(M45_CONFIG_NAMESPACE, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
+        heap_caps_free(clean);
         return err;
     }
 
-    err = nvs_set_str(nvs, "wifi_ssid", clean.wifi_ssid);
+    err = nvs_set_str(nvs, "wifi_ssid", clean->wifi_ssid);
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "wifi_pass", clean.wifi_password);
+        err = nvs_set_str(nvs, "wifi_pass", clean->wifi_password);
     }
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "hostname", clean.hostname);
+        err = nvs_set_str(nvs, "hostname", clean->hostname);
     }
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "pool_host", clean.pool_host);
+        err = nvs_set_str(nvs, "pool_host", clean->pool_host);
     }
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "pool_bak_host", clean.backup_pool_host);
+        err = nvs_set_str(nvs, "pool_bak_host", clean->backup_pool_host);
     }
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "pool_ip", clean.pool_ip);
+        err = nvs_set_str(nvs, "pool_ip", clean->pool_ip);
     }
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "pool_bak_ip", clean.backup_pool_ip);
+        err = nvs_set_str(nvs, "pool_bak_ip", clean->backup_pool_ip);
     }
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, "pool_user", clean.pool_user);
+        err = nvs_set_str(nvs, "pool_user", clean->pool_user);
     }
     if (err == ESP_OK) {
-        err = store_optional_password(nvs, "pool_pass", clean.pool_pass);
+        err = store_optional_password(nvs, "pool_pass", clean->pool_pass);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "pool_port", clean.pool_port);
+        err = nvs_set_u16(nvs, "pool_port", clean->pool_port);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "pool_bak_port", clean.backup_pool_port);
+        err = nvs_set_u16(nvs, "pool_bak_port", clean->backup_pool_port);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "pool_tls", clean.pool_tls ? 1 : 0);
+        err = nvs_set_u8(nvs, "pool_tls", clean->pool_tls ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "pool_bak_tls", clean.backup_pool_tls ? 1 : 0);
+        err = nvs_set_u8(nvs, "pool_bak_tls", clean->backup_pool_tls ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "pool_multi", clean.multi_pool_enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, "pool_multi", clean->multi_pool_enabled ? 1 : 0);
     }
     for (size_t i = 0; err == ESP_OK && i < M45_AUX_POOL_MAX; ++i) {
         char key[16];
         snprintf(key, sizeof(key), "aux%u_host", (unsigned)i);
-        err = nvs_set_str(nvs, key, clean.aux_pools[i].host);
+        err = nvs_set_str(nvs, key, clean->aux_pools[i].host);
         if (err != ESP_OK) {
             break;
         }
         snprintf(key, sizeof(key), "aux%u_ip", (unsigned)i);
-        err = nvs_set_str(nvs, key, clean.aux_pools[i].ip);
+        err = nvs_set_str(nvs, key, clean->aux_pools[i].ip);
         if (err != ESP_OK) {
             break;
         }
         snprintf(key, sizeof(key), "aux%u_user", (unsigned)i);
-        err = nvs_set_str(nvs, key, clean.aux_pools[i].user);
+        err = nvs_set_str(nvs, key, clean->aux_pools[i].user);
         if (err != ESP_OK) {
             break;
         }
         snprintf(key, sizeof(key), "aux%u_pass", (unsigned)i);
-        err = store_optional_password(nvs, key, clean.aux_pools[i].pass);
+        err = store_optional_password(nvs, key, clean->aux_pools[i].pass);
         if (err != ESP_OK) {
             break;
         }
         snprintf(key, sizeof(key), "aux%u_port", (unsigned)i);
-        err = nvs_set_u16(nvs, key, clean.aux_pools[i].port);
+        err = nvs_set_u16(nvs, key, clean->aux_pools[i].port);
         if (err != ESP_OK) {
             break;
         }
         snprintf(key, sizeof(key), "aux%u_tls", (unsigned)i);
-        err = nvs_set_u8(nvs, key, clean.aux_pools[i].tls ? 1 : 0);
+        err = nvs_set_u8(nvs, key, clean->aux_pools[i].tls ? 1 : 0);
         if (err != ESP_OK) {
             break;
         }
         snprintf(key, sizeof(key), "aux%u_en", (unsigned)i);
-        err = nvs_set_u8(nvs, key, clean.aux_pools[i].enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, key, clean->aux_pools[i].enabled ? 1 : 0);
         if (err != ESP_OK) {
             break;
         }
         snprintf(key, sizeof(key), "aux%u_weight", (unsigned)i);
-        err = nvs_set_u8(nvs, key, clean.aux_pools[i].share_percent);
+        err = nvs_set_u8(nvs, key, clean->aux_pools[i].share_percent);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "pool_diff", clean.pool_difficulty);
+        err = nvs_set_u16(nvs, "pool_diff", clean->pool_difficulty);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "pool_diff_auto", clean.pool_difficulty_auto ? 1 : 0);
+        err = nvs_set_u8(nvs, "pool_diff_auto", clean->pool_difficulty_auto ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "oc_en", clean.overclock_enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, "oc_en", clean->overclock_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "auto_clk", clean.auto_clock_enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, "auto_clk", clean->auto_clock_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "dom_reboot",
-                         clean.auto_domain_reboot_enabled ? 1 : 0);
+                         clean->auto_domain_reboot_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "auto_clk_tc", clean.auto_clock_target_temp_c);
+        err = nvs_set_u16(nvs, "auto_clk_tc", clean->auto_clock_target_temp_c);
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "auto_clk_wen",
-                         clean.auto_clock_max_watts_enabled ? 1 : 0);
+                         clean->auto_clock_max_watts_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "auto_clk_w", clean.auto_clock_max_watts);
+        err = nvs_set_u16(nvs, "auto_clk_w", clean->auto_clock_max_watts);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "asic_freq", clean.asic_frequency_mhz);
+        err = nvs_set_u16(nvs, "asic_freq", clean->asic_frequency_mhz);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "asic_mv", clean.asic_voltage_mv);
+        err = nvs_set_u16(nvs, "asic_mv", clean->asic_voltage_mv);
     }
     if (err == ESP_OK) {
-        err = nvs_set_i16(nvs, "oc_mv_off", clean.overclock_voltage_offset_mv);
+        err = nvs_set_i16(nvs, "oc_mv_off", clean->overclock_voltage_offset_mv);
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "asic_mv_tc",
-                         clean.asic_voltage_temp_compensation_enabled ? 1 : 0);
+                         clean->asic_voltage_temp_compensation_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "fan_ovr_en", clean.fan_override_enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, "fan_ovr_en", clean->fan_override_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "fan_ovr_pct", clean.fan_override_percent);
+        err = nvs_set_u16(nvs, "fan_ovr_pct", clean->fan_override_percent);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "fan_auto_off", clean.fan_auto_off_allowed ? 1 : 0);
+        err = nvs_set_u8(nvs, "fan_auto_off", clean->fan_auto_off_allowed ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "fan_tgt_en", clean.fan_target_override_enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, "fan_tgt_en", clean->fan_target_override_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "fan_tgt_c", clean.fan_target_temp_c);
+        err = nvs_set_u16(nvs, "fan_tgt_c", clean->fan_target_temp_c);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "screensaver", clean.display_screensaver_enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, "screensaver", clean->display_screensaver_enabled ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "sleep_min", clean.display_sleep_minutes);
+        err = nvs_set_u16(nvs, "sleep_min", clean->display_sleep_minutes);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, "lim_unres", clean.safety_limits_unrestricted ? 1 : 0);
+        err = nvs_set_u8(nvs, "lim_unres", clean->safety_limits_unrestricted ? 1 : 0);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_vin_min", clean.safety_input_voltage_min_mv);
+        err = nvs_set_u16(nvs, "lim_vin_min", clean->safety_input_voltage_min_mv);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "lim_vin_emin",
-                          clean.safety_input_voltage_expected_min_mv);
+                          clean->safety_input_voltage_expected_min_mv);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "lim_vin_emax",
-                          clean.safety_input_voltage_expected_max_mv);
+                          clean->safety_input_voltage_expected_max_mv);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_vin_max", clean.safety_input_voltage_max_mv);
+        err = nvs_set_u16(nvs, "lim_vin_max", clean->safety_input_voltage_max_mv);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_av_min", clean.safety_asic_voltage_min_mv);
+        err = nvs_set_u16(nvs, "lim_av_min", clean->safety_asic_voltage_min_mv);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_av_max", clean.safety_asic_voltage_max_mv);
+        err = nvs_set_u16(nvs, "lim_av_max", clean->safety_asic_voltage_max_mv);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "lim_at_exp",
-                          clean.safety_asic_temp_expected_max_c);
+                          clean->safety_asic_temp_expected_max_c);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_at_max", clean.safety_asic_temp_max_c);
+        err = nvs_set_u16(nvs, "lim_at_max", clean->safety_asic_temp_max_c);
     }
     if (err == ESP_OK) {
         err = nvs_set_u16(nvs, "lim_vrt_exp",
-                          clean.safety_tps546_temp_expected_max_c);
+                          clean->safety_tps546_temp_expected_max_c);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_vrt_max", clean.safety_tps546_temp_max_c);
+        err = nvs_set_u16(nvs, "lim_vrt_max", clean->safety_tps546_temp_max_c);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_iw_da", clean.safety_iout_warn_deciamps);
+        err = nvs_set_u16(nvs, "lim_iw_da", clean->safety_iout_warn_deciamps);
     }
     if (err == ESP_OK) {
-        err = nvs_set_u16(nvs, "lim_if_da", clean.safety_iout_fault_deciamps);
+        err = nvs_set_u16(nvs, "lim_if_da", clean->safety_iout_fault_deciamps);
     }
     if (err == ESP_OK) {
         err = nvs_set_u32(nvs, "cfg_schema", M45_CONFIG_SCHEMA_VERSION);
@@ -1133,10 +1143,11 @@ esp_err_t m45_config_save(const m45_config_t *config)
     nvs_close(nvs);
 
     if (err == ESP_OK) {
-        config_copy_runtime(&current);
-        clean.best_diff = current.best_diff;
-        config_store_runtime(&clean);
+        current = m45_config_get();
+        clean->best_diff = current->best_diff;
+        config_store_runtime(clean);
     }
+    heap_caps_free(clean);
     return err;
 }
 
@@ -1146,12 +1157,16 @@ esp_err_t m45_config_set_runtime(const m45_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
-    m45_config_t clean = *config;
-    sanitize_config(&clean);
-    m45_config_t current;
-    config_copy_runtime(&current);
-    clean.best_diff = current.best_diff;
-    config_store_runtime(&clean);
+    m45_config_t *clean = config_alloc();
+    if (clean == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    *clean = *config;
+    sanitize_config(clean);
+    const m45_config_t *current = m45_config_get();
+    clean->best_diff = current->best_diff;
+    config_store_runtime(clean);
+    heap_caps_free(clean);
     return ESP_OK;
 }
 

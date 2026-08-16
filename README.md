@@ -112,11 +112,6 @@ keep their installed layout. New M45 factory images use the AxeOS/ESP-Miner
 and retained `www` partition. Normal M45 application images are checked against
 the actual target slot size at upload time.
 
-When a valid AxeOS image is still installed, the Update page offers an opt-in
-option to keep at least one AxeOS firmware slot. If the sole
-retained AxeOS image occupies the only writable OTA target, M45 blocks the
-update until the user explicitly disables that option.
-
 The Update page also has a separate **Install AxeOS** area. It accepts either a
 new merged single-file factory image or the legacy `esp-miner.bin` plus matching
 `www.bin` pair. Merged images contribute only their application image; M45 does

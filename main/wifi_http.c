@@ -2374,168 +2374,187 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"bad json\"}");
     }
 
-    m45_config_t config = *m45_config_get();
+    m45_config_t *config = malloc(sizeof(*config));
+    if (config == NULL) {
+        cJSON_Delete(json);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+    *config = *m45_config_get();
     bool ok = json_get_optional_bool(json, "safety_limits_unrestricted",
-                                     &config.safety_limits_unrestricted);
-    const bool unrestricted_limits = config.safety_limits_unrestricted;
+                                     &config->safety_limits_unrestricted);
+    const bool unrestricted_limits = config->safety_limits_unrestricted;
     ok = ok &&
-        json_get_string(json, "wifi_ssid", config.wifi_ssid, sizeof(config.wifi_ssid), true) &&
-        json_get_string(json, "wifi_password", config.wifi_password,
-                        sizeof(config.wifi_password), false) &&
-        json_get_string(json, "hostname", config.hostname, sizeof(config.hostname), true) &&
-        json_get_string(json, "pool_host", config.pool_host, sizeof(config.pool_host), false) &&
-        json_get_string(json, "backup_pool_host", config.backup_pool_host,
-                        sizeof(config.backup_pool_host), false) &&
-        json_get_string(json, "pool_user", config.pool_user, sizeof(config.pool_user), false) &&
-        json_get_string(json, "pool_pass", config.pool_pass, sizeof(config.pool_pass), false) &&
-        json_get_optional_u16(json, "pool_port", &config.pool_port, 1, 65535) &&
-        json_get_optional_u16(json, "backup_pool_port", &config.backup_pool_port, 1,
+        json_get_string(json, "wifi_ssid", config->wifi_ssid, sizeof(config->wifi_ssid), true) &&
+        json_get_string(json, "wifi_password", config->wifi_password,
+                        sizeof(config->wifi_password), false) &&
+        json_get_string(json, "hostname", config->hostname, sizeof(config->hostname), true) &&
+        json_get_string(json, "pool_host", config->pool_host, sizeof(config->pool_host), false) &&
+        json_get_string(json, "backup_pool_host", config->backup_pool_host,
+                        sizeof(config->backup_pool_host), false) &&
+        json_get_string(json, "pool_user", config->pool_user, sizeof(config->pool_user), false) &&
+        json_get_string(json, "pool_pass", config->pool_pass, sizeof(config->pool_pass), false) &&
+        json_get_optional_u16(json, "pool_port", &config->pool_port, 1, 65535) &&
+        json_get_optional_u16(json, "backup_pool_port", &config->backup_pool_port, 1,
                               65535) &&
-        json_get_optional_bool(json, "pool_tls", &config.pool_tls) &&
-        json_get_optional_bool(json, "backup_pool_tls", &config.backup_pool_tls) &&
-        json_get_optional_bool(json, "multi_pool_enabled", &config.multi_pool_enabled) &&
-        json_get_aux_pools(json, config.aux_pools) &&
+        json_get_optional_bool(json, "pool_tls", &config->pool_tls) &&
+        json_get_optional_bool(json, "backup_pool_tls", &config->backup_pool_tls) &&
+        json_get_optional_bool(json, "multi_pool_enabled", &config->multi_pool_enabled) &&
+        json_get_aux_pools(json, config->aux_pools) &&
         json_get_optional_bool(json, "pool_difficulty_auto",
-                               &config.pool_difficulty_auto) &&
-        json_get_optional_u16(json, "pool_difficulty", &config.pool_difficulty, 1, 65535) &&
-        json_get_optional_bool(json, "overclock_enabled", &config.overclock_enabled) &&
-        json_get_optional_bool(json, "auto_clock_enabled", &config.auto_clock_enabled) &&
+                               &config->pool_difficulty_auto) &&
+        json_get_optional_u16(json, "pool_difficulty", &config->pool_difficulty, 1, 65535) &&
+        json_get_optional_bool(json, "overclock_enabled", &config->overclock_enabled) &&
+        json_get_optional_bool(json, "auto_clock_enabled", &config->auto_clock_enabled) &&
         json_get_optional_bool(json, "auto_domain_reboot_enabled",
-                               &config.auto_domain_reboot_enabled) &&
+                               &config->auto_domain_reboot_enabled) &&
         json_get_optional_u16(json, "auto_clock_target_temp_c",
-                              &config.auto_clock_target_temp_c,
+                              &config->auto_clock_target_temp_c,
                               M45_AUTO_CLOCK_TARGET_MIN_C,
                               M45_AUTO_CLOCK_TARGET_MAX_C) &&
         json_get_optional_bool(json, "auto_clock_max_watts_enabled",
-                               &config.auto_clock_max_watts_enabled) &&
+                               &config->auto_clock_max_watts_enabled) &&
         json_get_optional_u16(json, "auto_clock_max_watts",
-                              &config.auto_clock_max_watts,
+                              &config->auto_clock_max_watts,
                               M45_AUTO_CLOCK_MAX_WATTS_MIN,
                               M45_AUTO_CLOCK_MAX_WATTS_MAX) &&
-        json_get_u16(json, "asic_frequency_mhz", &config.asic_frequency_mhz,
+        json_get_u16(json, "asic_frequency_mhz", &config->asic_frequency_mhz,
                      M45_ASIC_FREQUENCY_MIN_MHZ, M45_ASIC_FREQUENCY_MAX_MHZ) &&
-        json_get_u16(json, "asic_voltage_mv", &config.asic_voltage_mv, 500, 1370) &&
+        json_get_u16(json, "asic_voltage_mv", &config->asic_voltage_mv, 500, 1370) &&
         json_get_optional_i16(json, "overclock_voltage_offset_mv",
-                              &config.overclock_voltage_offset_mv, -500, 300) &&
+                              &config->overclock_voltage_offset_mv, -500, 300) &&
         json_get_optional_bool(json, "asic_voltage_temp_compensation_enabled",
-                               &config.asic_voltage_temp_compensation_enabled) &&
-        json_get_bool(json, "fan_override_enabled", &config.fan_override_enabled) &&
-        json_get_u16(json, "fan_override_percent", &config.fan_override_percent, 0, 100) &&
+                               &config->asic_voltage_temp_compensation_enabled) &&
+        json_get_bool(json, "fan_override_enabled", &config->fan_override_enabled) &&
+        json_get_u16(json, "fan_override_percent", &config->fan_override_percent, 0, 100) &&
         json_get_optional_bool(json, "fan_auto_off_allowed",
-                               &config.fan_auto_off_allowed) &&
+                               &config->fan_auto_off_allowed) &&
         json_get_bool(json, "fan_target_override_enabled",
-                      &config.fan_target_override_enabled) &&
-        json_get_u16(json, "fan_target_temp_c", &config.fan_target_temp_c, 35, 66) &&
+                      &config->fan_target_override_enabled) &&
+        json_get_u16(json, "fan_target_temp_c", &config->fan_target_temp_c, 35, 66) &&
         json_get_optional_bool(json, "display_screensaver_enabled",
-                               &config.display_screensaver_enabled) &&
+                               &config->display_screensaver_enabled) &&
         json_get_optional_u16(json, "display_sleep_minutes",
-                              &config.display_sleep_minutes, 0,
+                              &config->display_sleep_minutes, 0,
                               M45_DISPLAY_SLEEP_MAX_MINUTES) &&
         json_get_optional_u16(json, "limit_input_voltage_min_mv",
-                              &config.safety_input_voltage_min_mv,
+                              &config->safety_input_voltage_min_mv,
                               unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_INPUT_VOLTAGE_MIN_MAX_MV) &&
         json_get_optional_u16(json, "limit_input_voltage_expected_min_mv",
-                              &config.safety_input_voltage_expected_min_mv,
+                              &config->safety_input_voltage_expected_min_mv,
                               unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_input_voltage_expected_max_mv",
-                              &config.safety_input_voltage_expected_max_mv,
+                              &config->safety_input_voltage_expected_max_mv,
                               unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MIN_MIN_MV,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_input_voltage_max_mv",
-                              &config.safety_input_voltage_max_mv,
+                              &config->safety_input_voltage_max_mv,
                               unrestricted_limits ? 0 : M45_SAFETY_INPUT_VOLTAGE_MAX_MIN_MV,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_INPUT_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_asic_voltage_min_mv",
-                              &config.safety_asic_voltage_min_mv,
+                              &config->safety_asic_voltage_min_mv,
                               unrestricted_limits ? 0 : M45_SAFETY_ASIC_VOLTAGE_MIN_MIN_MV,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_ASIC_VOLTAGE_MIN_MAX_MV) &&
         json_get_optional_u16(json, "limit_asic_voltage_max_mv",
-                              &config.safety_asic_voltage_max_mv,
+                              &config->safety_asic_voltage_max_mv,
                               unrestricted_limits ? 0 : M45_SAFETY_ASIC_VOLTAGE_MAX_MIN_MV,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_ASIC_VOLTAGE_MAX_MAX_MV) &&
         json_get_optional_u16(json, "limit_asic_temp_expected_max_c",
-                              &config.safety_asic_temp_expected_max_c,
+                              &config->safety_asic_temp_expected_max_c,
                               unrestricted_limits ? 0 : M45_SAFETY_ASIC_TEMP_EXPECTED_MAX_MIN_C,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_asic_temp_max_c",
-                              &config.safety_asic_temp_max_c,
+                              &config->safety_asic_temp_max_c,
                               unrestricted_limits ? 0 : M45_SAFETY_ASIC_TEMP_MAX_MIN_C,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_ASIC_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_tps546_temp_expected_max_c",
-                              &config.safety_tps546_temp_expected_max_c,
+                              &config->safety_tps546_temp_expected_max_c,
                               unrestricted_limits ? 0 : M45_SAFETY_TPS546_TEMP_EXPECTED_MAX_MIN_C,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_tps546_temp_max_c",
-                              &config.safety_tps546_temp_max_c,
+                              &config->safety_tps546_temp_max_c,
                               unrestricted_limits ? 0 : M45_SAFETY_TPS546_TEMP_MAX_MIN_C,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_TPS546_TEMP_MAX_MAX_C) &&
         json_get_optional_u16(json, "limit_iout_warn_deciamps",
-                              &config.safety_iout_warn_deciamps,
+                              &config->safety_iout_warn_deciamps,
                               unrestricted_limits ? 0 : M45_SAFETY_IOUT_WARN_MIN_DA,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_IOUT_FAULT_MAX_DA) &&
         json_get_optional_u16(json, "limit_iout_fault_deciamps",
-                              &config.safety_iout_fault_deciamps,
+                              &config->safety_iout_fault_deciamps,
                               unrestricted_limits ? 0 : M45_SAFETY_IOUT_FAULT_MIN_DA,
                               unrestricted_limits ? UINT16_MAX
                                                   : M45_SAFETY_IOUT_FAULT_MAX_DA);
     cJSON_Delete(json);
-    m45_config_apply_auto_clock_policy(&config);
+    m45_config_apply_auto_clock_policy(config);
 
-    if (!ok || config.hostname[0] == '\0' ||
-        (!config.multi_pool_enabled &&
-         (config.pool_host[0] == '\0' || config.pool_user[0] == '\0')) ||
-        (config.fan_override_percent != 0 &&
-         (config.fan_override_percent < 35 || config.fan_override_percent > 100)) ||
-        config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||
-        config.auto_clock_target_temp_c < M45_AUTO_CLOCK_TARGET_MIN_C ||
-        config.auto_clock_target_temp_c > M45_AUTO_CLOCK_TARGET_MAX_C ||
-        !aux_pools_valid_for_mode(&config) ||
-        !safety_settings_valid_for_tune(&config)) {
+    if (!ok || config->hostname[0] == '\0' ||
+        (!config->multi_pool_enabled &&
+         (config->pool_host[0] == '\0' || config->pool_user[0] == '\0')) ||
+        (config->fan_override_percent != 0 &&
+         (config->fan_override_percent < 35 || config->fan_override_percent > 100)) ||
+        config->fan_target_temp_c < 35 || config->fan_target_temp_c > 66 ||
+        config->auto_clock_target_temp_c < M45_AUTO_CLOCK_TARGET_MIN_C ||
+        config->auto_clock_target_temp_c > M45_AUTO_CLOCK_TARGET_MAX_C ||
+        !aux_pools_valid_for_mode(config) ||
+        !safety_settings_valid_for_tune(config)) {
+        free(config);
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid settings\"}");
     }
 
-    const m45_config_t old_config = *m45_config_get();
-    if (wifi_credentials_changed(&old_config, &config) &&
-        !wifi_test_result_matches(config.wifi_ssid, config.wifi_password)) {
+    m45_config_t *old_config = malloc(sizeof(*old_config));
+    if (old_config == NULL) {
+        free(config);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+    *old_config = *m45_config_get();
+    if (wifi_credentials_changed(old_config, config) &&
+        !wifi_test_result_matches(config->wifi_ssid, config->wifi_password)) {
+        free(old_config);
+        free(config);
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "{\"error\":\"test Wi-Fi connection before saving\"}");
     }
     bool wifi_reconnect = false;
     uint32_t pool_reconnect_mask = 0;
-    runtime_reconnect_flags(&old_config, &config, &wifi_reconnect,
+    runtime_reconnect_flags(old_config, config, &wifi_reconnect,
                             &pool_reconnect_mask);
 
-    esp_err_t err = m45_config_set_runtime(&config);
+    esp_err_t err = m45_config_set_runtime(config);
     if (err != ESP_OK) {
+        free(old_config);
+        free(config);
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
         snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
         return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
     }
 
-    const m45_config_t applied_config = *m45_config_get();
-    err = apply_hardware_settings(&old_config, &applied_config);
+    *config = *m45_config_get();
+    err = apply_hardware_settings(old_config, config);
     if (err != ESP_OK) {
-        m45_config_set_runtime(&old_config);
-        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
+        m45_config_set_runtime(old_config);
+        esp_err_t revert_err = apply_hardware_settings(config, old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after apply error: %s",
                      esp_err_to_name(revert_err));
         }
+        free(old_config);
+        free(config);
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
         snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
@@ -2543,15 +2562,17 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     }
 
     uint64_t started_us = http_now_us();
-    err = m45_config_save(&config);
+    err = m45_config_save(config);
     log_http_handler_delay("settings NVS save", started_us);
     if (err != ESP_OK) {
-        m45_config_set_runtime(&old_config);
-        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
+        m45_config_set_runtime(old_config);
+        esp_err_t revert_err = apply_hardware_settings(config, old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after save error: %s",
                      esp_err_to_name(revert_err));
         }
+        free(old_config);
+        free(config);
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
         snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
@@ -2562,6 +2583,8 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     started_us = http_now_us();
     apply_runtime_reconnects(wifi_reconnect, pool_reconnect_mask);
     log_http_handler_delay("settings reconnect apply", started_us);
+    free(old_config);
+    free(config);
 
     char response[128];
     snprintf(response, sizeof(response),
@@ -2621,48 +2644,63 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"bad json\"}");
     }
 
-    m45_config_t runtime = *m45_config_get();
+    m45_config_t *runtime = malloc(sizeof(*runtime));
+    if (runtime == NULL) {
+        cJSON_Delete(json);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+    *runtime = *m45_config_get();
     const bool ok =
-        json_get_optional_bool(json, "overclock_enabled", &runtime.overclock_enabled) &&
-        json_get_optional_bool(json, "auto_clock_enabled", &runtime.auto_clock_enabled) &&
+        json_get_optional_bool(json, "overclock_enabled", &runtime->overclock_enabled) &&
+        json_get_optional_bool(json, "auto_clock_enabled", &runtime->auto_clock_enabled) &&
         json_get_optional_u16(json, "auto_clock_target_temp_c",
-                              &runtime.auto_clock_target_temp_c,
+                              &runtime->auto_clock_target_temp_c,
                               M45_AUTO_CLOCK_TARGET_MIN_C,
                               M45_AUTO_CLOCK_TARGET_MAX_C) &&
         json_get_optional_bool(json, "auto_clock_max_watts_enabled",
-                               &runtime.auto_clock_max_watts_enabled) &&
+                               &runtime->auto_clock_max_watts_enabled) &&
         json_get_optional_u16(json, "auto_clock_max_watts",
-                              &runtime.auto_clock_max_watts,
+                              &runtime->auto_clock_max_watts,
                               M45_AUTO_CLOCK_MAX_WATTS_MIN,
                               M45_AUTO_CLOCK_MAX_WATTS_MAX) &&
         json_get_tune_u16(json, "frequency_mhz", "asic_frequency_mhz",
-                          &runtime.asic_frequency_mhz, M45_ASIC_FREQUENCY_MIN_MHZ,
+                          &runtime->asic_frequency_mhz, M45_ASIC_FREQUENCY_MIN_MHZ,
                           M45_ASIC_FREQUENCY_MAX_MHZ) &&
         json_get_tune_u16(json, "voltage_mv", "asic_voltage_mv",
-                          &runtime.asic_voltage_mv, 500, 1370) &&
+                          &runtime->asic_voltage_mv, 500, 1370) &&
         json_get_optional_bool(json, "asic_voltage_temp_compensation_enabled",
-                               &runtime.asic_voltage_temp_compensation_enabled) &&
-        json_get_optional_bool(json, "fan_override_enabled", &runtime.fan_override_enabled) &&
-        json_get_optional_u16(json, "fan_override_percent", &runtime.fan_override_percent,
+                               &runtime->asic_voltage_temp_compensation_enabled) &&
+        json_get_optional_bool(json, "fan_override_enabled", &runtime->fan_override_enabled) &&
+        json_get_optional_u16(json, "fan_override_percent", &runtime->fan_override_percent,
                               0, 100) &&
         json_get_optional_bool(json, "fan_auto_off_allowed",
-                               &runtime.fan_auto_off_allowed) &&
+                               &runtime->fan_auto_off_allowed) &&
         json_get_optional_bool(json, "fan_target_override_enabled",
-                               &runtime.fan_target_override_enabled) &&
-        json_get_optional_u16(json, "fan_target_temp_c", &runtime.fan_target_temp_c,
+                               &runtime->fan_target_override_enabled) &&
+        json_get_optional_u16(json, "fan_target_temp_c", &runtime->fan_target_temp_c,
                               35, 66);
     cJSON_Delete(json);
-    m45_config_apply_auto_clock_policy(&runtime);
+    m45_config_apply_auto_clock_policy(runtime);
 
-    if (!ok || (runtime.fan_override_percent != 0 &&
-                (runtime.fan_override_percent < 35 || runtime.fan_override_percent > 100))) {
+    if (!ok || (runtime->fan_override_percent != 0 &&
+                (runtime->fan_override_percent < 35 || runtime->fan_override_percent > 100))) {
+        free(runtime);
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"invalid tune\"}");
     }
 
-    const m45_config_t old_config = *m45_config_get();
-    esp_err_t err = m45_config_set_runtime(&runtime);
+    m45_config_t *old_config = malloc(sizeof(*old_config));
+    if (old_config == NULL) {
+        free(runtime);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+    *old_config = *m45_config_get();
+    esp_err_t err = m45_config_set_runtime(runtime);
     if (err != ESP_OK) {
+        free(old_config);
+        free(runtime);
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
         snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
@@ -2672,23 +2710,27 @@ static esp_err_t runtime_tune_handler(httpd_req_t *req)
     bool wifi_reconnect = false;
     uint32_t pool_reconnect_mask = 0;
     uint64_t started_us = http_now_us();
-    err = apply_runtime_settings(&old_config, m45_config_get(), &wifi_reconnect,
+    *runtime = *m45_config_get();
+    err = apply_runtime_settings(old_config, runtime, &wifi_reconnect,
                                  &pool_reconnect_mask);
     log_http_handler_delay("runtime tune apply", started_us);
     if (err != ESP_OK) {
-        const m45_config_t applied_config = *m45_config_get();
-        m45_config_set_runtime(&old_config);
-        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
+        m45_config_set_runtime(old_config);
+        esp_err_t revert_err = apply_hardware_settings(runtime, old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore runtime hardware settings after apply error: %s",
                      esp_err_to_name(revert_err));
         }
+        free(old_config);
+        free(runtime);
         httpd_resp_set_status(req, "500 Internal Server Error");
         char error_body[80];
         snprintf(error_body, sizeof(error_body), "{\"error\":\"%s\"}", esp_err_to_name(err));
         return httpd_resp_send(req, error_body, HTTPD_RESP_USE_STRLEN);
     }
 
+    free(old_config);
+    free(runtime);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true,\"runtime\":true}");
 }
@@ -4097,59 +4139,76 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
         return send_espminer_json_error(req, "400 Bad Request", "bad json");
     }
 
-    m45_config_t config = *m45_config_get();
-    const bool ok = espminer_apply_patch_json(json, &config);
+    m45_config_t *config = malloc(sizeof(*config));
+    if (config == NULL) {
+        cJSON_Delete(json);
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    *config = *m45_config_get();
+    const bool ok = espminer_apply_patch_json(json, config);
     cJSON_Delete(json);
-    m45_config_apply_auto_clock_policy(&config);
+    m45_config_apply_auto_clock_policy(config);
 
-    if (!ok || config.hostname[0] == '\0' || config.pool_host[0] == '\0' ||
-        config.pool_user[0] == '\0' ||
-        (config.fan_override_percent != 0 &&
-         (config.fan_override_percent < 35 || config.fan_override_percent > 100)) ||
-        config.fan_target_temp_c < 35 || config.fan_target_temp_c > 66 ||
-        !safety_settings_valid_for_tune(&config)) {
+    if (!ok || config->hostname[0] == '\0' || config->pool_host[0] == '\0' ||
+        config->pool_user[0] == '\0' ||
+        (config->fan_override_percent != 0 &&
+         (config->fan_override_percent < 35 || config->fan_override_percent > 100)) ||
+        config->fan_target_temp_c < 35 || config->fan_target_temp_c > 66 ||
+        !safety_settings_valid_for_tune(config)) {
+        free(config);
         return send_espminer_json_error(req, "400 Bad Request", "invalid settings");
     }
 
-    const m45_config_t old_config = *m45_config_get();
+    m45_config_t *old_config = malloc(sizeof(*old_config));
+    if (old_config == NULL) {
+        free(config);
+        return send_espminer_json_error(req, "500 Internal Server Error", "out of memory");
+    }
+    *old_config = *m45_config_get();
     const bool wifi_credentials_changed_now =
-        wifi_credentials_changed(&old_config, &config);
+        wifi_credentials_changed(old_config, config);
     const bool hostname_changed =
-        settings_string_changed(old_config.hostname, config.hostname);
+        settings_string_changed(old_config->hostname, config->hostname);
     uint32_t pool_reconnect_mask = 0;
     bool ignored_wifi_reconnect = false;
-    runtime_reconnect_flags(&old_config, &config, &ignored_wifi_reconnect,
+    runtime_reconnect_flags(old_config, config, &ignored_wifi_reconnect,
                             &pool_reconnect_mask);
 
-    esp_err_t err = m45_config_set_runtime(&config);
+    esp_err_t err = m45_config_set_runtime(config);
     if (err != ESP_OK) {
+        free(old_config);
+        free(config);
         return send_espminer_json_error(req, "500 Internal Server Error",
                                         esp_err_to_name(err));
     }
 
-    const m45_config_t applied_config = *m45_config_get();
-    err = apply_hardware_settings(&old_config, &applied_config);
+    *config = *m45_config_get();
+    err = apply_hardware_settings(old_config, config);
     if (err != ESP_OK) {
-        m45_config_set_runtime(&old_config);
-        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
+        m45_config_set_runtime(old_config);
+        esp_err_t revert_err = apply_hardware_settings(config, old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after ESP-Miner apply error: %s",
                      esp_err_to_name(revert_err));
         }
+        free(old_config);
+        free(config);
         return send_espminer_json_error(req, "500 Internal Server Error",
                                         esp_err_to_name(err));
     }
 
     uint64_t started_us = http_now_us();
-    err = m45_config_save(&config);
+    err = m45_config_save(config);
     log_http_handler_delay("ESP-Miner settings NVS save", started_us);
     if (err != ESP_OK) {
-        m45_config_set_runtime(&old_config);
-        esp_err_t revert_err = apply_hardware_settings(&applied_config, &old_config);
+        m45_config_set_runtime(old_config);
+        esp_err_t revert_err = apply_hardware_settings(config, old_config);
         if (revert_err != ESP_OK) {
             ESP_LOGW(TAG, "failed to restore hardware settings after ESP-Miner save error: %s",
                      esp_err_to_name(revert_err));
         }
+        free(old_config);
+        free(config);
         return send_espminer_json_error(req, "500 Internal Server Error",
                                         esp_err_to_name(err));
     }
@@ -4161,6 +4220,8 @@ static esp_err_t espminer_system_patch_handler(httpd_req_t *req)
     if (hostname_changed && !wifi_credentials_changed_now) {
         schedule_wifi_reconnect();
     }
+    free(old_config);
+    free(config);
 
     cJSON *root = cJSON_CreateObject();
     if (root != NULL) {
