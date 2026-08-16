@@ -130,6 +130,8 @@ pointer-events:none;transition:opacity .12s ease,visibility .12s ease}
 .status-dot.bad{background:var(--bad);box-shadow:0 0 0 2px rgba(255,107,107,.14)}
 .pool-tls-badge{padding:2px 4px;border:1px solid currentColor;border-radius:4px;font-size:9px;font-weight:800;line-height:1;letter-spacing:.06em}
 .pool-tls-badge.ok{color:var(--ok)}.pool-tls-badge.bad,.tls-error{color:var(--bad)}
+.tls-status-line{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:11px;font-weight:700}
+.stratum-status-line{align-items:flex-start}.stratum-status-line>.status-dot{margin-top:5px}.stratum-status-main{display:grid;gap:3px}.stratum-status-main .tls-status-line{margin-top:0}
 .pool-status-list{display:grid;gap:8px;margin-top:12px}
 .pool-status-row{display:grid;grid-template-columns:minmax(170px,.9fr) minmax(0,2.4fr);
 gap:12px;align-items:start;padding:10px;border:1px solid var(--line);border-radius:6px;background:#111518}

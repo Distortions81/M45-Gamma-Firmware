@@ -577,12 +577,11 @@ const name=document.createElement('div');name.className='pool-status-name';
 const disabled=p.disabled===true,note=(p.note||'').trim();
 const dot=document.createElement('span');dot.className=`status-dot ${disabled?'warn':p.connected?'ok':'bad'}`;
 const label=document.createElement('span');label.textContent=p.label||'Pool';name.appendChild(dot);name.appendChild(label);
-if(p.tls===true){const tls=document.createElement('span');tls.className=`pool-tls-badge ${p.connected?'ok':'bad'}`;tls.textContent='TLS';name.appendChild(tls)}
 const host=document.createElement('div');host.className='pool-status-host';host.textContent=p.host?`${p.host}:${p.port||'--'}`:'--';
 const age=shortTime(p.connected_seconds);
 const state=disabled?'Disabled':p.connected?`Online${age?` ${age}`:''}`:'Offline';
 const role=document.createElement('div');role.className='pool-status-role';role.textContent=state;
-main.appendChild(name);main.appendChild(host);main.appendChild(role);if(p.tls_invalid===true){const n=document.createElement('div');n.className='pool-status-note bad';n.textContent='Invalid TLS!';main.appendChild(n)}else if(note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
+main.appendChild(name);main.appendChild(host);main.appendChild(role);if(p.tls===true){const tlsLine=document.createElement('div');tlsLine.className='tls-status-line';const tls=document.createElement('span');tls.className=`pool-tls-badge ${p.connected?'ok':'bad'}`;tls.textContent='TLS';tlsLine.appendChild(tls);if(p.tls_invalid===true){const error=document.createElement('span');error.className='tls-error';error.textContent='Invalid TLS!';tlsLine.appendChild(error)}main.appendChild(tlsLine)}if(p.tls_invalid!==true&&note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
 const metrics=document.createElement('div');metrics.className='pool-status-metrics';
 const liveShare=p.connected&&onlineWeight>0?Math.round((Number(p.weight)||0)*100/onlineWeight):0;
 [['Weight',`${Number(p.weight)||0}`],['Live share',`${liveShare}%`],['Response',responseText(p.response_ms)],['Shares/min',poolSharesPerMinute(p)],
@@ -1069,7 +1068,7 @@ txt('wifi-state',w.label);$('wifi-state').className=`signal-state ${w.cls}`;txt(
 const sc=s.stratum_connected?'ok':'warn';$('stratum-dot').className=`status-dot ${sc}`;$('stratum-state').className=sc;
 const poolLine=multiPool?'multi-pool mode':s.pool?`${s.pool}:${s.pool_port}`:'';
 const primaryPool=(s.pool_statuses||[]).find(p=>p&&Number(p.pool_id)===0),poolTls=!multiPool&&primaryPool&&primaryPool.tls===true,poolTlsInvalid=poolTls&&primaryPool.tls_invalid===true;
-$('stratum-tls').className=`pool-tls-badge ${s.stratum_connected?'ok':'bad'}${poolTls?'':' hidden'}`;$('stratum-tls-error').classList.toggle('hidden',!poolTlsInvalid);
+$('stratum-tls-line').classList.toggle('hidden',!poolTls);$('stratum-tls').className=`pool-tls-badge ${s.stratum_connected?'ok':'bad'}`;$('stratum-tls-error').classList.toggle('hidden',!poolTlsInvalid);
 txt('stratum-state',multiPool?'Multi-pool mode':s.stratum_connected?'Online':'Offline');txt('stratum-time',s.stratum_connected?shortTime(s.stratum_connected_seconds):'');txt('stratum-pool',poolLine);
 $('block-banner').classList.toggle('hidden',!s.block_alert_active);txt('block-banner-detail',`Best candidate diff ${human(s.block_alert_diff)}`);
 setPoolStatusPanel(s);setIssue(s);setSettings(s);setOverclock(s);}
