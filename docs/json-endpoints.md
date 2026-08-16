@@ -551,7 +551,10 @@ Starts a scan of the device's local `/24`, asynchronously checks one manual
 IP address or hostname, or sends a pause, resume, or restart command to an
 already-discovered miner. Requests support `X-Page-Token`.
 Up to 32 discovered devices are kept in RAM. The page refreshes the scan while
-it is open; no peer credentials or peer configuration are stored.
+it is open; no peer credentials or peer configuration are stored. The Swarm
+page also adds the current miner from `/api/system/info` and keeps last-known
+peer summaries in browser local storage for seven days. Cached peers remain
+visible as offline until a fresh response confirms that they are online.
 
 ```json
 {"command":"scan"}

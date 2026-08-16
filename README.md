@@ -16,8 +16,8 @@ the ASIC, regulator, fan, wiring, or power supply, and can create a fire risk.
 
 - Local dashboard for hashrate, temperatures, power, fan, pool status, best
   diff, and block-found alerts.
-- Swarm dashboard for discovering M45 and AxeOS miners on the local `/24`,
-  with combined hashrate, power, best difficulty, and per-device status.
+- Swarm dashboard that shows the local miner immediately, discovers M45 and
+  AxeOS miners on the local `/24`, and caches last-known peers in the browser.
 - Browser controls for Wi-Fi, pools, fan mode, ASIC clock/voltage, display
   sleep, screensaver, and ASIC power.
 - Single-pool or weighted multi-pool mining with per-pool weights and

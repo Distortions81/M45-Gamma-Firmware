@@ -37,6 +37,7 @@ const CAL_TARGET_TEMP_C=61,CAL_TEMP_MARGIN_C=2;
 const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MIN_SAMPLE_RESULTS=3;
 const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
 const AUX_POOL_COUNT=2,POOL_WEIGHT_MIN=1,POOL_WEIGHT_MAX=99;
+const SWARM_CACHE_KEY='m45_swarm_devices_v1',SWARM_CACHE_MAX_AGE_MS=7*24*60*60*1000,SWARM_CACHE_MAX_DEVICES=33;
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
@@ -104,19 +105,33 @@ function swarmRate(v){const h=rate(v);return h[0]==='--'?'--':`${h[0]} ${h[1]}`.
 function swarmMetric(label,value){const item=document.createElement('div');item.className='swarm-metric';
 const l=document.createElement('div');l.className='swarm-metric-label';l.textContent=label;
 const v=document.createElement('div');v.className='swarm-metric-value';v.textContent=value;item.append(l,v);return item}
+function swarmCacheDevices(){try{const saved=JSON.parse(localStorage.getItem(SWARM_CACHE_KEY)||'{}'),now=Date.now();
+return(Array.isArray(saved.devices)?saved.devices:[]).filter(d=>d&&d.ip&&Number.isFinite(Number(d.cached_at_ms))&&now-Number(d.cached_at_ms)<=SWARM_CACHE_MAX_AGE_MS)
+.map(d=>({...d,local:false,cached:true,online:false,last_seen_seconds:Math.max(Number(d.last_seen_seconds)||0,Math.floor((now-Number(d.cached_at_ms))/1000))}))}catch(_){return[]}}
+function saveSwarmCache(devices){try{const keep=devices.slice().sort((a,b)=>(b.local===true)-(a.local===true)||(Number(b.cached_at_ms)||0)-(Number(a.cached_at_ms)||0)).slice(0,SWARM_CACHE_MAX_DEVICES);
+localStorage.setItem(SWARM_CACHE_KEY,JSON.stringify({devices:keep}))}catch(_){}}
+function localSwarmDevice(info){if(!info||typeof info!=='object')return null;return{ip:String(info.ipv4||location.hostname||'local'),hostname:info.hostname||location.hostname||'Local miner',
+version:info.version||info.axeOSVersion||'',board_version:info.boardVersion||'',asic_model:info.ASICModel||'',device_model:info.deviceModel||'Gamma',swarm_color:info.swarmColor||'blue',
+hashrate_ghs:Number(info.hashRate)||0,power_w:Number(info.power)||0,temp_c:Number(info.temp)||0,vr_temp_c:Number(info.vrTemp)||0,best_diff:Number(info.bestDiff)||0,
+pool_difficulty:Number(info.poolDifficulty)||0,shares_accepted:Number(info.sharesAccepted)||0,shares_rejected:Number(info.sharesRejected)||0,uptime_seconds:Number(info.uptimeSeconds)||0,
+mining_paused:info.miningPaused===true,manual:true,local:true,online:true,last_seen_seconds:0,cached_at_ms:Date.now()}}
+function mergeSwarmDevices(remote,local){const now=Date.now(),byIp=new Map();swarmCacheDevices().forEach(d=>byIp.set(String(d.ip),d));
+(Array.isArray(remote)?remote:[]).forEach(d=>{if(!d||!d.ip)return;const old=byIp.get(String(d.ip))||{},seen=d.online===false?now-Math.max(0,Number(d.last_seen_seconds)||0)*1000:now;
+byIp.set(String(d.ip),{...old,...d,local:false,cached:false,cached_at_ms:seen})});if(local)byIp.set(String(local.ip),{...(byIp.get(String(local.ip))||{}),...local});
+const devices=Array.from(byIp.values());saveSwarmCache(devices);return devices}
 function renderSwarm(data){const devices=Array.isArray(data.devices)?data.devices.slice():[];
-devices.sort((a,b)=>String(a.ip||'').localeCompare(String(b.ip||''),undefined,{numeric:true}));
+devices.sort((a,b)=>(b.local===true)-(a.local===true)||String(a.ip||'').localeCompare(String(b.ip||''),undefined,{numeric:true}));
 const online=devices.filter(d=>d.online!==false),totalHash=online.reduce((s,d)=>s+(Number(d.hashrate_ghs)||0),0),totalPower=online.reduce((s,d)=>s+(Number(d.power_w)||0),0);
 const best=devices.reduce((m,d)=>Math.max(m,Number(d.best_diff)||0),0);txt('swarm-total-devices',online.length);
 txt('swarm-total-hashrate',swarmRate(totalHash));txt('swarm-total-power',totalPower>0?`${n(totalPower,1)} W`:'--');txt('swarm-best-diff',human(best));
 const scanning=data.scanning===true,progress=`${Number(data.scanned_hosts)||0}/${Number(data.total_hosts)||254}`;
-txt('swarm-state',scanning?`Scanning local network ${progress}`:devices.length?`${devices.length} miner${devices.length===1?'':'s'} discovered.`:'No miners discovered yet.');
+txt('swarm-state',scanning?`Scanning local network ${progress}`:devices.length?`${online.length} online / ${devices.length} known.`:'No miners known yet.');
 $('swarm-scan-btn').disabled=scanning;$('swarm-scan-btn').textContent=scanning?'Scanning...':'Scan Network';
 const list=$('swarm-device-list');list.innerHTML='';if(!devices.length){const empty=document.createElement('article');empty.className='panel full swarm-empty';
 const title=document.createElement('div');title.className='value small';title.textContent=scanning?'Looking for miners...':'No devices yet';
 const note=document.createElement('div');note.className='subvalue';note.textContent=scanning?'Devices appear as they respond.':'Scan the local network or add a miner by address.';empty.append(title,note);list.appendChild(empty);return}
 devices.forEach(d=>{const card=document.createElement('article');card.className=`panel swarm-card ${d.online===false?'swarm-offline':''}`.trim();const head=document.createElement('div');head.className='swarm-card-head';
-const identity=document.createElement('div'),link=document.createElement('a');link.className='swarm-device-name';link.href=`http://${d.ip}/`;link.target='_blank';link.rel='noopener';
+const identity=document.createElement('div'),link=document.createElement('a');link.className='swarm-device-name';link.href=d.local?location.origin:`http://${d.ip}/`;link.target='_blank';link.rel='noopener';
 const dot=document.createElement('span');dot.className='swarm-dot';dot.style.backgroundColor=d.swarm_color||'var(--blue)';
 const name=document.createElement('span');name.textContent=d.hostname||d.ip;link.append(dot,name);const ip=document.createElement('div');ip.className='swarm-ip';ip.textContent=d.ip;identity.append(link,ip);
 const hash=document.createElement('div');hash.className='swarm-card-rate';hash.textContent=swarmRate(d.hashrate_ghs);head.append(identity,hash);
@@ -125,10 +140,10 @@ swarmMetric('Power',Number(d.power_w)>0?`${n(d.power_w,1)} W`:'--'),swarmMetric(
 swarmMetric('Best Diff',human(d.best_diff)),swarmMetric('Shares',`${fmt(d.shares_accepted)} / ${fmt(d.shares_rejected)}`),
 swarmMetric('Pool Diff',human(d.pool_difficulty)),swarmMetric('Uptime',shortTime(d.uptime_seconds)||'--'));
 const foot=document.createElement('div');foot.className='swarm-card-foot';const model=document.createElement('span');model.textContent=`${d.device_model||'Bitaxe'} ${d.board_version||''} / ${d.asic_model||'--'}`.trim();
-const version=document.createElement('span');version.textContent=d.online===false?`OFFLINE / ${d.version||'--'}`:d.mining_paused?`PAUSED / ${d.version||'--'}`:d.version||'--';foot.append(model,version);
+const version=document.createElement('span');version.textContent=d.online===false?`OFFLINE / ${d.version||'--'}`:d.mining_paused?`${d.local?'LOCAL / ':''}PAUSED / ${d.version||'--'}`:d.local?`LOCAL / ${d.version||'--'}`:d.version||'--';foot.append(model,version);
 const actions=document.createElement('div');actions.className='swarm-card-actions';const pause=document.createElement('button');pause.className='secondary';pause.type='button';pause.disabled=d.online===false;
 pause.textContent=d.mining_paused?'Resume':'Pause';pause.onclick=()=>swarmDeviceAction(d,d.mining_paused?'resume':'pause');const restart=document.createElement('button');restart.className='secondary';restart.type='button';restart.disabled=d.online===false;restart.textContent='Restart';restart.onclick=()=>swarmDeviceAction(d,'restart');
-const open=document.createElement('a');open.className='secondary link-button';open.href=`http://${d.ip}/`;open.target='_blank';open.rel='noopener';open.textContent='Open';actions.append(pause,restart,open);card.append(head,metrics,foot,actions);list.appendChild(card)})}
+const open=document.createElement('a');open.className='secondary link-button';open.href=d.local?location.origin:`http://${d.ip}/`;open.target='_blank';open.rel='noopener';open.textContent='Open';actions.append(pause,restart,open);card.append(head,metrics,foot,actions);list.appendChild(card)})}
 async function swarmPost(command,address='',action=''){const body={command};if(address)body.address=address;if(action)body.action=action;
 const r=await fetch('/api/swarm',{method:'POST',headers:{'Content-Type':'application/json','X-Page-Token':PAGE_TOKEN},body:JSON.stringify(body)});
 const j=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(j.page_token);return}if(!r.ok)throw new Error(j.error||r.status)}
@@ -137,10 +152,13 @@ async function addSwarmDevice(){const input=$('swarm-address'),address=input.val
 $('swarm-add-btn').disabled=true;try{await swarmPost('add',address);input.value='';txt('swarm-state',`Checking ${address}...`);setTimeout(refreshSwarm,1100)}
 catch(e){txt('swarm-state',`Add failed: ${e.message||e}`)}finally{$('swarm-add-btn').disabled=false}}
 async function swarmDeviceAction(device,action){if(action==='restart'&&!confirm(`Restart ${device.hostname||device.ip}?`))return;
-try{await swarmPost('action',device.ip,action);txt('swarm-state',`${action==='restart'?'Restarted':action==='pause'?'Paused':'Resumed'} ${device.hostname||device.ip}.`);
-setTimeout(async()=>{try{await swarmPost('scan')}catch(_){}},800)}catch(e){txt('swarm-state',`${action} failed: ${e.message||e}`)}}
+try{if(device.local){const r=await fetch(`/api/system/${action}`,{method:'POST',headers:{'X-Page-Token':PAGE_TOKEN}});const j=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(j.page_token);return}if(!r.ok)throw new Error(j.error||r.status)}
+else await swarmPost('action',device.ip,action);txt('swarm-state',`${action==='restart'?'Restarted':action==='pause'?'Paused':'Resumed'} ${device.hostname||device.ip}.`);
+if(!device.local)setTimeout(async()=>{try{await swarmPost('scan')}catch(_){}},800);else if(action!=='restart')setTimeout(refreshSwarm,500)}catch(e){txt('swarm-state',`${action} failed: ${e.message||e}`)}}
 async function refreshSwarm(){if(routeView()!=='swarm'||swarmRefreshInFlight)return;swarmRefreshInFlight=true;
-try{const r=await fetch('/api/swarm',{cache:'no-store'}),j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);renderSwarm(j);
+try{const localRequest=fetch('/api/system/info',{cache:'no-store'}).then(async r=>r.ok?localSwarmDevice(await r.json()):null).catch(()=>null);
+const r=await fetch('/api/swarm',{cache:'no-store'}),j=await r.json().catch(()=>({error:r.status}));if(!r.ok)throw new Error(j.error||r.status);const local=await localRequest;
+renderSwarm({...j,devices:mergeSwarmDevices(j.devices,local)});
 const now=Date.now(),initial=!j.scanning&&!j.devices?.length&&!swarmAutoScanRequested,refreshDue=!j.scanning&&Number(j.last_scan_seconds)>=30&&now-swarmLastAutoScan>=30000;
 if(initial||refreshDue){swarmAutoScanRequested=true;swarmLastAutoScan=now;await scanSwarm()}}
 catch(e){txt('swarm-state',`Swarm unavailable: ${e.message||e}`)}finally{swarmRefreshInFlight=false}}
