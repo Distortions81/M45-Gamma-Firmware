@@ -55,7 +55,7 @@ Response fields:
 | `asic_power_watts`, `asic_efficiency_j_per_th`, `power_fault`, `hardware_fault`, `hardware_fault_msg` | mixed | Power, efficiency, and fault state. `asic_efficiency_j_per_th` is computed from ASIC watts and measured hashrate. |
 | `unsupported_board`, `imported_board_version`, `axeos_return_available` | mixed | AxeOS migration hardware check and whether a validated retained AxeOS image can be selected. |
 | `pool`, `pool_port`, `pool_using_backup`, `stratum_connected`, `stratum_connected_seconds`, `stratum_response_ms` | mixed | Pool connection state. |
-| `multi_pool_enabled`, `pool_statuses` | boolean/array | Multi-pool mode and per-pool status. Each pool status includes `pool_id`, `label`, `role`, `host`, `port`, `connected`, `using_backup`, `disabled`, `note`, `weight`, `share_percent`, `connected_seconds`, `response_ms`, `pool_difficulty`, `work_received`, `submitted`, `accepted`, `rejected`, `payout_status`, and `payout_percent_x100`. `weight` is the configured 1-99 scheduling weight. `share_percent` is derived from configured weights. Runtime-disabled, settings-inactive, or recently failed pools include a short `note` such as an unsupported version mask, disabled settings, weight zero, read failure, or idle timeout. |
+| `multi_pool_enabled`, `pool_statuses` | boolean/array | Multi-pool mode and per-pool status. Each pool status includes `pool_id`, `label`, `role`, `host`, `port`, `connected`, `using_backup`, `disabled`, `tls`, `tls_invalid`, `note`, `weight`, `share_percent`, `connected_seconds`, `response_ms`, `pool_difficulty`, `work_received`, `submitted`, `accepted`, `rejected`, `payout_status`, and `payout_percent_x100`. `tls` reports the attempted transport and `tls_invalid` identifies certificate-verification failure. `weight` is the configured 1-99 scheduling weight. `share_percent` is derived from configured weights. Runtime-disabled, settings-inactive, or recently failed pools include a short `note` such as an unsupported version mask, disabled settings, weight zero, read failure, or idle timeout. |
 | `stratum_share_submit_us`, `stratum_share_submit_max_us`, `stratum_share_write_us`, `stratum_share_write_max_us`, `stratum_line_handle_us`, `stratum_line_handle_max_us`, `stratum_job_queue_wait_us`, `stratum_job_queue_wait_max_us`, `stratum_job_dispatch_us`, `stratum_job_dispatch_max_us` | number | Native M45 Stratum timing in microseconds. Share submit tracks nonce-result-to-submit timing and socket write time. Line handle tracks JSON handling time after a Stratum line is received. Job queue wait tracks pool work waiting for the ASIC job task, and job dispatch tracks received pool work to first ASIC send. |
 | `work_received`, `shares_accepted`, `shares_rejected`, `valid_nonces`, `nonce_errors` | number | Mining counters. |
 | `share_events` | array | Up to 32 recently submitted shares as compact `[sequence, age_ms, difficulty]` rows, oldest first. The dashboard uses them to plot one yellow point per share without losing multiple submissions between status polls. |
@@ -538,7 +538,7 @@ unrelated browser origins.
     "shares_accepted": 124,
     "shares_rejected": 1,
     "uptime_seconds": 7200,
-    "mining_paused": false,
+    "asic_power_enabled": true,
     "manual": false,
     "online": true,
     "last_seen_seconds": 12
@@ -549,7 +549,7 @@ unrelated browser origins.
 ### `POST /api/swarm`
 
 Starts a scan of the device's local `/24`, asynchronously checks one manual
-IP address or hostname, or sends a pause, resume, or restart command to an
+IP address or hostname, or sends an ASIC on, ASIC off, or restart command to an
 already-discovered miner. Requests support `X-Page-Token`.
 Up to 32 discovered devices are kept in RAM. The page refreshes the scan while
 it is open; no peer credentials or peer configuration are stored. The Swarm
@@ -566,11 +566,11 @@ visible as offline until a fresh response confirms that they are online.
 ```
 
 ```json
-{"command":"action","address":"192.168.1.42","action":"pause"}
+{"command":"action","address":"192.168.1.42","action":"asic-off"}
 ```
 
 For device actions, `address` must exactly match an IP already returned by
-`GET /api/swarm`; valid actions are `pause`, `resume`, and `restart`.
+`GET /api/swarm`; valid actions are `asic-on`, `asic-off`, and `restart`.
 
 ## Non-JSON API Helpers
 
@@ -605,7 +605,7 @@ Important response fields:
 | --- | --- |
 | Power and thermal | `power`, `voltage`, `current`, `temp`, `temp2`, `vrTemp`, `coreVoltageActual`, `actualFrequency`, `expectedHashrate` |
 | Fans | `fanspeed`, `fanrpm`, `fan2rpm`, `autofanspeed`, `manualFanSpeed`, `minFanSpeed`, `temptarget` |
-| Mining | `hashRate`, `hashRate_1m`, `hashRate_10m`, `hashRate_1h`, `errorPercentage`, `sharesAccepted`, `sharesRejected`, `bestDiff`, `bestSessionDiff`, `poolDifficulty`, `responseTime`, `blockFound`, `showNewBlock`, `miningPaused` |
+| Mining | `hashRate`, `hashRate_1m`, `hashRate_10m`, `hashRate_1h`, `errorPercentage`, `sharesAccepted`, `sharesRejected`, `bestDiff`, `bestSessionDiff`, `poolDifficulty`, `responseTime`, `blockFound`, `showNewBlock`, `miningPaused`, `asicPowerEnabled` |
 | Memory and uptime | `freeHeap`, `freeHeapInternal`, `freeHeapSpiram`, `uptimeSeconds`, `cpuUsage` |
 | Wi-Fi | `wifiStatus`, `wifiRSSI`, `ssid`, `wifiPass`, `ipv4`, `ipv6`, `apEnabled` |
 | Firmware and board | `version`, `axeOSVersion`, `idfVersion`, `boardVersion`, `maxPower`, `nominalVoltage`, `smallCoreCount`, `ASICModel`, `deviceModel`, `swarmColor`, `isPSRAMAvailable`, `resetReason`, `runningPartition`, `macAddr`, `hostname`, `otaSupported` |

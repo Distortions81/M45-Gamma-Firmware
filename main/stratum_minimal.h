@@ -44,6 +44,8 @@ typedef struct {
     bool auxiliary;
     bool using_backup_pool;
     bool disabled;
+    bool tls;
+    bool tls_invalid;
     uint8_t pool_id;
     uint8_t weight;
     uint8_t share_percent;

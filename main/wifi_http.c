@@ -3580,6 +3580,8 @@ static esp_err_t espminer_system_info_handler(httpd_req_t *req)
                             (uint32_t)(esp_timer_get_time() / 1000000ULL));
     cJSON_AddNumberToObject(root, "cpuUsage", 0);
     cJSON_AddBoolToObject(root, "miningPaused", stratum_minimal_work_paused());
+    cJSON_AddBoolToObject(root, "asicPowerEnabled",
+                          bitaxe_gamma602_asic_power_enabled());
     cJSON_AddNumberToObject(root, "overheat_mode",
                             g_state != NULL &&
                                     (g_state->SYSTEM_MODULE.power_fault > 0 ||

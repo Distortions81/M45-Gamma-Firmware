@@ -99,24 +99,6 @@
 <article class='panel full oc-command-panel'>
 <label class='toggle-row oc-enable-row' for=cfg-overclock-enabled><input id=cfg-overclock-enabled type=checkbox aria-label='Enable overclocking'>
 <span class=toggle-text><span class=label>Overclocking</span><span class=subvalue>Disabled keeps stock ASIC settings enforced.</span></span></label></article>
-<article id=oc-limits-card class='panel full oc-card oc-limits-card'><div class=metric-head><div class=label>Limits</div>
-<button id=oc-limits-defaults class=secondary type=button>Defaults</button></div>
-<label class='toggle-row oc-limits-unrestricted' for=limit-unrestricted><input id=limit-unrestricted type=checkbox>
-<span class=toggle-text><span class=label>Unrestricted Limits</span><span class=subvalue>Allow safety limits outside normal ranges.</span></span></label>
-<div class='settings-form oc-card-fields oc-limits-grid'>
-<div class=field><label for=limit-input-voltage-min>VIN Stop Low mV</label><input id=limit-input-voltage-min type=number min=4500 max=5200 step=50></div>
-<div class=field><label for=limit-input-voltage-expected-min>VIN Watch Low mV</label><input id=limit-input-voltage-expected-min type=number min=4500 max=5500 step=50></div>
-<div class=field><label for=limit-input-voltage-expected-max>VIN Watch High mV</label><input id=limit-input-voltage-expected-max type=number min=4500 max=5500 step=50></div>
-<div class=field><label for=limit-input-voltage-max>VIN Stop High mV</label><input id=limit-input-voltage-max type=number min=5000 max=5500 step=50></div>
-<div class=field><label for=limit-asic-voltage-min>VOUT Stop Low mV</label><input id=limit-asic-voltage-min type=number min=700 max=1200 step=5></div>
-<div class=field><label for=limit-asic-voltage-max>VOUT Stop High mV</label><input id=limit-asic-voltage-max type=number min=800 max=1400 step=5></div>
-<div class=field><label for=limit-asic-temp-expected>ASIC Watch C</label><input id=limit-asic-temp-expected type=number min=35 max=69 step=1></div>
-<div class=field><label for=limit-asic-temp-max>ASIC Stop C</label><input id=limit-asic-temp-max type=number min=45 max=69 step=1></div>
-<div class=field><label for=limit-tps546-temp-expected>VR Watch C</label><input id=limit-tps546-temp-expected type=number min=40 max=110 step=1></div>
-<div class=field><label for=limit-tps546-temp-max>VR Stop C</label><input id=limit-tps546-temp-max type=number min=60 max=110 step=1></div>
-<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=33 step=.5></div>
-<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=33 step=.5></div>
-</div></article>
 <article id=oc-asic-card class='panel wide oc-card oc-power-panel'><div class=metric-head><div class=label>ASIC Power</div>
 <span id=oc-asic-state class=pill>--</span></div><div class=oc-asic-row><div id=oc-asic class='value small'>--</div>
 <div class=oc-asic-buttons><button id=oc-asic-power class=secondary type=button disabled>Turn Off</button>
@@ -170,7 +152,7 @@
 <div id=cfg-fan-target-field class=field><label for=cfg-fan-target>Target Temp</label><div class=range-line>
 <input id=cfg-fan-target type=range min=35 max=66 step=1><span id=cfg-fan-target-value class=range-value>--C</span></div></div>
 </div></article>
-<section id=oc-safety-panel class='panel full oc-safety-panel'><div class=metric-head><div class=label>Warnings</div>
+<section id=oc-safety-panel class='panel wide oc-safety-panel'><div class=metric-head><div class=label>Warnings</div>
 <span id=oc-safety-state class='pill ok'>OK</span></div><div id=oc-safety-clear class=oc-warning-clear>No clock threshold notices.</div>
 <div class=oc-warning-list>
 <section id=oc-auto-clock-warning class='oc-warning oc-auto-clock-warning hidden'><div class=label>Experimental Auto Clock</div>
@@ -186,6 +168,24 @@
 <section id=oc-cooling-warning class='oc-warning hidden'><div class=label>Cooling Required</div>
 <div class='value small'>For clocks over 975 MHz, liquid cooling or a very large heatsink is required.</div></section>
 </div></section>
+<article id=oc-limits-card class='panel full oc-card oc-limits-card'><div class=metric-head><div class=label>Limits</div>
+<button id=oc-limits-defaults class=secondary type=button>Defaults</button></div>
+<label class='toggle-row oc-limits-unrestricted' for=limit-unrestricted><input id=limit-unrestricted type=checkbox>
+<span class=toggle-text><span class=label>Unrestricted Limits</span><span class=subvalue>Allow safety limits outside normal ranges.</span></span></label>
+<div class='settings-form oc-card-fields oc-limits-grid'>
+<div class=field><label for=limit-input-voltage-min>VIN Stop Low mV</label><input id=limit-input-voltage-min type=number min=4500 max=5200 step=50></div>
+<div class=field><label for=limit-input-voltage-expected-min>VIN Watch Low mV</label><input id=limit-input-voltage-expected-min type=number min=4500 max=5500 step=50></div>
+<div class=field><label for=limit-input-voltage-expected-max>VIN Watch High mV</label><input id=limit-input-voltage-expected-max type=number min=4500 max=5500 step=50></div>
+<div class=field><label for=limit-input-voltage-max>VIN Stop High mV</label><input id=limit-input-voltage-max type=number min=5000 max=5500 step=50></div>
+<div class=field><label for=limit-asic-voltage-min>VOUT Stop Low mV</label><input id=limit-asic-voltage-min type=number min=700 max=1200 step=5></div>
+<div class=field><label for=limit-asic-voltage-max>VOUT Stop High mV</label><input id=limit-asic-voltage-max type=number min=800 max=1400 step=5></div>
+<div class=field><label for=limit-asic-temp-expected>ASIC Watch C</label><input id=limit-asic-temp-expected type=number min=35 max=69 step=1></div>
+<div class=field><label for=limit-asic-temp-max>ASIC Stop C</label><input id=limit-asic-temp-max type=number min=45 max=69 step=1></div>
+<div class=field><label for=limit-tps546-temp-expected>VR Watch C</label><input id=limit-tps546-temp-expected type=number min=40 max=110 step=1></div>
+<div class=field><label for=limit-tps546-temp-max>VR Stop C</label><input id=limit-tps546-temp-max type=number min=60 max=110 step=1></div>
+<div class=field><label for=limit-iout-warn>IOUT Warn A</label><input id=limit-iout-warn type=number min=5 max=33 step=.5></div>
+<div class=field><label for=limit-iout-fault>IOUT Fault A</label><input id=limit-iout-fault type=number min=6 max=33 step=.5></div>
+</div></article>
 <article class='panel full oc-save-panel'><div class=oc-form-actions><button class=primary type=submit>Save &amp; Apply</button>
 <span id=overclock-status class=status-text></span></div></article>
 </form>
@@ -244,4 +244,5 @@
 <div class=settings-save-actions><button id=settings-save class=primary type=submit>Save &amp; Apply</button>
 <span id=settings-status class=status-text></span></div></div>
 </form></section></main>
+<footer class=app-footer><a href=https://github.com/M45Core target=_blank rel='noopener noreferrer'>M45Core on GitHub</a><span aria-hidden=true>&middot;</span><a href=https://stratumstats.m45core.com target=_blank rel='noopener noreferrer'>StratumStats</a></footer>
 {{MODALS}}<script src=/root.js></script></body></html>

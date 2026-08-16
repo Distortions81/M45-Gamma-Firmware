@@ -27,6 +27,7 @@
 #define SWARM_SCAN_BATCH 2
 #define SWARM_CONNECT_TIMEOUT_MS 180
 #define SWARM_FETCH_TIMEOUT_MS 1000
+#define SWARM_ACTION_TIMEOUT_MS 30000
 #define SWARM_INFO_RESPONSE_MAX (24U * 1024U)
 #define SWARM_POST_BODY_MAX 256
 #define SWARM_TASK_STACK 6144
@@ -54,7 +55,7 @@ typedef struct {
     uint32_t shares_accepted;
     uint32_t shares_rejected;
     uint32_t uptime_seconds;
-    bool mining_paused;
+    bool asic_power_enabled;
     bool manual;
     uint64_t last_seen_us;
 } swarm_device_t;
@@ -192,12 +193,6 @@ static double json_number(cJSON *root, const char *name)
         return suffix_number(item->valuestring);
     }
     return 0.0;
-}
-
-static bool json_bool(cJSON *root, const char *name)
-{
-    cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
-    return cJSON_IsTrue(item) || (cJSON_IsNumber(item) && item->valueint != 0);
 }
 
 static int connect_ipv4(const char *ip, int timeout_ms)
@@ -354,7 +349,8 @@ static bool fetch_device(const char *ip, swarm_device_t *device)
     device->shares_accepted = (uint32_t)json_number(root, "sharesAccepted");
     device->shares_rejected = (uint32_t)json_number(root, "sharesRejected");
     device->uptime_seconds = (uint32_t)json_number(root, "uptimeSeconds");
-    device->mining_paused = json_bool(root, "miningPaused");
+    const cJSON *asic_power = cJSON_GetObjectItemCaseSensitive(root, "asicPowerEnabled");
+    device->asic_power_enabled = !cJSON_IsBool(asic_power) || cJSON_IsTrue(asic_power);
     device->last_seen_us = (uint64_t)esp_timer_get_time();
 
     cJSON_Delete(root);
@@ -537,15 +533,26 @@ static bool known_device_ip(const char *address, char ip[16])
 
 static esp_err_t post_device_action(const char *ip, const char *action)
 {
-    int sock = connect_ipv4(ip, SWARM_FETCH_TIMEOUT_MS);
+    int sock = connect_ipv4(ip, SWARM_ACTION_TIMEOUT_MS);
     if (sock < 0) {
         return ESP_ERR_TIMEOUT;
     }
     char request[256];
-    const int request_len = snprintf(
-        request, sizeof(request),
-        "POST /api/system/%s HTTP/1.0\r\nHost: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        action, ip);
+    int request_len = 0;
+    if (strcmp(action, "asic-on") == 0 || strcmp(action, "asic-off") == 0) {
+        const char *body = strcmp(action, "asic-on") == 0
+                               ? "{\"enabled\":true,\"manage_fan\":true}"
+                               : "{\"enabled\":false,\"manage_fan\":true}";
+        request_len = snprintf(
+            request, sizeof(request),
+            "POST /api/asic-power HTTP/1.0\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %u\r\nConnection: close\r\n\r\n%s",
+            ip, (unsigned)strlen(body), body);
+    } else {
+        request_len = snprintf(
+            request, sizeof(request),
+            "POST /api/system/%s HTTP/1.0\r\nHost: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            action, ip);
+    }
     if (request_len <= 0 || request_len >= (int)sizeof(request)) {
         close(sock);
         return ESP_ERR_INVALID_SIZE;
@@ -689,7 +696,8 @@ esp_err_t wifi_swarm_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(item, "shares_accepted", devices[i].shares_accepted);
         cJSON_AddNumberToObject(item, "shares_rejected", devices[i].shares_rejected);
         cJSON_AddNumberToObject(item, "uptime_seconds", devices[i].uptime_seconds);
-        cJSON_AddBoolToObject(item, "mining_paused", devices[i].mining_paused);
+        cJSON_AddBoolToObject(item, "asic_power_enabled",
+                              devices[i].asic_power_enabled);
         cJSON_AddBoolToObject(item, "manual", devices[i].manual);
         cJSON_AddBoolToObject(item, "online",
                               now_us >= devices[i].last_seen_us &&
@@ -760,8 +768,8 @@ esp_err_t wifi_swarm_post_handler(httpd_req_t *req, const char *local_ip)
         cJSON *action = cJSON_GetObjectItemCaseSensitive(json, "action");
         const bool allowed_action =
             cJSON_IsString(action) &&
-            (strcmp(action->valuestring, "pause") == 0 ||
-             strcmp(action->valuestring, "resume") == 0 ||
+            (strcmp(action->valuestring, "asic-on") == 0 ||
+             strcmp(action->valuestring, "asic-off") == 0 ||
              strcmp(action->valuestring, "restart") == 0);
         char ip[16];
         if (cJSON_IsString(address) && allowed_action &&

@@ -40,11 +40,12 @@ const AUX_POOL_COUNT=2,POOL_WEIGHT_MIN=1,POOL_WEIGHT_MAX=99;
 const SWARM_CACHE_KEY='m45_swarm_devices_v1',SWARM_CACHE_MAX_AGE_MS=7*24*60*60*1000,SWARM_CACHE_MAX_DEVICES=33;
 const STATS_CHART_WINDOW_MS=24*60*60*1000,STATS_CHART_SAMPLE_MS=30*1000;
 const STATS_CHART_MAX_SAMPLES=Math.ceil(STATS_CHART_WINDOW_MS/STATS_CHART_SAMPLE_MS)+1;
+const STATS_CHART_CACHE_KEY='m45_stats_hashrate_v1';
 const METRIC_SPARKLINE_WINDOW_MS=10*60*1000,METRIC_SPARKLINE_SAMPLE_MS=2000;
 const METRIC_SPARKLINE_MAX_SAMPLES=Math.ceil(METRIC_SPARKLINE_WINDOW_MS/METRIC_SPARKLINE_SAMPLE_MS)+1;
 const STATS_CHART_COLLAPSED_KEY='m45_stats_chart_collapsed';
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
-let statsChartSamples=[],statsChartBestShares=[],statsChartLastShareSeq=0;
+let statsChartSamples=loadStatsChartCache(),statsChartBestShares=[],statsChartLastShareSeq=0,statsChartCacheSavedAt=0;
 const metricSparklineSamples=new Map(),metricSparklineConfigs=new Map();
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
@@ -111,8 +112,10 @@ const u=['','K','M','G','T','P','E'];let i=0;while(v>=1000&&i<u.length-1){v/=100
 return `${v>=100?n(v,0):v>=10?n(v,1):n(v,2)}${u[i]}`}
 function statsChartHashLabel(ghs){const h=rate(ghs);return h[0]==='--'?'0':`${h[0]}${h[1]}`}
 function chartSpanLabel(span){if(span>=2*60*60*1000)return `${n(span/(60*60*1000),span<10*60*60*1000?1:0)} h`;return `${Math.max(1,Math.round(span/60000))} min`}
-function appendChartSample(rows,now,value,windowMs=STATS_CHART_WINDOW_MS,maxSamples=STATS_CHART_MAX_SAMPLES,sampleMs=STATS_CHART_SAMPLE_MS){const at=Math.floor(now/sampleMs)*sampleMs,last=rows[rows.length-1];
-if(last&&last.at===at)last.value=value;else rows.push({at,value});return rows.filter(r=>now-r.at<=windowMs).slice(-maxSamples)}
+function loadStatsChartCache(){try{const now=Date.now(),saved=JSON.parse(localStorage.getItem(STATS_CHART_CACHE_KEY)||'[]');if(!Array.isArray(saved))return[];return saved.map(r=>({at:Number(r&&r[0]),value:Number(r&&r[1])})).filter(r=>Number.isFinite(r.at)&&r.at<=now+STATS_CHART_SAMPLE_MS&&now-r.at<=STATS_CHART_WINDOW_MS&&Number.isFinite(r.value)&&r.value>=0&&r.value<=1000000).sort((a,b)=>a.at-b.at).slice(-STATS_CHART_MAX_SAMPLES)}catch(_){return[]}}
+function persistStatsChartCache(force=false){const now=Date.now();if(!force&&now-statsChartCacheSavedAt<STATS_CHART_SAMPLE_MS)return;try{localStorage.setItem(STATS_CHART_CACHE_KEY,JSON.stringify(statsChartSamples.map(r=>[Math.round(r.at),r.value])));statsChartCacheSavedAt=now}catch(_){}}
+function appendChartSample(rows,now,value,windowMs=STATS_CHART_WINDOW_MS,maxSamples=STATS_CHART_MAX_SAMPLES,sampleMs=STATS_CHART_SAMPLE_MS){const bucket=Math.floor(now/sampleMs)*sampleMs,last=rows[rows.length-1],lastBucket=last?(Number.isFinite(last.bucket)?last.bucket:Math.floor(last.at/sampleMs)*sampleMs):-1;
+if(last&&lastBucket===bucket){last.at=now;last.value=value;last.bucket=bucket}else rows.push({at:now,value,bucket});return rows.filter(r=>now-r.at<=windowMs).slice(-maxSamples)}
 function drawStatsChart(){const canvas=$('stats-chart');if(!canvas||routeView()!=='stats')return;const rect=canvas.getBoundingClientRect();if(rect.width<10||rect.height<10)return;
 const dpr=window.devicePixelRatio||1,w=Math.floor(rect.width),h=Math.floor(rect.height);if(canvas.width!==Math.floor(w*dpr)||canvas.height!==Math.floor(h*dpr)){canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr)}
 const ctx=canvas.getContext('2d');if(!ctx)return;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
@@ -130,7 +133,7 @@ ctx.beginPath();rows.forEach((r,i)=>{const xx=x(r.at),yy=yHash(r.value);if(i===0
 if(bestRows.length){ctx.beginPath();bestRows.forEach(r=>{const xx=x(r.at),yy=yBest(r.value);ctx.moveTo(xx+1.5,yy);ctx.arc(xx,yy,1.5,0,Math.PI*2)});ctx.fillStyle='#f6b34a';ctx.fill()}
 ctx.strokeStyle='rgba(255,255,255,.7)';ctx.beginPath();ctx.moveTo(left,base+.5);ctx.lineTo(w-right,base+.5);ctx.stroke()}
 function updateStatsChart(s){const now=Date.now(),hash=Math.max(0,Number(s&&s.hashrate_ghs)||0);
-statsChartSamples=appendChartSample(statsChartSamples,now,hash);const events=Array.isArray(s&&s.share_events)?s.share_events:[];
+statsChartSamples=appendChartSample(statsChartSamples,now,hash);persistStatsChartCache();const events=Array.isArray(s&&s.share_events)?s.share_events:[];
 events.forEach(e=>{if(!Array.isArray(e)||e.length<3)return;const seq=Number(e[0]),age=Number(e[1]),diff=Number(e[2]);if(!Number.isFinite(seq)||seq<=statsChartLastShareSeq||!Number.isFinite(age)||age<0||!Number.isFinite(diff)||diff<=0)return;statsChartBestShares.push({at:now-age,value:diff});statsChartLastShareSeq=seq});
 statsChartBestShares=statsChartBestShares.filter(r=>now-r.at<=STATS_CHART_WINDOW_MS);txt('stats-chart-current',swarmRate(hash));drawStatsChart()}
 function setStatsChartCollapsed(collapsed){const panel=document.querySelector('.stats-chart-panel'),button=$('stats-chart-toggle');if(!panel||!button)return;
@@ -140,6 +143,7 @@ if(!collapsed)requestAnimationFrame(drawStatsChart)}
 $('stats-chart-toggle').onclick=()=>setStatsChartCollapsed(!document.querySelector('.stats-chart-panel').classList.contains('collapsed'));
 setStatsChartCollapsed(localBool(STATS_CHART_COLLAPSED_KEY));
 window.addEventListener('resize',drawStatsChart);
+window.addEventListener('pagehide',()=>persistStatsChartCache(true));
 function drawMetricSparkline(id){const canvas=$(id+'-spark'),cfg=metricSparklineConfigs.get(id),rows=metricSparklineSamples.get(id)||[];if(!canvas||!cfg)return;
 const rect=canvas.getBoundingClientRect();if(rect.width<10||rect.height<10)return;const dpr=window.devicePixelRatio||1,w=Math.floor(rect.width),h=Math.floor(rect.height);
 if(canvas.width!==Math.floor(w*dpr)||canvas.height!==Math.floor(h*dpr)){canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr)}const ctx=canvas.getContext('2d');if(!ctx)return;
@@ -167,7 +171,7 @@ function localSwarmDevice(info){if(!info||typeof info!=='object')return null;ret
 version:info.version||info.axeOSVersion||'',board_version:info.boardVersion||'',asic_model:info.ASICModel||'',device_model:info.deviceModel||'Gamma',swarm_color:info.swarmColor||'blue',
 hashrate_ghs:Number(info.hashRate)||0,power_w:Number(info.power)||0,temp_c:Number(info.temp)||0,vr_temp_c:Number(info.vrTemp)||0,best_diff:Number(info.bestDiff)||0,
 pool_difficulty:Number(info.poolDifficulty)||0,shares_accepted:Number(info.sharesAccepted)||0,shares_rejected:Number(info.sharesRejected)||0,uptime_seconds:Number(info.uptimeSeconds)||0,
-mining_paused:info.miningPaused===true,manual:true,local:true,online:true,last_seen_seconds:0,cached_at_ms:Date.now()}}
+asic_power_enabled:info.asicPowerEnabled!==false,manual:true,local:true,online:true,last_seen_seconds:0,cached_at_ms:Date.now()}}
 function mergeSwarmDevices(remote,local){const now=Date.now(),byIp=new Map();swarmCacheDevices().forEach(d=>byIp.set(String(d.ip),d));
 (Array.isArray(remote)?remote:[]).forEach(d=>{if(!d||!d.ip)return;const old=byIp.get(String(d.ip))||{},seen=d.online===false?now-Math.max(0,Number(d.last_seen_seconds)||0)*1000:now;
 byIp.set(String(d.ip),{...old,...d,local:false,cached:false,cached_at_ms:seen})});if(local)byIp.set(String(local.ip),{...(byIp.get(String(local.ip))||{}),...local});
@@ -193,10 +197,10 @@ swarmMetric('Power',Number(d.power_w)>0?`${n(d.power_w,1)} W`:'--'),swarmMetric(
 swarmMetric('Best Diff',human(d.best_diff)),swarmMetric('Shares',`${fmt(d.shares_accepted)} / ${fmt(d.shares_rejected)}`),
 swarmMetric('Pool Diff',human(d.pool_difficulty)),swarmMetric('Uptime',shortTime(d.uptime_seconds)||'--'));
 const foot=document.createElement('div');foot.className='swarm-card-foot';const model=document.createElement('span');model.textContent=`${d.device_model||'Bitaxe'} ${d.board_version||''} / ${d.asic_model||'--'}`.trim();
-const version=document.createElement('span');version.textContent=d.online===false?`OFFLINE / ${d.version||'--'}`:d.mining_paused?`${d.local?'LOCAL / ':''}PAUSED / ${d.version||'--'}`:d.local?`LOCAL / ${d.version||'--'}`:d.version||'--';foot.append(model,version);
-const actions=document.createElement('div');actions.className='swarm-card-actions';const pause=document.createElement('button');pause.className='secondary';pause.type='button';pause.disabled=d.online===false;
-pause.textContent=d.mining_paused?'Resume':'Pause';pause.onclick=()=>swarmDeviceAction(d,d.mining_paused?'resume':'pause');const restart=document.createElement('button');restart.className='secondary';restart.type='button';restart.disabled=d.online===false;restart.textContent='Restart';restart.onclick=()=>swarmDeviceAction(d,'restart');
-const open=document.createElement('a');open.className='secondary link-button';open.href=d.local?location.origin:`http://${d.ip}/`;open.target='_blank';open.rel='noopener';open.textContent='Open';actions.append(pause,restart,open);card.append(head,metrics,foot,actions);list.appendChild(card)})}
+const powered=d.asic_power_enabled!==false;const version=document.createElement('span');version.textContent=d.online===false?`OFFLINE / ${d.version||'--'}`:!powered?`${d.local?'LOCAL / ':''}ASIC OFF / ${d.version||'--'}`:d.local?`LOCAL / ${d.version||'--'}`:d.version||'--';foot.append(model,version);
+const actions=document.createElement('div');actions.className='swarm-card-actions';const power=document.createElement('button');power.className=powered?'secondary':'primary';power.type='button';power.disabled=d.online===false;
+power.textContent=powered?'ASIC Off':'ASIC On';power.onclick=()=>swarmDeviceAction(d,powered?'asic-off':'asic-on');const restart=document.createElement('button');restart.className='secondary';restart.type='button';restart.disabled=d.online===false;restart.textContent='Restart';restart.onclick=()=>swarmDeviceAction(d,'restart');
+const open=document.createElement('a');open.className='secondary link-button';open.href=d.local?location.origin:`http://${d.ip}/`;open.target='_blank';open.rel='noopener';open.textContent='Open';actions.append(power,restart,open);card.append(head,metrics,foot,actions);list.appendChild(card)})}
 async function swarmPost(command,address='',action=''){const body={command};if(address)body.address=address;if(action)body.action=action;
 const r=await fetch('/api/swarm',{method:'POST',headers:{'Content-Type':'application/json','X-Page-Token':PAGE_TOKEN},body:JSON.stringify(body)});
 const j=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(j.page_token);return}if(!r.ok)throw new Error(j.error||r.status)}
@@ -205,8 +209,8 @@ async function addSwarmDevice(){const input=$('swarm-address'),address=input.val
 $('swarm-add-btn').disabled=true;try{await swarmPost('add',address);input.value='';txt('swarm-state',`Checking ${address}...`);setTimeout(refreshSwarm,1100)}
 catch(e){txt('swarm-state',`Add failed: ${e.message||e}`)}finally{$('swarm-add-btn').disabled=false}}
 async function swarmDeviceAction(device,action){if(action==='restart'&&!confirm(`Restart ${device.hostname||device.ip}?`))return;
-try{if(device.local){const r=await fetch(`/api/system/${action}`,{method:'POST',headers:{'X-Page-Token':PAGE_TOKEN}});const j=await r.json().catch(()=>({error:r.status}));if(r.status===409){reloadFresh(j.page_token);return}if(!r.ok)throw new Error(j.error||r.status)}
-else await swarmPost('action',device.ip,action);txt('swarm-state',`${action==='restart'?'Restarted':action==='pause'?'Paused':'Resumed'} ${device.hostname||device.ip}.`);
+try{if(device.local){const asicPower=action==='asic-on'||action==='asic-off',r=await fetch(asicPower?'/api/asic-power':`/api/system/${action}`,asicPower?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:action==='asic-on',manage_fan:true})}:{method:'POST',headers:{'X-Page-Token':PAGE_TOKEN}});const j=await r.json().catch(()=>({error:r.status}));if(r.status===409&&j.page_token){reloadFresh(j.page_token);return}if(!r.ok)throw new Error(j.error||r.status)}
+else await swarmPost('action',device.ip,action);txt('swarm-state',`${action==='restart'?'Restarted':action==='asic-off'?'ASIC off':'ASIC on'} ${device.hostname||device.ip}.`);
 if(!device.local)setTimeout(async()=>{try{await swarmPost('scan')}catch(_){}},800);else if(action!=='restart')setTimeout(refreshSwarm,500)}catch(e){txt('swarm-state',`${action} failed: ${e.message||e}`)}}
 async function refreshSwarm(){if(routeView()!=='swarm'||swarmRefreshInFlight)return;swarmRefreshInFlight=true;
 try{const localRequest=fetch('/api/system/info',{cache:'no-store'}).then(async r=>r.ok?localSwarmDevice(await r.json()):null).catch(()=>null);
@@ -573,11 +577,12 @@ const name=document.createElement('div');name.className='pool-status-name';
 const disabled=p.disabled===true,note=(p.note||'').trim();
 const dot=document.createElement('span');dot.className=`status-dot ${disabled?'warn':p.connected?'ok':'bad'}`;
 const label=document.createElement('span');label.textContent=p.label||'Pool';name.appendChild(dot);name.appendChild(label);
+if(p.tls===true){const tls=document.createElement('span');tls.className=`pool-tls-badge ${p.connected?'ok':'bad'}`;tls.textContent='TLS';name.appendChild(tls)}
 const host=document.createElement('div');host.className='pool-status-host';host.textContent=p.host?`${p.host}:${p.port||'--'}`:'--';
 const age=shortTime(p.connected_seconds);
 const state=disabled?'Disabled':p.connected?`Online${age?` ${age}`:''}`:'Offline';
 const role=document.createElement('div');role.className='pool-status-role';role.textContent=state;
-main.appendChild(name);main.appendChild(host);main.appendChild(role);if(note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
+main.appendChild(name);main.appendChild(host);main.appendChild(role);if(p.tls_invalid===true){const n=document.createElement('div');n.className='pool-status-note bad';n.textContent='Invalid TLS!';main.appendChild(n)}else if(note){const n=document.createElement('div');n.className='pool-status-note';n.textContent=note;main.appendChild(n)}
 const metrics=document.createElement('div');metrics.className='pool-status-metrics';
 const liveShare=p.connected&&onlineWeight>0?Math.round((Number(p.weight)||0)*100/onlineWeight):0;
 [['Weight',`${Number(p.weight)||0}`],['Live share',`${liveShare}%`],['Response',responseText(p.response_ms)],['Shares/min',poolSharesPerMinute(p)],
@@ -1063,6 +1068,8 @@ const w=s.wifi_connected?wifiQuality(s.wifi_rssi_dbm):s.setup_mode?{label:'Setup
 txt('wifi-state',w.label);$('wifi-state').className=`signal-state ${w.cls}`;txt('wifi-rssi',s.wifi_connected?`${n(s.wifi_rssi_dbm,0)} dBm`:s.setup_mode?`${s.setup_ssid} ${s.setup_ip}`:'');
 const sc=s.stratum_connected?'ok':'warn';$('stratum-dot').className=`status-dot ${sc}`;$('stratum-state').className=sc;
 const poolLine=multiPool?'multi-pool mode':s.pool?`${s.pool}:${s.pool_port}`:'';
+const primaryPool=(s.pool_statuses||[]).find(p=>p&&Number(p.pool_id)===0),poolTls=!multiPool&&primaryPool&&primaryPool.tls===true,poolTlsInvalid=poolTls&&primaryPool.tls_invalid===true;
+$('stratum-tls').className=`pool-tls-badge ${s.stratum_connected?'ok':'bad'}${poolTls?'':' hidden'}`;$('stratum-tls-error').classList.toggle('hidden',!poolTlsInvalid);
 txt('stratum-state',multiPool?'Multi-pool mode':s.stratum_connected?'Online':'Offline');txt('stratum-time',s.stratum_connected?shortTime(s.stratum_connected_seconds):'');txt('stratum-pool',poolLine);
 $('block-banner').classList.toggle('hidden',!s.block_alert_active);txt('block-banner-detail',`Best candidate diff ${human(s.block_alert_diff)}`);
 setPoolStatusPanel(s);setIssue(s);setSettings(s);setOverclock(s);}

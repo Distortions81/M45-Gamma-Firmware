@@ -60,6 +60,8 @@ background:radial-gradient(circle at top left,rgba(44,241,194,.1) 0,var(--panel)
 .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
 .value{font-size:28px;font-weight:720;line-height:1.1;margin-top:8px;overflow-wrap:anywhere}
 .subvalue{margin-top:4px;color:var(--muted);font-size:12px;line-height:1.2}
+.app-footer{display:flex;justify-content:center;align-items:center;gap:9px;padding:24px 16px 28px;color:var(--muted);font-size:11px}
+.app-footer a{color:var(--muted);text-decoration:none}.app-footer a:hover,.app-footer a:focus{color:#2cf1c2;text-decoration:underline}
 .value.small{font-size:18px}.unit{color:var(--muted);font-size:13px;font-weight:500;margin-left:4px}
 .value-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .value-row .subvalue{margin-top:0;white-space:nowrap}
@@ -126,12 +128,15 @@ pointer-events:none;transition:opacity .12s ease,visibility .12s ease}
 .status-dot{width:8px;height:8px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 2px rgba(244,196,95,.14)}
 .status-dot.ok{background:var(--ok);box-shadow:0 0 0 2px rgba(66,211,146,.14)}
 .status-dot.bad{background:var(--bad);box-shadow:0 0 0 2px rgba(255,107,107,.14)}
+.pool-tls-badge{padding:2px 4px;border:1px solid currentColor;border-radius:4px;font-size:9px;font-weight:800;line-height:1;letter-spacing:.06em}
+.pool-tls-badge.ok{color:var(--ok)}.pool-tls-badge.bad,.tls-error{color:var(--bad)}
 .pool-status-list{display:grid;gap:8px;margin-top:12px}
 .pool-status-row{display:grid;grid-template-columns:minmax(170px,.9fr) minmax(0,2.4fr);
 gap:12px;align-items:start;padding:10px;border:1px solid var(--line);border-radius:6px;background:#111518}
 .pool-status-main{display:grid;gap:2px;min-width:0}.pool-status-name{display:flex;align-items:center;gap:6px;font-weight:760}
 .pool-status-host{color:var(--muted);font-size:12px;overflow-wrap:anywhere;min-width:0}
 .pool-status-note{color:var(--warn);font-size:12px;overflow-wrap:anywhere;min-width:0}
+.pool-status-note.bad{color:var(--bad)}
 .pool-status-metrics{display:grid;grid-template-columns:repeat(3,minmax(72px,1fr));gap:8px 10px;min-width:0}
 .pool-status-metric{display:grid;gap:2px;min-width:0}.pool-status-metric span{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .pool-status-metric strong{font-size:13px;line-height:1.1;overflow-wrap:anywhere}.pool-status-role{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
@@ -180,6 +185,7 @@ font-size:11px;font-weight:650;padding:0 5px;cursor:pointer;min-width:0;white-sp
 font-size:12px;line-height:1.35}.oc-auto-clock-warning .label{color:var(--warn);margin-bottom:4px}
 .oc-safety-panel{display:grid;gap:12px}.oc-safety-panel.oc-safety-active{border-color:#725c22;background:#251f12}
 .oc-warning-clear{color:var(--muted);font-size:13px}.oc-warning-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.oc-safety-panel.wide .oc-warning-list{grid-template-columns:1fr}
 .oc-warning{border:1px solid #725c22;border-radius:6px;background:#211a0f;padding:10px}
 .oc-warning .value.small{font-size:15px;font-weight:650;line-height:1.25;margin-top:6px}
 .oc-limits-grid{grid-template-columns:repeat(4,minmax(0,1fr))}

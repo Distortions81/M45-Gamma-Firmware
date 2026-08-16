@@ -294,7 +294,7 @@ esp_err_t wifi_http_status_send(httpd_req_t *req,
             sizeof(scratch->pool_statuses_json) - pool_status_offset,
             "%s{\"pool_id\":%u,\"label\":\"%s\",\"role\":\"%s\","
             "\"host\":\"%s\",\"port\":%u,\"connected\":%s,\"using_backup\":%s,"
-            "\"disabled\":%s,\"note\":\"%s\","
+            "\"disabled\":%s,\"tls\":%s,\"tls_invalid\":%s,\"note\":\"%s\","
             "\"weight\":%u,\"share_percent\":%u,"
             "\"connected_seconds\":%lu,\"response_ms\":%lu,"
             "\"pool_difficulty\":%.2f,"
@@ -304,7 +304,8 @@ esp_err_t wifi_http_status_send(httpd_req_t *req,
             status_host,
             pool->pool_port, pool->connected ? "true" : "false",
             pool->using_backup_pool ? "true" : "false",
-            pool->disabled ? "true" : "false", status_note, pool->weight,
+            pool->disabled ? "true" : "false", pool->tls ? "true" : "false",
+            pool->tls_invalid ? "true" : "false", status_note, pool->weight,
             pool->share_percent,
             (unsigned long)pool->connected_seconds,
             (unsigned long)pool->response_time_ms, pool->pool_diff,

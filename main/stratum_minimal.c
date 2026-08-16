@@ -22,6 +22,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
+#include "esp_tls.h"
 #include "esp_timer.h"
 #include "esp_transport.h"
 #include "esp_transport_ssl.h"
@@ -294,6 +295,7 @@ typedef struct {
     bool connected;
     bool setup_ready;
     bool runtime_disabled;
+    bool tls_invalid;
     char note[STRATUM_POOL_STATUS_NOTE_MAX];
 } stratum_pool_session_t;
 
@@ -702,6 +704,7 @@ static void clear_all_pool_runtime_state(void)
     }
     for (size_t i = 0; i < STRATUM_POOL_SESSION_MAX; ++i) {
         g_pool_sessions[i].runtime_disabled = false;
+        g_pool_sessions[i].tls_invalid = false;
         g_pool_sessions[i].note[0] = '\0';
     }
     if (g_transport_lock != NULL) {
@@ -718,6 +721,7 @@ static void clear_pool_runtime_state(uint8_t pool_id)
         xSemaphoreTake(g_transport_lock, portMAX_DELAY);
     }
     g_pool_sessions[pool_id].runtime_disabled = false;
+    g_pool_sessions[pool_id].tls_invalid = false;
     g_pool_sessions[pool_id].note[0] = '\0';
     if (g_transport_lock != NULL) {
         xSemaphoreGive(g_transport_lock);
@@ -1785,6 +1789,61 @@ static void set_session_transport(uint8_t pool_id, esp_transport_handle_t transp
     xSemaphoreGive(g_transport_lock);
 }
 
+static void set_session_endpoint_attempt(uint8_t pool_id,
+                                         const stratum_endpoint_t *endpoint)
+{
+    if (!pool_id_valid(pool_id) || endpoint == NULL) {
+        return;
+    }
+    if (g_transport_lock != NULL) {
+        xSemaphoreTake(g_transport_lock, portMAX_DELAY);
+    }
+    stratum_pool_session_t *session = &g_pool_sessions[pool_id];
+    const bool changed = session->endpoint.port != endpoint->port ||
+                         session->endpoint.tls != endpoint->tls ||
+                         session->endpoint.using_backup != endpoint->using_backup ||
+                         strcmp(session->endpoint.host, endpoint->host) != 0;
+    copy_session_endpoint_locked(session, endpoint);
+    if (changed || !endpoint->tls) {
+        session->tls_invalid = false;
+    }
+    if (g_transport_lock != NULL) {
+        xSemaphoreGive(g_transport_lock);
+    }
+}
+
+static void set_session_tls_invalid(uint8_t pool_id)
+{
+    if (!pool_id_valid(pool_id)) {
+        return;
+    }
+    if (g_transport_lock != NULL) {
+        xSemaphoreTake(g_transport_lock, portMAX_DELAY);
+    }
+    g_pool_sessions[pool_id].tls_invalid = true;
+    if (g_transport_lock != NULL) {
+        xSemaphoreGive(g_transport_lock);
+    }
+}
+
+static bool stratum_transport_has_invalid_tls(esp_transport_handle_t transport)
+{
+    esp_tls_error_handle_t error_handle = esp_transport_get_error_handle(transport);
+    int tls_code = 0;
+    int verify_flags = 0;
+    if (error_handle == NULL ||
+        esp_tls_get_and_clear_last_error(error_handle, &tls_code, &verify_flags) ==
+            ESP_ERR_INVALID_STATE) {
+        return false;
+    }
+    if (verify_flags != 0) {
+        ESP_LOGW(TAG, "TLS certificate verification failed: code=%d flags=0x%x",
+                 tls_code, (unsigned)verify_flags);
+        return true;
+    }
+    return false;
+}
+
 static void set_session_connected(uint8_t pool_id, const stratum_endpoint_t *endpoint)
 {
     if (!pool_id_valid(pool_id)) {
@@ -1799,6 +1858,7 @@ static void set_session_connected(uint8_t pool_id, const stratum_endpoint_t *end
     session->connected = true;
     session->setup_ready = false;
     session->runtime_disabled = false;
+    session->tls_invalid = false;
     session->note[0] = '\0';
     session->connected_since_us = now_us;
     copy_session_endpoint_locked(session, endpoint);
@@ -3925,6 +3985,7 @@ static void stratum_rx_task(void *arg)
             set_active_pool_endpoint(&endpoint);
             stratum_maybe_prefetch_backup_pool_dns(&endpoint);
         }
+        set_session_endpoint_attempt(pool_id, &endpoint);
 
         esp_transport_handle_t transport = stratum_transport_init_for_endpoint(&endpoint);
         if (transport == NULL) {
@@ -3968,8 +4029,15 @@ static void stratum_rx_task(void *arg)
             stratum_enable_tcp_nodelay(transport);
         }
         if (ret < 0) {
-            set_pool_note(pool_id, "connect failed: %s:%u via %s", endpoint.host,
-                          endpoint.port, connect_host);
+            const bool invalid_tls = endpoint.tls &&
+                                     stratum_transport_has_invalid_tls(transport);
+            if (invalid_tls) {
+                set_session_tls_invalid(pool_id);
+                set_pool_note(pool_id, "invalid TLS certificate: %s", endpoint.host);
+            } else {
+                set_pool_note(pool_id, "connect failed: %s:%u via %s", endpoint.host,
+                              endpoint.port, connect_host);
+            }
             ESP_LOGW(TAG, "%s pool connect failed", pool_label);
             esp_transport_destroy(transport);
             set_session_disconnected(pool_id, pool_id == STRATUM_PRIMARY_POOL_ID);
@@ -5056,6 +5124,7 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
         status->weight = configured_pool_weight(pool_id, config);
         status->share_percent = configured_primary_share_percent(config);
         status->pool_port = config->pool_port;
+        status->tls = config->pool_tls;
         copy_pool_host(status->pool_host, sizeof(status->pool_host), config->pool_host);
     } else {
         const size_t aux_index = (size_t)(pool_id - STRATUM_AUX_POOL_ID_BASE);
@@ -5063,6 +5132,7 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
         status->weight = aux->share_percent;
         status->share_percent = configured_pool_share_percent(config, pool_id);
         status->pool_port = aux->port;
+        status->tls = aux->tls;
         copy_pool_host(status->pool_host, sizeof(status->pool_host), aux->host);
     }
 
@@ -5073,6 +5143,7 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
         status->connected = session->connected;
         status->disabled = session->runtime_disabled;
         status->using_backup_pool = session->endpoint.using_backup;
+        status->tls_invalid = session->tls_invalid;
         status->pool_diff = session->pool_difficulty;
         copy_pool_host(status->note, sizeof(status->note), session->note);
         connected_since_us = session->connected_since_us;
@@ -5080,6 +5151,7 @@ static void fill_pool_status(uint8_t pool_id, const m45_config_t *config,
             copy_pool_host(status->pool_host, sizeof(status->pool_host),
                            session->endpoint.host);
             status->pool_port = session->endpoint.port;
+            status->tls = session->endpoint.tls;
         }
         xSemaphoreGive(g_transport_lock);
     }
