@@ -116,21 +116,23 @@ if(last&&last.at===at)last.value=value;else rows.push({at,value});return rows.fi
 function drawStatsChart(){const canvas=$('stats-chart');if(!canvas||routeView()!=='stats')return;const rect=canvas.getBoundingClientRect();if(rect.width<10||rect.height<10)return;
 const dpr=window.devicePixelRatio||1,w=Math.floor(rect.width),h=Math.floor(rect.height);if(canvas.width!==Math.floor(w*dpr)||canvas.height!==Math.floor(h*dpr)){canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr)}
 const ctx=canvas.getContext('2d');if(!ctx)return;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
-const now=Date.now(),left=44,right=18,top=10,bottom=22,gw=Math.max(10,w-left-right),gh=Math.max(10,h-top-bottom),base=h-bottom;
+const now=Date.now(),left=44,right=48,top=10,bottom=22,gw=Math.max(10,w-left-right),gh=Math.max(10,h-top-bottom),base=h-bottom;
 const first=statsChartSamples.length?statsChartSamples[0].at:now,minX=Math.max(now-STATS_CHART_WINDOW_MS,Math.min(first,now-60000)),span=Math.max(1,now-minX);
-const rows=statsChartSamples.filter(r=>r.at>=minX),bestRows=statsChartBestShares.filter(r=>r.at>=minX),maxHash=Math.max(1,...rows.map(r=>r.value))*1.15,maxBest=Math.max(1,...bestRows.map(r=>r.value))*1.2;
-const x=at=>left+Math.max(0,Math.min(1,(at-minX)/span))*gw,yHash=value=>top+gh*(1-Math.max(0,value)/maxHash),yBest=value=>top+gh*(1-Math.log10(Math.max(1,value))/Math.log10(Math.max(10,maxBest)));
+const rows=statsChartSamples.filter(r=>r.at>=minX),bestRows=statsChartBestShares.filter(r=>r.at>=minX),maxHash=Math.max(1,...rows.map(r=>r.value))*1.15,bestLogs=bestRows.map(r=>Math.log10(r.value));
+let bestLogMin=bestLogs.length?Math.min(...bestLogs):0,bestLogMax=bestLogs.length?Math.max(...bestLogs):1;if(bestLogMax-bestLogMin<1){const mid=(bestLogMin+bestLogMax)/2;bestLogMin=mid-.5;bestLogMax=mid+.5}else{const pad=(bestLogMax-bestLogMin)*.1;bestLogMin-=pad;bestLogMax+=pad}const bestLogSpan=bestLogMax-bestLogMin;
+const x=at=>left+Math.max(0,Math.min(1,(at-minX)/span))*gw,yHash=value=>top+gh*(1-Math.max(0,value)/maxHash),yBest=value=>top+gh*(1-Math.max(0,Math.min(1,(Math.log10(value)-bestLogMin)/bestLogSpan)));
 ctx.strokeStyle='#2d353d';ctx.lineWidth=1;ctx.fillStyle='#9aa6ad';ctx.font='10px ui-monospace,monospace';ctx.textAlign='right';
 for(let i=0;i<=3;i++){const yy=top+gh*i/3;ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(w-right,yy);ctx.stroke();ctx.fillText(statsChartHashLabel(maxHash*(1-i/3)),left-6,yy+3)}
+ctx.fillStyle='#f6b34a';ctx.textAlign='left';for(let i=0;i<=3;i++){const yy=top+gh*i/3,diff=Math.pow(10,bestLogMax-bestLogSpan*i/3);ctx.fillText(human(diff),w-right+6,yy+3)}
 ctx.textAlign='center';ctx.fillText(chartSpanLabel(span),left+gw/2,h-5);
 if(rows.length){const fill=ctx.createLinearGradient(0,top,0,base);fill.addColorStop(0,'rgba(44,241,194,.28)');fill.addColorStop(1,'rgba(44,241,194,.025)');ctx.beginPath();ctx.moveTo(x(rows[0].at),base);rows.forEach((r,i)=>{const xx=x(r.at),yy=yHash(r.value);if(i===0)ctx.lineTo(xx,yy);else ctx.lineTo(xx,yy)});ctx.lineTo(x(rows[rows.length-1].at),base);ctx.closePath();ctx.fillStyle=fill;ctx.fill();
 ctx.beginPath();rows.forEach((r,i)=>{const xx=x(r.at),yy=yHash(r.value);if(i===0)ctx.moveTo(xx,yy);else ctx.lineTo(xx,yy)});ctx.strokeStyle='#2cf1c2';ctx.lineWidth=2;ctx.lineJoin='round';ctx.lineCap='round';ctx.stroke()}
 if(bestRows.length){ctx.beginPath();bestRows.forEach(r=>{const xx=x(r.at),yy=yBest(r.value);ctx.moveTo(xx+1.5,yy);ctx.arc(xx,yy,1.5,0,Math.PI*2)});ctx.fillStyle='#f6b34a';ctx.fill()}
 ctx.strokeStyle='rgba(255,255,255,.7)';ctx.beginPath();ctx.moveTo(left,base+.5);ctx.lineTo(w-right,base+.5);ctx.stroke()}
-function updateStatsChart(s){const now=Date.now(),hash=Math.max(0,Number(s&&s.hashrate_ghs)||0),best=Math.max(0,Number(s&&s.best_diff)||0);
+function updateStatsChart(s){const now=Date.now(),hash=Math.max(0,Number(s&&s.hashrate_ghs)||0);
 statsChartSamples=appendChartSample(statsChartSamples,now,hash);const events=Array.isArray(s&&s.share_events)?s.share_events:[];
 events.forEach(e=>{if(!Array.isArray(e)||e.length<3)return;const seq=Number(e[0]),age=Number(e[1]),diff=Number(e[2]);if(!Number.isFinite(seq)||seq<=statsChartLastShareSeq||!Number.isFinite(age)||age<0||!Number.isFinite(diff)||diff<=0)return;statsChartBestShares.push({at:now-age,value:diff});statsChartLastShareSeq=seq});
-statsChartBestShares=statsChartBestShares.filter(r=>now-r.at<=STATS_CHART_WINDOW_MS);txt('stats-chart-current',swarmRate(hash));txt('stats-chart-best',`Best ${human(best)}`);drawStatsChart()}
+statsChartBestShares=statsChartBestShares.filter(r=>now-r.at<=STATS_CHART_WINDOW_MS);txt('stats-chart-current',swarmRate(hash));drawStatsChart()}
 function setStatsChartCollapsed(collapsed){const panel=document.querySelector('.stats-chart-panel'),button=$('stats-chart-toggle');if(!panel||!button)return;
 panel.classList.toggle('collapsed',collapsed);button.textContent=collapsed?'＋':'−';button.setAttribute('aria-expanded',collapsed?'false':'true');
 button.setAttribute('aria-label',collapsed?'Expand hashrate chart':'Minimize hashrate chart');button.title=collapsed?'Expand chart':'Minimize chart';setLocalBool(STATS_CHART_COLLAPSED_KEY,collapsed);
