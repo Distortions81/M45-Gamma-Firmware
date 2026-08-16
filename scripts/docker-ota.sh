@@ -157,9 +157,12 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
         board_version="$4"
 
         scripts/build.sh --build-dir "$build_dir" --build
+        python3 "$IDF_PATH/components/partition_table/gen_esp32part.py" \
+            partitions_legacy_v0.0.9.csv \
+            "$build_dir/legacy-v0.0.9-partition-table.bin"
         python3 scripts/tools/verify_migration_build.py \
             --app "$build_dir/M45-Firmware.bin" \
-            --legacy-table "$build_dir/partition_table/partition-table.bin" \
+            --legacy-table "$build_dir/legacy-v0.0.9-partition-table.bin" \
             --canonical-header \
             "$build_dir/esp-idf/main/migration_partition_table.h"
 

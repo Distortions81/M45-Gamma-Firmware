@@ -3,7 +3,9 @@ import argparse
 import html
 import json
 import pathlib
+import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -17,6 +19,7 @@ NVS_START = 0x9000
 NVS_SIZE = 0x6000
 PARTITION_TABLE_OFFSET = 0x8000
 PARTITION_TABLE_MAGIC = b"\xaa\x50"
+CANONICAL_FACTORY_OFFSET = 0x10000
 
 
 def die(message):
@@ -106,66 +109,84 @@ def run_merge(chip, flasher_args, output_path, parts):
     raise subprocess.CalledProcessError(last.returncode if last else 1, last.args if last else attempts[-1])
 
 
-def validate_factory_image(path):
-    if path.stat().st_size <= PARTITION_TABLE_OFFSET + len(PARTITION_TABLE_MAGIC):
-        raise ValueError(f"{path} is too small to be a merged factory image")
+def embedded_canonical_partition_table(build_dir):
+    header = build_dir / "esp-idf/main/migration_partition_table.h"
+    if not header.exists():
+        raise FileNotFoundError(f"missing canonical partition table: {header}")
+    table = bytes(
+        int(value, 16)
+        for value in re.findall(r"0x([0-9a-fA-F]{2})", header.read_text())
+    )
+    if not table.startswith(PARTITION_TABLE_MAGIC):
+        raise ValueError("generated canonical partition table has invalid magic")
+    return table
+
+
+def canonical_factory_range(table):
+    for offset in range(0, len(table), 32):
+        magic, part_type, subtype, address, size = struct.unpack_from(
+            "<HBBII", table, offset
+        )
+        if magic == 0xFFFF:
+            break
+        if magic == 0xEBEB:
+            continue
+        label = table[offset + 12 : offset + 28].split(b"\0", 1)[0]
+        if label == b"factory" and part_type == 0 and subtype == 0:
+            return address, size
+    raise ValueError("canonical table has no factory application")
+
+
+def validate_factory_image(path, canonical_table, app):
+    if path.stat().st_size > 9 * 1024 * 1024:
+        raise ValueError(f"{path} exceeds the v0.0.9 OTA upload limit")
+    factory_offset, factory_size = canonical_factory_range(canonical_table)
+    if factory_offset != CANONICAL_FACTORY_OFFSET or app.stat().st_size > factory_size:
+        raise ValueError("canonical factory range cannot contain the bridge app")
+    if path.stat().st_size < CANONICAL_FACTORY_OFFSET + app.stat().st_size:
+        raise ValueError(f"{path} is too small for the canonical factory app")
     with path.open("rb") as firmware:
         firmware.seek(PARTITION_TABLE_OFFSET)
-        magic = firmware.read(len(PARTITION_TABLE_MAGIC))
-    if magic != PARTITION_TABLE_MAGIC:
-        raise ValueError(f"{path} does not contain a partition table at 0x{PARTITION_TABLE_OFFSET:x}")
+        table = firmware.read(len(canonical_table))
+        firmware.seek(CANONICAL_FACTORY_OFFSET)
+        embedded_app = firmware.read(app.stat().st_size)
+    if table != canonical_table:
+        raise ValueError(f"{path} does not contain the canonical partition table")
+    if embedded_app != app.read_bytes():
+        raise ValueError(f"{path} does not contain the exact canonical factory app")
 
 
 def merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args):
     app_filename = flasher_args["app"]["file"]
     chip = flasher_args.get("extra_esptool_args", {}).get("chip", "esp32s3")
-    parts = []
-    app_seen = False
-
-    for offset, filename in sorted_flash_files(flasher_args["flash_files"]):
-        source = build_dir / filename
+    flash_files = sorted_flash_files(flasher_args["flash_files"])
+    bootloader_name = next(
+        (filename for offset, filename in flash_files if int(offset, 0) == 0), None
+    )
+    if bootloader_name is None:
+        raise ValueError("merged factory image requires a bootloader at offset 0x0")
+    bootloader = build_dir / bootloader_name
+    app = build_dir / app_filename
+    for source in (bootloader, app):
         if not source.exists():
             raise FileNotFoundError(f"missing flash part: {source}")
-        app_seen = app_seen or filename == app_filename
-        parts.append(
-            {
-                "source": source,
-                "offset": int(offset, 0),
-                "size": source.stat().st_size,
-            }
-        )
 
-    if not app_seen:
-        raise FileNotFoundError(f"app firmware '{app_filename}' not found in flash files")
-    if not parts or parts[0]["offset"] != 0:
-        raise ValueError("merged factory image requires a flash part at offset 0x0")
+    canonical_table = embedded_canonical_partition_table(build_dir)
+    table_file = output_dir / ".canonical-partition-table.bin"
+    table_file.write_bytes(canonical_table)
+    parts = [
+        {"source": bootloader, "offset": 0},
+        {"source": table_file, "offset": PARTITION_TABLE_OFFSET},
+        {"source": app, "offset": CANONICAL_FACTORY_OFFSET},
+    ]
 
     firmware = output_dir / firmware_name
-    run_merge(chip, flasher_args, firmware, parts)
-    validate_factory_image(firmware)
+    try:
+        run_merge(chip, flasher_args, firmware, parts)
+    finally:
+        table_file.unlink(missing_ok=True)
+    validate_factory_image(firmware, canonical_table, app)
     return firmware
-
-
-def write_release_manifest(output_dir, name, version, firmware_name, board_version):
-    manifest = {
-        "name": name,
-        "repository": REPOSITORY,
-        "board_version": board_version,
-        "asset_prefix": f"esp-miner-factory-{board_version}-",
-        "nvs": {
-            "offset": NVS_START,
-            "size": NVS_SIZE,
-        },
-        "releases": [
-            {
-                "version": version,
-                "name": f"{version} bundled build",
-                "path": firmware_name,
-                "source": "bundled",
-            }
-        ],
-    }
-    (output_dir / "firmware-releases.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def write_index(output_dir, name, version, firmware_name, board_version):
@@ -176,8 +197,6 @@ def write_index(output_dir, name, version, firmware_name, board_version):
         "firmwareName": firmware_name,
         "repository": REPOSITORY,
         "repoUrl": REPO_URL,
-        "assetPrefix": f"esp-miner-factory-{board_version}-",
-        "releaseMirrorBase": "firmware",
         "nvsStart": NVS_START,
         "nvsSize": NVS_SIZE,
         "bundledRelease": {
@@ -272,51 +291,21 @@ function releaseLabel(release) {
   return `${release.version}${name}`;
 }
 
-function binaryNameFromUrl(url) {
-  return decodeURIComponent(String(url).split("/").pop() || "");
-}
-
 function normalizeRelease(release) {
-  if (!release || !release.version || !release.path) return null;
+  const path = release && (release.flash_path || release.path);
+  if (!release || !release.version || !path) return null;
   return {
     version: String(release.version),
     name: release.name ? String(release.name) : String(release.version),
-    path: String(release.path),
+    path: String(path),
     digest: release.digest ? String(release.digest) : "",
     size: Number(release.size || 0),
-    source: release.source ? String(release.source) : "pages",
+    source: release.source ? String(release.source) : "canonical",
   };
 }
 
-async function fetchGitHubReleases() {
-  const apiUrl = `https://api.github.com/repos/${CONFIG.repository}/releases`;
-  const response = await fetch(apiUrl);
-  if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
-  const releases = await response.json();
-  return releases
-    .filter((release) => !release.prerelease && !release.draft)
-    .map((release) => {
-      const assets = release.assets.filter((asset) =>
-        asset.name.startsWith(`${CONFIG.assetPrefix}${release.tag_name}`)
-      );
-      if (!assets.length) return null;
-      const asset = assets[0];
-      const binaryName = binaryNameFromUrl(asset.browser_download_url || asset.name);
-      return {
-        version: release.tag_name,
-        name: release.name || release.tag_name,
-        path: `${CONFIG.releaseMirrorBase}/${release.tag_name}/${binaryName}`,
-        githubUrl: asset.browser_download_url,
-        digest: asset.digest || "",
-        size: asset.size || 0,
-        source: "github-release",
-      };
-    })
-    .filter(Boolean);
-}
-
 async function loadManifestReleases() {
-  const response = await fetch("firmware-releases.json", { cache: "no-store" });
+  const response = await fetch("canonical-releases.json", { cache: "no-store" });
   if (!response.ok) return [];
   const manifest = await response.json();
   return (manifest.releases || []).map(normalizeRelease).filter(Boolean);
@@ -349,13 +338,6 @@ async function loadReleases() {
   for (const release of [CONFIG.bundledRelease, ...(await loadManifestReleases())]) {
     const normalized = normalizeRelease(release);
     if (normalized) byVersion.set(normalized.version, normalized);
-  }
-  try {
-    for (const release of await fetchGitHubReleases()) {
-      if (!byVersion.has(release.version)) byVersion.set(release.version, release);
-    }
-  } catch (error) {
-    console.warn("GitHub release list unavailable", error);
   }
   firmwareOptions = Array.from(byVersion.values());
   renderReleases();
@@ -540,7 +522,6 @@ def main():
         output_dir.mkdir(parents=True)
 
         firmware = merge_flash_parts(build_dir, output_dir, firmware_name, flasher_args)
-        write_release_manifest(output_dir, args.name, version, firmware_name, args.board_version)
         (output_dir / "canonical-releases.json").write_text(
             json.dumps({"releases": []}, indent=2) + "\n"
         )

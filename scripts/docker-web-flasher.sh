@@ -144,9 +144,12 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
         git config --global --add safe.directory /opt/esp/idf >/dev/null 2>&1 || true
         git config --global --add safe.directory /opt/esp/idf/components/openthread/openthread >/dev/null 2>&1 || true
         scripts/build.sh --build-dir "$1" --build
+        python3 "$IDF_PATH/components/partition_table/gen_esp32part.py" \
+            partitions_legacy_v0.0.9.csv \
+            "$1/legacy-v0.0.9-partition-table.bin"
         python3 scripts/tools/verify_migration_build.py \
             --app "$1/M45-Firmware.bin" \
-            --legacy-table "$1/partition_table/partition-table.bin" \
+            --legacy-table "$1/legacy-v0.0.9-partition-table.bin" \
             --canonical-header "$1/esp-idf/main/migration_partition_table.h"
         if [[ -n "$3" ]]; then
             scripts/package-web-flasher.sh --build-dir "$1" --output "$2" --version "$3" --board-version "$4"

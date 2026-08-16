@@ -72,16 +72,9 @@ jobs:
             exit 1
           fi
 
-      - name: Sync release firmware mirror
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/tools/sync_web_flasher_releases.py --site-dir site --board-version 602
-
       - name: Validate web flasher package
         run: |
           test -f site/index.html
-          test -f site/firmware-releases.json
           test -f site/canonical-releases.json
           test ! -e site/manifest.json
           test ! -e site/bootloader.bin
@@ -89,19 +82,6 @@ jobs:
           shopt -s nullglob
           firmware=(site/esp-miner-factory-602-*.bin)
           test "${#firmware[@]}" -ge 1
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          manifest = json.loads(Path("site/firmware-releases.json").read_text())
-          releases = manifest.get("releases") or []
-          if not releases:
-              raise SystemExit("release manifest has no firmware entries")
-          for release in releases:
-              path = Path("site") / release["path"]
-              if not path.exists():
-                  raise SystemExit(f"missing firmware listed in manifest: {path}")
-          PY
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

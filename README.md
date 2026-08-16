@@ -23,10 +23,9 @@ OTA accepts either:
 - `esp-miner-factory-602-*.bin`, the merged factory image used by the web
   flasher.
 
-GitHub Actions builds a factory image when a GitHub Release is published,
-attaches only that `.bin` to the release, and publishes the web flasher through
-GitHub Pages. The Pages site mirrors matching release images so older releases
-can be selected from the flasher.
+GitHub Actions builds the canonical factory image when the mandatory bridge
+release is published, attaches only that `.bin`, and publishes the canonical
+web flasher through GitHub Pages. Legacy releases are not mirrored or listed.
 
 ### Final v0.0.9 Channel Migration
 
@@ -40,8 +39,9 @@ After it is installed into either legacy OTA slot, the bridge release:
 5. Writes and reads back the canonical partition table as the final operation.
 6. Reboots on the canonical layout.
 
-The existing GitHub Releases feed must remain frozen with this bridge as its
-last production release. After migration, the Update page reads
+The legacy update endpoint exists only to advertise this mandatory bridge.
+`v0.0.10` is its sole and final production release; earlier binaries are not
+mirrored or listed. After migration, the Update page reads
 `https://m45core.github.io/M45-Gamma-Firmware/canonical-releases.json`.
 That manifest advertises raw application images so future updates remain small:
 
@@ -51,14 +51,15 @@ That manifest advertises raw application images so future updates remain small:
     {
       "version": "v0.1.0",
       "name": "v0.1.0",
-      "ota_path": "firmware/v0.1.0/esp-miner.bin"
+      "ota_path": "firmware/v0.1.0/esp-miner.bin",
+      "flash_path": "firmware/v0.1.0/esp-miner-factory-602-v0.1.0.bin"
     }
   ]
 }
 ```
 
-Future production releases belong only in that canonical manifest, not in the
-legacy GitHub Releases feed.
+Future production releases belong only in that canonical manifest. No legacy
+partition image is built, published, or supported.
 
 ## Supported Hardware
 
@@ -98,9 +99,9 @@ To produce local OTA upload files:
 scripts/docker-ota.sh
 ```
 
-The OTA files are written to `dist/ota/` and include both accepted update
-formats, `M45-Firmware.bin` and `esp-miner-factory-602-*.bin`, plus SHA-256
-checksums.
+The OTA files are written to `dist/ota/` and include the raw bridge app and
+the canonical merged image, plus SHA-256 checksums. The v0.0.9 partition CSV is
+retained only as a migration-test fixture; it is never packaged for flashing.
 
 To produce the static web flasher package locally:
 
@@ -109,7 +110,7 @@ scripts/docker-web-flasher.sh
 ```
 
 The package is written to `dist/web-flasher/` and includes `index.html`,
-a release list, and one merged factory image named like
+a canonical release manifest, and one canonical merged image named like
 `esp-miner-factory-602-v0.0.1.bin`. The web flasher follows the Bitaxe flasher
 model: it writes the factory image as one file, skips the NVS settings range by
 default, and only writes that range when you select erase settings.
