@@ -38,14 +38,15 @@ const CAL_HASH_DROP_RATIO=.95,CAL_TREND_STEPS=3,CAL_MIN_ACCEPTED_SHARES=3,CAL_MI
 const CAL_LOW_RESULT_SAMPLE_MS=30000,CAL_MIN_BAD_ERRORS=2,CAL_ERROR_RATIO=.05,CAL_RATE_WINDOW_SAMPLES=20;
 const AUX_POOL_COUNT=2,POOL_WEIGHT_MIN=1,POOL_WEIGHT_MAX=99;
 const SWARM_CACHE_KEY='m45_swarm_devices_v1',SWARM_CACHE_MAX_AGE_MS=7*24*60*60*1000,SWARM_CACHE_MAX_DEVICES=33;
-const STATS_CHART_WINDOW_MS=24*60*60*1000,STATS_CHART_SAMPLE_MS=30*1000;
+const STATS_CHART_WINDOW_MS=10*60*1000,STATS_CHART_SAMPLE_MS=30*1000;
 const STATS_CHART_MAX_SAMPLES=Math.ceil(STATS_CHART_WINDOW_MS/STATS_CHART_SAMPLE_MS)+1;
 const STATS_CHART_CACHE_KEY='m45_stats_hashrate_v1';
 const METRIC_SPARKLINE_WINDOW_MS=10*60*1000,METRIC_SPARKLINE_SAMPLE_MS=2000;
 const METRIC_SPARKLINE_MAX_SAMPLES=Math.ceil(METRIC_SPARKLINE_WINDOW_MS/METRIC_SPARKLINE_SAMPLE_MS)+1;
 const STATS_CHART_COLLAPSED_KEY='m45_stats_chart_collapsed';
 let lastRefreshOk=Date.now(),refreshInFlight=false,logSeq=0,logsInFlight=false,shareSamples=[],poolShareSamples=new Map(),calHistory=[],calRateSamples=[],calibrationOffsetMv=null;
-let statsChartSamples=loadStatsChartCache(),statsChartBestShares=[],statsChartLastShareSeq=0,statsChartCacheSavedAt=0;
+const statsChartStartedAt=Date.now();
+let statsChartSamples=[{at:statsChartStartedAt,value:0,bucket:-1}],statsChartBestShares=[],statsChartLastShareSeq=0;
 const metricSparklineSamples=new Map(),metricSparklineConfigs=new Map();
 let calibrationActive=false,calibrationAbort=false,asicPowerBusy=false,asicRestartBusy=false;
 let loadedWifiSsid='',wifiSettingsTestOk=true,wifiSettingsTestKey='',wifiSettingsTesting=false;
@@ -112,15 +113,14 @@ const u=['','K','M','G','T','P','E'];let i=0;while(v>=1000&&i<u.length-1){v/=100
 return `${v>=100?n(v,0):v>=10?n(v,1):n(v,2)}${u[i]}`}
 function statsChartHashLabel(ghs){const h=rate(ghs);return h[0]==='--'?'0':`${h[0]}${h[1]}`}
 function chartSpanLabel(span){if(span>=2*60*60*1000)return `${n(span/(60*60*1000),span<10*60*60*1000?1:0)} h`;return `${Math.max(1,Math.round(span/60000))} min`}
-function loadStatsChartCache(){try{const now=Date.now(),saved=JSON.parse(localStorage.getItem(STATS_CHART_CACHE_KEY)||'[]');if(!Array.isArray(saved))return[];return saved.map(r=>({at:Number(r&&r[0]),value:Number(r&&r[1])})).filter(r=>Number.isFinite(r.at)&&r.at<=now+STATS_CHART_SAMPLE_MS&&now-r.at<=STATS_CHART_WINDOW_MS&&Number.isFinite(r.value)&&r.value>=0&&r.value<=1000000).sort((a,b)=>a.at-b.at).slice(-STATS_CHART_MAX_SAMPLES)}catch(_){return[]}}
-function persistStatsChartCache(force=false){const now=Date.now();if(!force&&now-statsChartCacheSavedAt<STATS_CHART_SAMPLE_MS)return;try{localStorage.setItem(STATS_CHART_CACHE_KEY,JSON.stringify(statsChartSamples.map(r=>[Math.round(r.at),r.value])));statsChartCacheSavedAt=now}catch(_){}}
+try{localStorage.removeItem(STATS_CHART_CACHE_KEY)}catch(_){}
 function appendChartSample(rows,now,value,windowMs=STATS_CHART_WINDOW_MS,maxSamples=STATS_CHART_MAX_SAMPLES,sampleMs=STATS_CHART_SAMPLE_MS){const bucket=Math.floor(now/sampleMs)*sampleMs,last=rows[rows.length-1],lastBucket=last?(Number.isFinite(last.bucket)?last.bucket:Math.floor(last.at/sampleMs)*sampleMs):-1;
 if(last&&lastBucket===bucket){last.at=now;last.value=value;last.bucket=bucket}else rows.push({at:now,value,bucket});return rows.filter(r=>now-r.at<=windowMs).slice(-maxSamples)}
 function drawStatsChart(){const canvas=$('stats-chart');if(!canvas||routeView()!=='stats')return;const rect=canvas.getBoundingClientRect();if(rect.width<10||rect.height<10)return;
 const dpr=window.devicePixelRatio||1,w=Math.floor(rect.width),h=Math.floor(rect.height);if(canvas.width!==Math.floor(w*dpr)||canvas.height!==Math.floor(h*dpr)){canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr)}
 const ctx=canvas.getContext('2d');if(!ctx)return;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
 const now=Date.now(),left=44,right=48,top=10,bottom=22,gw=Math.max(10,w-left-right),gh=Math.max(10,h-top-bottom),base=h-bottom;
-const first=statsChartSamples.length?statsChartSamples[0].at:now,minX=Math.max(now-STATS_CHART_WINDOW_MS,Math.min(first,now-60000)),span=Math.max(1,now-minX);
+const first=statsChartSamples.length?statsChartSamples[0].at:now,minX=Math.max(now-STATS_CHART_WINDOW_MS,Math.min(first,now)),span=Math.max(1,now-minX);
 const rows=statsChartSamples.filter(r=>r.at>=minX),bestRows=statsChartBestShares.filter(r=>r.at>=minX),maxHash=Math.max(1,...rows.map(r=>r.value))*1.15,bestLogs=bestRows.map(r=>Math.log10(r.value));
 let bestLogMin=bestLogs.length?Math.min(...bestLogs):0,bestLogMax=bestLogs.length?Math.max(...bestLogs):1;if(bestLogMax-bestLogMin<1){const mid=(bestLogMin+bestLogMax)/2;bestLogMin=mid-.5;bestLogMax=mid+.5}else{const pad=(bestLogMax-bestLogMin)*.1;bestLogMin-=pad;bestLogMax+=pad}const bestLogSpan=bestLogMax-bestLogMin;
 const x=at=>left+Math.max(0,Math.min(1,(at-minX)/span))*gw,yHash=value=>top+gh*(1-Math.max(0,value)/maxHash),yBest=value=>top+gh*(1-Math.max(0,Math.min(1,(Math.log10(value)-bestLogMin)/bestLogSpan)));
@@ -133,8 +133,8 @@ ctx.beginPath();rows.forEach((r,i)=>{const xx=x(r.at),yy=yHash(r.value);if(i===0
 if(bestRows.length){ctx.beginPath();bestRows.forEach(r=>{const xx=x(r.at),yy=yBest(r.value);ctx.moveTo(xx+1.5,yy);ctx.arc(xx,yy,1.5,0,Math.PI*2)});ctx.fillStyle='#f6b34a';ctx.fill()}
 ctx.strokeStyle='rgba(255,255,255,.7)';ctx.beginPath();ctx.moveTo(left,base+.5);ctx.lineTo(w-right,base+.5);ctx.stroke()}
 function updateStatsChart(s){const now=Date.now(),hash=Math.max(0,Number(s&&s.hashrate_ghs)||0);
-statsChartSamples=appendChartSample(statsChartSamples,now,hash);persistStatsChartCache();const events=Array.isArray(s&&s.share_events)?s.share_events:[];
-events.forEach(e=>{if(!Array.isArray(e)||e.length<3)return;const seq=Number(e[0]),age=Number(e[1]),diff=Number(e[2]);if(!Number.isFinite(seq)||seq<=statsChartLastShareSeq||!Number.isFinite(age)||age<0||!Number.isFinite(diff)||diff<=0)return;statsChartBestShares.push({at:now-age,value:diff});statsChartLastShareSeq=seq});
+statsChartSamples=appendChartSample(statsChartSamples,now,hash);const events=Array.isArray(s&&s.share_events)?s.share_events:[];
+events.forEach(e=>{if(!Array.isArray(e)||e.length<3)return;const seq=Number(e[0]),age=Number(e[1]),diff=Number(e[2]);if(!Number.isFinite(seq)||seq<=statsChartLastShareSeq||!Number.isFinite(age)||age<0||!Number.isFinite(diff)||diff<=0)return;const at=now-age;statsChartLastShareSeq=seq;if(at<statsChartStartedAt)return;statsChartBestShares.push({at,value:diff})});
 statsChartBestShares=statsChartBestShares.filter(r=>now-r.at<=STATS_CHART_WINDOW_MS);txt('stats-chart-current',swarmRate(hash));drawStatsChart()}
 function setStatsChartCollapsed(collapsed){const panel=document.querySelector('.stats-chart-panel'),button=$('stats-chart-toggle');if(!panel||!button)return;
 panel.classList.toggle('collapsed',collapsed);button.textContent=collapsed?'＋':'−';button.setAttribute('aria-expanded',collapsed?'false':'true');
@@ -143,13 +143,12 @@ if(!collapsed)requestAnimationFrame(drawStatsChart)}
 $('stats-chart-toggle').onclick=()=>setStatsChartCollapsed(!document.querySelector('.stats-chart-panel').classList.contains('collapsed'));
 setStatsChartCollapsed(localBool(STATS_CHART_COLLAPSED_KEY));
 window.addEventListener('resize',drawStatsChart);
-window.addEventListener('pagehide',()=>persistStatsChartCache(true));
 function drawMetricSparkline(id){const canvas=$(id+'-spark'),cfg=metricSparklineConfigs.get(id),rows=metricSparklineSamples.get(id)||[];if(!canvas||!cfg)return;
 const rect=canvas.getBoundingClientRect();if(rect.width<10||rect.height<10)return;const dpr=window.devicePixelRatio||1,w=Math.floor(rect.width),h=Math.floor(rect.height);
 if(canvas.width!==Math.floor(w*dpr)||canvas.height!==Math.floor(h*dpr)){canvas.width=Math.floor(w*dpr);canvas.height=Math.floor(h*dpr)}const ctx=canvas.getContext('2d');if(!ctx)return;
 ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);const values=rows.map(r=>r.value),normalLo=Number(cfg.min),normalHi=Number(cfg.max);let lo=normalLo,hi=normalHi;
 if(values.length){const seenLo=Math.min(...values),seenHi=Math.max(...values),normalSpan=Math.max(.0001,normalHi-normalLo);if(seenLo<lo)lo=seenLo-normalSpan*.08;if(seenHi>hi)hi=seenHi+normalSpan*.08}
-if(!(hi>lo)){lo-=1;hi+=1}const pad=3,gw=w-pad*2,gh=h-pad*2,now=Date.now(),first=rows.length?rows[0].at:now,minX=Math.max(now-METRIC_SPARKLINE_WINDOW_MS,Math.min(first,now-60000)),span=Math.max(1,now-minX);
+if(!(hi>lo)){lo-=1;hi+=1}const pad=3,gw=w-pad*2,gh=h-pad*2,now=Date.now(),first=rows.length?rows[0].at:now,minX=Math.max(now-METRIC_SPARKLINE_WINDOW_MS,Math.min(first,now)),span=Math.max(1,now-minX);
 const x=at=>pad+Math.max(0,Math.min(1,(at-minX)/span))*gw,y=value=>pad+gh*(1-Math.max(0,Math.min(1,(value-lo)/(hi-lo))));ctx.strokeStyle='#27313a';ctx.lineWidth=1;
 ctx.beginPath();ctx.moveTo(pad,Math.round(h/2)+.5);ctx.lineTo(w-pad,Math.round(h/2)+.5);ctx.stroke();if(rows.length){const color=cfg.state==='bad'?'#ff6b6b':cfg.state==='warn'?'#f6b34a':'#2cf1c2';
 const fill=ctx.createLinearGradient(0,pad,0,h-pad);fill.addColorStop(0,color+'42');fill.addColorStop(1,color+'05');ctx.beginPath();ctx.moveTo(x(rows[0].at),h-pad);rows.forEach((r,i)=>{if(i===0)ctx.lineTo(x(r.at),y(r.value));else ctx.lineTo(x(r.at),y(r.value))});ctx.lineTo(x(rows[rows.length-1].at),h-pad);ctx.closePath();ctx.fillStyle=fill;ctx.fill();
