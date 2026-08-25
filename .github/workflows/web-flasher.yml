@@ -1,6 +1,9 @@
-name: Build Canonical Firmware Package
+name: Build & Release Firmware
 
 on:
+  release:
+    types:
+      - published
   workflow_dispatch:
     inputs:
       version:
@@ -9,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: web-flasher-${{ github.ref }}
@@ -27,7 +30,7 @@ jobs:
 
       - name: Build firmware and web flasher package
         env:
-          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ github.event.release.tag_name || inputs.version }}
         run: |
           if [ -n "$PACKAGE_VERSION" ]; then
             scripts/docker-web-flasher.sh --version "$PACKAGE_VERSION"
@@ -41,3 +44,17 @@ jobs:
           name: m45-web-flasher
           path: dist/web-flasher
           if-no-files-found: error
+
+      - name: Upload firmware release assets
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          firmware="$(find dist/web-flasher -maxdepth 1 -type f -name 'esp-miner-factory-602-*.bin' -print -quit)"
+          test -n "$firmware"
+          test -f dist/web-flasher/esp-miner.bin
+          gh release upload "$RELEASE_TAG" \
+            dist/web-flasher/esp-miner.bin \
+            "$firmware" \
+            --clobber
